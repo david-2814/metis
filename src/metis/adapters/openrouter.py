@@ -35,6 +35,7 @@ from metis.adapters.openai import (
     _classify_openai_response,
     _openai_message_to_canonical,
     _stop_reason,
+    _stream_openai_compat,
     _tool_to_openai,
     _usage_to_canonical,
 )
@@ -192,6 +193,27 @@ class OpenRouterAdapter:
 
     async def close(self) -> None:
         await self._client.close()
+
+    # ---- Streaming -----------------------------------------------------
+
+    async def stream(self, request: CanonicalRequest):
+        """Stream via the OpenAI-compatible endpoint (same as OpenAIAdapter)."""
+        task = asyncio.current_task()
+        if task is not None:
+            self._in_flight[request.request_id] = task
+        try:
+            async for event in _stream_openai_compat(
+                client=self._client,
+                request=request,
+                provider_name=self.name,
+                wire_model=_wire_model_name(request.model),
+                _on_translate_error=_translate_status_error,
+            ):
+                yield event
+        except asyncio.CancelledError as exc:
+            raise CancelledError("request cancelled", request_id=request.request_id) from exc
+        finally:
+            self._in_flight.pop(request.request_id, None)
 
     # ---- Single call ---------------------------------------------------
 

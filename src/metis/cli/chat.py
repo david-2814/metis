@@ -1,45 +1,29 @@
-"""Interactive REPL.
+"""Interactive line-based REPL (`metis chat`).
 
-Minimal Phase 1 chat surface: stdin → submit_turn → print assistant text.
-Slash commands: /model, /cost, /help. EOF / 'exit' / 'quit' terminates.
+For the richer Textual TUI, see `metis tui` (src/metis/tui/app.py).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
 from decimal import Decimal
 from pathlib import Path
 
-from metis.adapters.anthropic import AnthropicAdapter
 from metis.adapters.errors import AdapterError
-from metis.adapters.openai import OpenAIAdapter
-from metis.adapters.openrouter import OpenRouterAdapter
-from metis.adapters.protocol import ProviderAdapter
-from metis.events.bus import EventBus
-from metis.pricing import DEFAULT_PRICE_TABLE, PriceTable
-from metis.routing import ModelRegistry, RoutingEngine
+from metis.adapters.streaming import (
+    MessageStart,
+    StreamingEvent,
+    TextDelta,
+    ToolUseStart,
+)
+from metis.cli.runtime import ChatRuntime, SetupError, setup_runtime, shutdown_runtime
+from metis.routing import ModelRegistry
 from metis.routing.engine import RoutingError
-from metis.sessions import InMemorySessionStore, SessionManager, UnknownAliasError
-from metis.tools.builtins import register_builtins
-from metis.tools.dispatcher import ToolDispatcher
-from metis.trace.store import TraceStore
+from metis.sessions import SessionManager, UnknownAliasError
 
 logger = logging.getLogger(__name__)
-
-
-ANTHROPIC_MODELS = {
-    "anthropic:claude-opus-4-7": ["opus", "deep"],
-    "anthropic:claude-sonnet-4-6": ["sonnet", "balanced"],
-    "anthropic:claude-haiku-4-5": ["haiku", "fast"],
-}
-
-OPENAI_MODELS = {
-    "openai:gpt-5": ["gpt5", "gpt-5"],
-    "openai:gpt-5-mini": ["gpt5-mini", "mini"],
-}
 
 
 async def run_chat(
@@ -49,97 +33,18 @@ async def run_chat(
     db_path: str | None,
     global_default_model: str,
 ) -> int:
-    workspace = Path(workspace_path).expanduser().resolve()
-    if not workspace.is_dir():
-        print(f"error: workspace {workspace} is not a directory", file=sys.stderr)
+    try:
+        runtime = await setup_runtime(
+            workspace_path=workspace_path,
+            db_path=db_path,
+            global_default_model=global_default_model,
+        )
+    except SetupError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    if not any((anthropic_key, openai_key, openrouter_key)):
-        print(
-            "error: set ANTHROPIC_API_KEY, OPENAI_API_KEY, and/or OPENROUTER_API_KEY "
-            "(in env or .env).",
-            file=sys.stderr,
-        )
-        return 1
-
-    # ---- Wire up the server side -----------------------------------------
-
-    bus = EventBus()
-    bus.start()
-
-    db_file = Path(db_path).expanduser() if db_path else _default_db_path()
-    db_file.parent.mkdir(parents=True, exist_ok=True)
-    trace = TraceStore(db_file)
-    trace.attach_to(bus)
-
-    registry = ModelRegistry()
-    adapters: list[ProviderAdapter] = []
-    pricing_table: PriceTable = DEFAULT_PRICE_TABLE
-    if anthropic_key:
-        anth = AnthropicAdapter(api_key=anthropic_key)
-        adapters.append(anth)
-        for model_id, aliases in ANTHROPIC_MODELS.items():
-            registry.register(model_id=model_id, adapter=anth, aliases=aliases)
-    if openai_key:
-        oai = OpenAIAdapter(api_key=openai_key)
-        adapters.append(oai)
-        for model_id, aliases in OPENAI_MODELS.items():
-            registry.register(model_id=model_id, adapter=oai, aliases=aliases)
-    if openrouter_key:
-        or_adapter = OpenRouterAdapter(
-            api_key=openrouter_key, app_name="metis", http_referer="https://metis.local"
-        )
-        adapters.append(or_adapter)
-        try:
-            catalog = await or_adapter.fetch_catalog()
-        except Exception as exc:
-            print(
-                f"warning: OpenRouter catalog fetch failed ({exc}); "
-                "OpenRouter models will not be available this session.",
-                file=sys.stderr,
-            )
-        else:
-            for model_id in sorted(catalog.capabilities.keys()):
-                registry.register(model_id=model_id, adapter=or_adapter, aliases=[])
-            if catalog.pricing:
-                pricing_table = pricing_table.with_overlay(
-                    overlay_version=catalog.version,
-                    overlay_models=catalog.pricing,
-                )
-            print(
-                f"note: loaded {len(catalog.capabilities)} OpenRouter models "
-                f"({len(catalog.pricing)} with pricing).",
-                file=sys.stderr,
-            )
-
-    routing = RoutingEngine(registry=registry, bus=bus)
-    dispatcher = ToolDispatcher(bus)
-    register_builtins(dispatcher)
-
-    # If the configured global default isn't registered, fall back to the first
-    # available model so the prototype is usable on any single-key setup.
-    if global_default_model not in registry:
-        fallback = registry.list_models()[0] if registry.list_models() else None
-        if fallback:
-            print(
-                f"note: global default {global_default_model!r} not configured; "
-                f"using {fallback!r}.",
-                file=sys.stderr,
-            )
-            global_default_model = fallback
-
-    manager = SessionManager(
-        registry=registry,
-        routing=routing,
-        dispatcher=dispatcher,
-        bus=bus,
-        store=InMemorySessionStore(),
-        pricing=pricing_table,
-        global_default_model=global_default_model,
-    )
+    registry = runtime.registry
+    manager = runtime.manager
 
     # Resolve initial model (alias accepted).
     resolved_initial = None
@@ -151,9 +56,10 @@ async def run_chat(
                 f"Configured: {', '.join(sorted(registry.list_models()))}",
                 file=sys.stderr,
             )
-            await _shutdown(bus, adapters, trace)
+            await shutdown_runtime(runtime)
             return 1
 
+    workspace = Path(workspace_path).expanduser().resolve()
     session = manager.create_session(workspace_path=str(workspace), active_model=resolved_initial)
 
     # ---- Banner ----------------------------------------------------------
@@ -162,8 +68,8 @@ async def run_chat(
     print(f"Metis chat • workspace: {workspace}")
     print(f"Session: {session.id}")
     print(f"Providers: {', '.join(providers)}")
-    print(f"Active model: {session.active_model or f'(default: {global_default_model})'}")
-    print(f"Trace: {db_file}")
+    print(f"Active model: {session.active_model or f'(default: {runtime.global_default_model})'}")
+    print(f"Trace: {runtime.db_file}")
     print(
         "Type your message. Commands: /model <id>, /model -, /cost, /models, /help. "
         "Ctrl-D or 'exit' to quit."
@@ -190,8 +96,11 @@ async def run_chat(
                 if handled == "quit":
                     break
                 continue
+            renderer = _LiveRenderer()
             try:
-                result = await manager.submit_turn(session.id, text)
+                result = await manager.submit_turn(
+                    session.id, text, on_streaming_event=renderer.handle
+                )
             except UnknownAliasError as exc:
                 print(f"unknown alias: @{exc.alias}", file=sys.stderr)
                 continue
@@ -204,12 +113,13 @@ async def run_chat(
                     file=sys.stderr,
                 )
                 continue
-            _print_result(result)
+            renderer.finalize()
+            _print_result_tag(result)
     except Exception:
         logger.exception("unhandled error in chat loop")
         exit_code = 1
     finally:
-        await _shutdown(bus, adapters, trace)
+        await shutdown_runtime(runtime)
     return exit_code
 
 
@@ -217,10 +127,7 @@ async def run_chat(
 
 
 async def _async_input(prompt: str) -> str:
-    """input() in a thread so we don't block the event loop.
-
-    The event loop matters: bus dispatch and adapter timers all live there.
-    """
+    """input() in a thread so we don't block the event loop."""
     return await asyncio.to_thread(input, prompt)
 
 
@@ -230,7 +137,6 @@ async def _handle_slash(
     session,
     registry: ModelRegistry,
 ) -> str | None:
-    """Returns 'quit' if the command should terminate the REPL; else None."""
     parts = text.split(maxsplit=1)
     cmd = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -274,37 +180,46 @@ async def _handle_slash(
     return None
 
 
-def _print_result(result) -> None:
+class _LiveRenderer:
+    def __init__(self) -> None:
+        self._in_text = False
+        self._messages_started = 0
+
+    def handle(self, event: StreamingEvent) -> None:
+        if isinstance(event, MessageStart):
+            self._messages_started += 1
+            if self._messages_started > 1:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            self._in_text = False
+        elif isinstance(event, TextDelta):
+            if not self._in_text:
+                sys.stdout.write("\n")
+                self._in_text = True
+            sys.stdout.write(event.text)
+            sys.stdout.flush()
+        elif isinstance(event, ToolUseStart):
+            if self._in_text:
+                sys.stdout.write("\n")
+            sys.stdout.write(f"\n[{event.tool_name}(...)]")
+            sys.stdout.flush()
+            self._in_text = False
+
+    def finalize(self) -> None:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+def _print_result_tag(result) -> None:
     cost = f"${result.cost_usd:.4f}" if result.cost_usd >= Decimal("0.0001") else "<$0.0001"
     tag = (
         f"[{result.chosen_model} • {cost} • "
         f"{result.llm_call_count} LLM / {result.tool_call_count} tool]"
     )
-    print()
     print(tag)
-    print(result.assistant_text)
     print()
 
 
-async def _shutdown(bus: EventBus, adapters: list[ProviderAdapter], trace: TraceStore) -> None:
-    try:
-        await bus.drain()
-    except Exception:
-        pass
-    try:
-        await bus.stop()
-    except Exception:
-        pass
-    for adapter in adapters:
-        try:
-            await adapter.close()
-        except Exception:
-            pass
-    try:
-        trace.close()
-    except Exception:
-        pass
-
-
-def _default_db_path() -> Path:
-    return Path.home() / ".metis" / "trace.db"
+# Backwards-compatibility export — pyproject "metis = metis.cli.main:main".
+__all__ = ["run_chat"]
+_ = ChatRuntime  # re-export indirectly

@@ -1,7 +1,7 @@
 """Session store and turn-loop session manager.
 
-For the Phase 1 prototype the store is in-memory. The canonical-format §9.1
-SQLite schema can drop in later without changing the SessionManager surface.
+Two store implementations: `InMemorySessionStore` for ephemeral / test use, and
+`SqliteSessionStore` for persistence across restarts (canonical-format §9.1).
 """
 
 from metis.sessions.manager import (
@@ -9,6 +9,7 @@ from metis.sessions.manager import (
     TurnResult,
     UnknownAliasError,
 )
+from metis.sessions.sqlite_store import SqliteSessionStore
 from metis.sessions.store import InMemorySessionStore, Session, SessionStore
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "Session",
     "SessionManager",
     "SessionStore",
+    "SqliteSessionStore",
     "TurnResult",
     "UnknownAliasError",
 ]

@@ -18,8 +18,17 @@ from metis.adapters.protocol import (
     StopReason,
     TokenUsage,
 )
+from metis.adapters.streaming import (
+    MessageComplete,
+    MessageStart,
+    TextDelta,
+    ToolUseEnd,
+    ToolUseInputDelta,
+    ToolUseStart,
+)
 from metis.canonical.capabilities import AdapterCapabilities
 from metis.canonical.content import TextBlock, ToolUseBlock
+from metis.canonical.ids import new_message_id
 from metis.canonical.messages import Role
 from metis.events.bus import EventBus, EventFilter, Subscription
 from metis.events.envelope import Event
@@ -91,6 +100,56 @@ class _ScriptedAnthropicAdapter:
             latency_ms=42,
         )
 
+    async def stream(self, request: CanonicalRequest):
+        """Synthesize streaming events from a scripted response.
+
+        Yields a MessageStart, then text/tool deltas + ends matching the
+        scripted content, then a MessageComplete with the final state. This
+        is enough for the SessionManager to drive its streaming-based loop
+        in tests without needing real SDK streaming chunks.
+        """
+        self.requests.append(request)
+        if not self._responses:
+            raise AssertionError("scripted adapter ran out of responses")
+        scripted = self._responses.pop(0)
+        message_id = new_message_id()
+        import json as _json
+
+        yield MessageStart(message_id=message_id, model=request.model)
+        for idx, block in enumerate(scripted.content):
+            if isinstance(block, TextBlock):
+                yield TextDelta(message_id=message_id, content_block_index=idx, text=block.text)
+            elif isinstance(block, ToolUseBlock):
+                yield ToolUseStart(
+                    message_id=message_id,
+                    content_block_index=idx,
+                    tool_use_id=block.id,
+                    tool_name=block.name,
+                )
+                json_str = _json.dumps(block.input)
+                yield ToolUseInputDelta(
+                    message_id=message_id,
+                    content_block_index=idx,
+                    tool_use_id=block.id,
+                    partial_json=json_str,
+                )
+                yield ToolUseEnd(
+                    message_id=message_id,
+                    content_block_index=idx,
+                    tool_use_id=block.id,
+                    final_input=block.input,
+                )
+        yield MessageComplete(
+            message_id=message_id,
+            stop_reason=scripted.stop_reason,
+            final_content=scripted.content,
+            usage=TokenUsage(
+                input_tokens=scripted.input_tokens,
+                output_tokens=scripted.output_tokens,
+            ),
+            latency_ms=42,
+        )
+
     async def cancel(self, request_id: str) -> bool:
         return False
 
@@ -99,9 +158,6 @@ class _ScriptedAnthropicAdapter:
 
     def estimate_input_tokens(self, messages, tools, system_prompt) -> int:
         return 100
-
-    def stream(self, request):  # pragma: no cover
-        raise NotImplementedError
 
 
 # ---- Fixtures ----------------------------------------------------------

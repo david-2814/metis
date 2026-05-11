@@ -81,17 +81,6 @@ class CanonicalResponse:
     latency_ms: int
 
 
-@dataclass
-class StreamEvent:
-    """Placeholder for streaming events; defined fully in streaming-protocol §5.
-
-    Layer 3 only implements complete(); stream() returns NotImplementedError.
-    """
-
-    type: str
-    payload: dict
-
-
 class ProviderAdapter(Protocol):
     """Implemented by every provider adapter."""
 
@@ -99,7 +88,14 @@ class ProviderAdapter(Protocol):
 
     async def complete(self, request: CanonicalRequest) -> CanonicalResponse: ...
 
-    def stream(self, request: CanonicalRequest) -> AsyncIterator[StreamEvent]: ...
+    def stream(self, request: CanonicalRequest) -> AsyncIterator[StreamingEvent]:
+        """Translate provider chunks into canonical streaming events.
+
+        The iterator yields events in the order defined in streaming-protocol
+        §5.3 (MessageStart → deltas → ToolUseEnd → MessageComplete). The
+        final MessageComplete carries the authoritative final content + usage.
+        """
+        ...
 
     def estimate_input_tokens(
         self,
@@ -113,3 +109,7 @@ class ProviderAdapter(Protocol):
     async def close(self) -> None: ...
 
     def capabilities_for(self, model: str) -> AdapterCapabilities: ...
+
+
+# Forward-reference: import here to avoid a cycle (streaming imports protocol).
+from metis.adapters.streaming import StreamingEvent  # noqa: E402

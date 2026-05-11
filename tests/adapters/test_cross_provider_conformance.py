@@ -41,6 +41,21 @@ from metis.tools.dispatcher import ToolDispatcher
 # Anthropic ---
 
 
+class _AsyncIter:
+    """Wrap a list as an async iterator (for stream mode mocks)."""
+
+    def __init__(self, items):
+        self._items = list(items)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._items:
+            raise StopAsyncIteration
+        return self._items.pop(0)
+
+
 class _AnthropicMessages:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -50,7 +65,46 @@ class _AnthropicMessages:
         self.requests.append(kwargs)
         if not self.responses:
             raise AssertionError("anthropic stub: out of responses")
-        return self.responses.pop(0)
+        resp = self.responses.pop(0)
+        if kwargs.get("stream"):
+            return _AsyncIter(_synthesize_anth_stream(resp))
+        return resp
+
+
+def _synthesize_anth_stream(resp):
+    """Turn a fake _anth_text response into a list of Anthropic SSE-like events.
+
+    Mirrors the real provider's event sequence: message_start →
+    content_block_start (text) → content_block_delta (text_delta) →
+    content_block_stop → message_delta → message_stop.
+    """
+    chunks: list = [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(usage=resp.usage)),
+    ]
+    for block in resp.content:
+        if getattr(block, "type", None) == "text":
+            chunks.append(
+                SimpleNamespace(
+                    type="content_block_start",
+                    content_block=SimpleNamespace(type="text", text=""),
+                )
+            )
+            chunks.append(
+                SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="text_delta", text=block.text),
+                )
+            )
+            chunks.append(SimpleNamespace(type="content_block_stop"))
+    chunks.append(
+        SimpleNamespace(
+            type="message_delta",
+            delta=SimpleNamespace(stop_reason=resp.stop_reason),
+            usage=SimpleNamespace(output_tokens=resp.usage.output_tokens),
+        )
+    )
+    chunks.append(SimpleNamespace(type="message_stop"))
+    return chunks
 
 
 class _AnthropicClient:
@@ -86,7 +140,106 @@ class _OAICompletions:
         self.requests.append(kwargs)
         if not self.responses:
             raise AssertionError("openai stub: out of responses")
-        return self.responses.pop(0)
+        resp = self.responses.pop(0)
+        if kwargs.get("stream"):
+            return _AsyncIter(_synthesize_oai_stream(resp))
+        return resp
+
+
+def _synthesize_oai_stream(resp):
+    """Turn a fake _oai_text or _oai_tool_call response into OpenAI stream chunks."""
+    choice = resp.choices[0]
+    message = choice.message
+    finish_reason = choice.finish_reason
+    chunks: list = []
+    # First chunk: role announcement.
+    chunks.append(
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(role="assistant", content=None, tool_calls=None),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        )
+    )
+    content = getattr(message, "content", None)
+    if isinstance(content, str) and content:
+        chunks.append(
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content=content, tool_calls=None),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            )
+        )
+    tool_calls = getattr(message, "tool_calls", None) or []
+    for idx, tc in enumerate(tool_calls):
+        # First chunk per call: id + name + empty args.
+        chunks.append(
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=idx,
+                                    id=tc.id,
+                                    type="function",
+                                    function=SimpleNamespace(name=tc.function.name, arguments=""),
+                                )
+                            ],
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            )
+        )
+        # Second chunk per call: argument string.
+        chunks.append(
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=idx,
+                                    id=None,
+                                    type=None,
+                                    function=SimpleNamespace(
+                                        name=None, arguments=tc.function.arguments
+                                    ),
+                                )
+                            ],
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            )
+        )
+    # Final chunk: finish_reason set.
+    chunks.append(
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content=None, tool_calls=None),
+                    finish_reason=finish_reason,
+                )
+            ],
+            usage=None,
+        )
+    )
+    # Usage-only chunk (stream_options.include_usage=True).
+    chunks.append(SimpleNamespace(choices=[], usage=resp.usage))
+    return chunks
 
 
 class _OAIChat:

@@ -14,8 +14,10 @@ Wire-format translation per provider-adapter-contract.md §4.2. The adapter:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+from collections.abc import AsyncIterator
 
 import anthropic
 import httpx
@@ -41,6 +43,16 @@ from metis.adapters.protocol import (
     TokenUsage,
 )
 from metis.adapters.retry import RetryPolicy, with_retry
+from metis.adapters.streaming import (
+    MessageComplete,
+    MessageStart,
+    StreamingEvent,
+    TextDelta,
+    ThinkingDelta,
+    ToolUseEnd,
+    ToolUseInputDelta,
+    ToolUseStart,
+)
 from metis.adapters.tool_id_map import ToolIdMap
 from metis.canonical.capabilities import AdapterCapabilities
 from metis.canonical.content import (
@@ -53,6 +65,7 @@ from metis.canonical.content import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from metis.canonical.ids import new_message_id
 from metis.canonical.messages import Message, Role
 from metis.canonical.tools import ToolDefinition
 
@@ -160,6 +173,81 @@ class AnthropicAdapter:
 
     async def close(self) -> None:
         await self._client.close()
+
+    # ---- Streaming ----------------------------------------------------
+
+    async def stream(self, request: CanonicalRequest) -> AsyncIterator[StreamingEvent]:
+        """Stream a response as canonical streaming events.
+
+        Maps the Anthropic SSE event types (content_block_start, content_block_delta,
+        content_block_stop, message_delta, message_stop) to the canonical streaming
+        events defined in streaming-protocol.md §5.3.
+        """
+        task = asyncio.current_task()
+        if task is not None:
+            self._in_flight[request.request_id] = task
+        try:
+            async for event in self._stream_once(request):
+                yield event
+        except asyncio.CancelledError as exc:
+            raise CancelledError("request cancelled", request_id=request.request_id) from exc
+        finally:
+            self._in_flight.pop(request.request_id, None)
+
+    async def _stream_once(self, request: CanonicalRequest) -> AsyncIterator[StreamingEvent]:
+        tool_map = request.tool_id_map if request.tool_id_map is not None else ToolIdMap()
+        anthropic_messages, system_text = _canonical_messages_to_anthropic(
+            request.messages, request.system_prompt, tool_map
+        )
+        wire_tools = [_tool_to_anthropic(t) for t in request.tools]
+        wire_model = _wire_model_name(request.model)
+
+        kwargs: dict = {
+            "model": wire_model,
+            "max_tokens": request.max_output_tokens,
+            "messages": anthropic_messages,
+            "stream": True,
+        }
+        if system_text:
+            kwargs["system"] = system_text
+        if wire_tools:
+            kwargs["tools"] = wire_tools
+        if request.stop_sequences:
+            kwargs["stop_sequences"] = request.stop_sequences
+        if request.temperature is not None:
+            kwargs["temperature"] = request.temperature
+
+        message_id = new_message_id()
+        accumulator = _AnthropicStreamAccumulator(message_id=message_id, tool_map=tool_map)
+        start = time.monotonic()
+
+        yield MessageStart(message_id=message_id, model=request.model)
+
+        try:
+            response = await self._client.messages.create(**kwargs)
+        except anthropic.APIStatusError as exc:
+            raise _translate_status_error(exc, request.request_id) from exc
+        except anthropic.APIConnectionError as exc:
+            raise NetworkError(
+                f"anthropic connection error: {exc}", request_id=request.request_id
+            ) from exc
+        except anthropic.APITimeoutError as exc:
+            raise NetworkError(f"anthropic timeout: {exc}", request_id=request.request_id) from exc
+        except httpx.HTTPError as exc:
+            raise NetworkError(f"http error: {exc}", request_id=request.request_id) from exc
+
+        async for raw in response:
+            for canonical_event in accumulator.consume(raw):
+                yield canonical_event
+
+        latency_ms = int((time.monotonic() - start) * 1000)
+        yield MessageComplete(
+            message_id=message_id,
+            stop_reason=_stop_reason(accumulator.stop_reason),
+            final_content=accumulator.final_content(),
+            usage=accumulator.usage(),
+            latency_ms=latency_ms,
+        )
 
     # ---- Single call --------------------------------------------------
 
@@ -405,6 +493,189 @@ def _tool_result_to_anthropic(block: ToolResultBlock, tool_map: ToolIdMap) -> To
         content=parts,
         is_error=block.is_error,
     )
+
+
+# ---------------------------------------------------------------------------
+# Streaming accumulator
+# ---------------------------------------------------------------------------
+
+
+class _AnthropicStreamAccumulator:
+    """Per-stream state machine that turns Anthropic SSE events into canonical
+    streaming events, accumulating final content + usage along the way."""
+
+    def __init__(self, *, message_id: str, tool_map: ToolIdMap) -> None:
+        self.message_id = message_id
+        self.tool_map = tool_map
+        self.stop_reason: str | None = None
+        self._content_blocks: list[ContentBlock] = []
+        self._current_index = -1
+        self._current_type: str | None = None
+        self._current_text = ""
+        self._current_thinking = ""
+        self._current_thinking_signature: str | None = None
+        self._current_tool_id: str | None = None
+        self._current_tool_name: str | None = None
+        self._current_tool_input_json = ""
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._cached_input_tokens = 0
+        self._cache_creation_input_tokens = 0
+
+    def consume(self, raw) -> list[StreamingEvent]:
+        """Process one Anthropic SSE event and return zero or more canonical events."""
+        etype = getattr(raw, "type", None)
+        emitted: list[StreamingEvent] = []
+
+        if etype == "message_start":
+            msg = getattr(raw, "message", None)
+            if msg is not None:
+                usage = getattr(msg, "usage", None)
+                if usage is not None:
+                    self._input_tokens = getattr(usage, "input_tokens", 0) or 0
+                    self._cached_input_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+                    self._cache_creation_input_tokens = (
+                        getattr(usage, "cache_creation_input_tokens", 0) or 0
+                    )
+            return emitted
+
+        if etype == "content_block_start":
+            self._current_index += 1
+            block = getattr(raw, "content_block", None)
+            btype = getattr(block, "type", None)
+            self._current_type = btype
+            if btype == "tool_use":
+                provider_id = getattr(block, "id", "")
+                canonical_id = self.tool_map.to_canonical(provider_id) or provider_id
+                self.tool_map.remember(canonical_id, provider_id)
+                self._current_tool_id = canonical_id
+                self._current_tool_name = getattr(block, "name", "")
+                self._current_tool_input_json = ""
+                emitted.append(
+                    ToolUseStart(
+                        message_id=self.message_id,
+                        content_block_index=self._current_index,
+                        tool_use_id=canonical_id,
+                        tool_name=self._current_tool_name,
+                    )
+                )
+            elif btype == "text":
+                self._current_text = ""
+                # Capture any pre-streamed text on the block itself (rare).
+                pre = getattr(block, "text", "")
+                if pre:
+                    self._current_text = pre
+                    emitted.append(
+                        TextDelta(
+                            message_id=self.message_id,
+                            content_block_index=self._current_index,
+                            text=pre,
+                        )
+                    )
+            elif btype == "thinking":
+                self._current_thinking = ""
+                self._current_thinking_signature = None
+            return emitted
+
+        if etype == "content_block_delta":
+            delta = getattr(raw, "delta", None)
+            dtype = getattr(delta, "type", None)
+            if dtype == "text_delta":
+                text = getattr(delta, "text", "")
+                self._current_text += text
+                emitted.append(
+                    TextDelta(
+                        message_id=self.message_id,
+                        content_block_index=self._current_index,
+                        text=text,
+                    )
+                )
+            elif dtype == "input_json_delta":
+                partial = getattr(delta, "partial_json", "")
+                self._current_tool_input_json += partial
+                emitted.append(
+                    ToolUseInputDelta(
+                        message_id=self.message_id,
+                        content_block_index=self._current_index,
+                        tool_use_id=self._current_tool_id or "",
+                        partial_json=partial,
+                    )
+                )
+            elif dtype == "thinking_delta":
+                thinking_text = getattr(delta, "thinking", "")
+                self._current_thinking += thinking_text
+                emitted.append(
+                    ThinkingDelta(
+                        message_id=self.message_id,
+                        content_block_index=self._current_index,
+                        text=thinking_text,
+                    )
+                )
+            elif dtype == "signature_delta":
+                self._current_thinking_signature = getattr(delta, "signature", None)
+            return emitted
+
+        if etype == "content_block_stop":
+            if self._current_type == "tool_use":
+                try:
+                    final_input = (
+                        json.loads(self._current_tool_input_json)
+                        if self._current_tool_input_json
+                        else {}
+                    )
+                except json.JSONDecodeError:
+                    final_input = {}
+                self._content_blocks.append(
+                    ToolUseBlock(
+                        id=self._current_tool_id or "",
+                        name=self._current_tool_name or "",
+                        input=final_input,
+                    )
+                )
+                emitted.append(
+                    ToolUseEnd(
+                        message_id=self.message_id,
+                        content_block_index=self._current_index,
+                        tool_use_id=self._current_tool_id or "",
+                        final_input=final_input,
+                    )
+                )
+            elif self._current_type == "text":
+                self._content_blocks.append(TextBlock(text=self._current_text))
+            elif self._current_type == "thinking":
+                self._content_blocks.append(
+                    ThinkingBlock(
+                        text=self._current_thinking,
+                        signature=self._current_thinking_signature,
+                    )
+                )
+            self._current_type = None
+            return emitted
+
+        if etype == "message_delta":
+            delta = getattr(raw, "delta", None)
+            if delta is not None:
+                sr = getattr(delta, "stop_reason", None)
+                if sr is not None:
+                    self.stop_reason = sr
+            usage = getattr(raw, "usage", None)
+            if usage is not None:
+                self._output_tokens = getattr(usage, "output_tokens", 0) or 0
+            return emitted
+
+        # message_stop and anything else: nothing to emit.
+        return emitted
+
+    def final_content(self) -> list[ContentBlock]:
+        return list(self._content_blocks)
+
+    def usage(self) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=self._input_tokens,
+            output_tokens=self._output_tokens,
+            cached_input_tokens=self._cached_input_tokens,
+            cache_creation_input_tokens=self._cache_creation_input_tokens,
+        )
 
 
 # ---- Response parsing ------------------------------------------------------

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -20,6 +22,11 @@ from metis.adapters.errors import AdapterError, CancelledError
 from metis.adapters.protocol import (
     CanonicalRequest,
     StopReason,
+    TokenUsage,
+)
+from metis.adapters.streaming import (
+    MessageComplete,
+    StreamingEvent,
 )
 from metis.adapters.tool_id_map import ToolIdMap
 from metis.canonical.content import (
@@ -94,6 +101,10 @@ class TurnResult:
     wall_time_seconds: float
 
 
+# Callback signature for live streaming events. May be sync or async.
+StreamHandler = Callable[[StreamingEvent], Awaitable[None] | None]
+
+
 class SessionManager:
     """Coordinates routing, adapter calls, and tool dispatch for a session."""
 
@@ -151,7 +162,13 @@ class SessionManager:
 
     # ---- Turn loop ----------------------------------------------------
 
-    async def submit_turn(self, session_id: str, user_text: str) -> TurnResult:
+    async def submit_turn(
+        self,
+        session_id: str,
+        user_text: str,
+        *,
+        on_streaming_event: StreamHandler | None = None,
+    ) -> TurnResult:
         session = self._store.get_session(session_id)
         turn_id = str(ULID())
         loop_start = asyncio.get_event_loop().time()
@@ -243,7 +260,7 @@ class SessionManager:
                     parent_event_id=parent_event_id,
                 )
                 try:
-                    response = await adapter.complete(request)
+                    final = await _consume_stream(adapter.stream(request), on_streaming_event)
                 except AdapterError as exc:
                     self._routing.availability.mark_failure(provider, exc.error_class)
                     self._emit_llm_call_failed(
@@ -267,9 +284,9 @@ class SessionManager:
                     self._routing.availability.mark_success(provider)
 
                 llm_calls += 1
-                total_input_tokens += response.usage.input_tokens
-                total_output_tokens += response.usage.output_tokens
-                cost = self._pricing.compute_cost(chosen_model, response.usage)
+                total_input_tokens += final.usage.input_tokens
+                total_output_tokens += final.usage.output_tokens
+                cost = self._pricing.compute_cost(chosen_model, final.usage)
                 total_cost += cost
 
                 # Build the assistant message with full metadata.
@@ -277,7 +294,7 @@ class SessionManager:
                     id=new_message_id(),
                     session_id=session_id,
                     role=Role.ASSISTANT,
-                    content=response.content,
+                    content=final.final_content,
                     created_at=_now(),
                     metadata=MessageMetadata(
                         model=chosen_model,
@@ -289,42 +306,40 @@ class SessionManager:
                             rule_name=decision.chain[decision.winner_index].rule_name,
                         ),
                         usage=Usage(
-                            input_tokens=response.usage.input_tokens,
-                            output_tokens=response.usage.output_tokens,
-                            cached_input_tokens=response.usage.cached_input_tokens,
-                            cache_creation_input_tokens=(
-                                response.usage.cache_creation_input_tokens
-                            ),
+                            input_tokens=final.usage.input_tokens,
+                            output_tokens=final.usage.output_tokens,
+                            cached_input_tokens=final.usage.cached_input_tokens,
+                            cache_creation_input_tokens=(final.usage.cache_creation_input_tokens),
                             cost_usd=cost,
                             pricing_version=self._pricing.version,
-                            latency_ms=response.latency_ms,
+                            latency_ms=final.latency_ms,
                         ),
                         status=MessageStatus.COMPLETE,
                     ),
                 )
                 self._store.add_message(session_id, assistant_message)
-                last_assistant_text = _assistant_text(response.content) or last_assistant_text
+                last_assistant_text = _assistant_text(final.final_content) or last_assistant_text
 
                 self._emit_llm_call_completed(
                     session_id=session_id,
                     turn_id=turn_id,
                     model=chosen_model,
                     provider=provider,
-                    usage=response.usage,
+                    usage=final.usage,
                     cost=cost,
-                    latency_ms=response.latency_ms,
-                    stop_reason=response.stop_reason,
-                    response_content=response.content,
+                    latency_ms=final.latency_ms,
+                    stop_reason=final.stop_reason,
+                    response_content=final.final_content,
                     parent_event_id=llm_started_event,
                 )
 
                 # 6. Decide whether to dispatch tools and continue, or stop.
-                if response.stop_reason != StopReason.TOOL_USE:
-                    final_stop_reason = response.stop_reason
+                if final.stop_reason != StopReason.TOOL_USE:
+                    final_stop_reason = final.stop_reason
                     break
 
                 # Parallel-dispatch all tool_use blocks; collect results.
-                tool_uses = [b for b in response.content if isinstance(b, ToolUseBlock)]
+                tool_uses = [b for b in final.final_content if isinstance(b, ToolUseBlock)]
                 if not tool_uses:
                     final_stop_reason = StopReason.END_TURN
                     break
@@ -652,6 +667,34 @@ def _now() -> datetime:
 def _assistant_text(content: list[ContentBlock]) -> str:
     """Concatenate text blocks for CLI display. Ignores tool_use/thinking."""
     return "\n".join(b.text for b in content if isinstance(b, TextBlock))
+
+
+async def _consume_stream(
+    stream,
+    on_event: StreamHandler | None,
+) -> MessageComplete:
+    """Iterate an adapter stream, forwarding each event to `on_event` if set,
+    and return the MessageComplete event (which carries final state)."""
+    final: MessageComplete | None = None
+    async for event in stream:
+        if on_event is not None:
+            result = on_event(event)
+            if inspect.isawaitable(result):
+                await result
+        if isinstance(event, MessageComplete):
+            final = event
+    if final is None:
+        # Stream ended without MessageComplete — synthesize an empty one so
+        # the caller has something to work with. This shouldn't happen with
+        # a well-behaved adapter.
+        final = MessageComplete(
+            message_id="",
+            stop_reason=StopReason.END_TURN,
+            final_content=[],
+            usage=TokenUsage(0, 0),
+            latency_ms=0,
+        )
+    return final
 
 
 def _mode_for_chain_index(index: int) -> RoutingMode:

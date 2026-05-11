@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
 
 import httpx
 import openai
@@ -40,6 +41,15 @@ from metis.adapters.protocol import (
     TokenUsage,
 )
 from metis.adapters.retry import RetryPolicy, with_retry
+from metis.adapters.streaming import (
+    MessageComplete,
+    MessageStart,
+    StreamingEvent,
+    TextDelta,
+    ToolUseEnd,
+    ToolUseInputDelta,
+    ToolUseStart,
+)
 from metis.adapters.tool_id_map import ToolIdMap
 from metis.canonical.capabilities import AdapterCapabilities
 from metis.canonical.content import (
@@ -50,7 +60,7 @@ from metis.canonical.content import (
     ToolResultBlock,
     ToolUseBlock,
 )
-from metis.canonical.ids import new_tool_use_id
+from metis.canonical.ids import new_message_id, new_tool_use_id
 from metis.canonical.messages import Message, Role
 from metis.canonical.tools import ToolDefinition
 
@@ -167,6 +177,32 @@ class OpenAIAdapter:
 
     async def close(self) -> None:
         await self._client.close()
+
+    # ---- Streaming ----------------------------------------------------
+
+    async def stream(self, request: CanonicalRequest) -> AsyncIterator[StreamingEvent]:
+        """Stream a response as canonical streaming events.
+
+        OpenAI delivers SSE chunks with `choices[0].delta`; tool calls arrive
+        incrementally by `index`. We track per-index state to emit the right
+        canonical events.
+        """
+        task = asyncio.current_task()
+        if task is not None:
+            self._in_flight[request.request_id] = task
+        try:
+            async for event in _stream_openai_compat(
+                client=self._client,
+                request=request,
+                provider_name=self.name,
+                wire_model=_wire_model_name(request.model),
+                _on_translate_error=_translate_status_error,
+            ):
+                yield event
+        except asyncio.CancelledError as exc:
+            raise CancelledError("request cancelled", request_id=request.request_id) from exc
+        finally:
+            self._in_flight.pop(request.request_id, None)
 
     # ---- Single call --------------------------------------------------
 
@@ -581,6 +617,258 @@ def _retry_after_seconds(exc: openai.APIStatusError) -> float | None:
         except ValueError:
             return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Streaming (shared by OpenAIAdapter and OpenRouterAdapter)
+# ---------------------------------------------------------------------------
+
+
+async def _stream_openai_compat(
+    *,
+    client: openai.AsyncOpenAI,
+    request: CanonicalRequest,
+    provider_name: str,
+    wire_model: str,
+    _on_translate_error,
+) -> AsyncIterator[StreamingEvent]:
+    """Run an OpenAI-compatible streaming request and yield canonical events.
+
+    Used by both OpenAIAdapter and OpenRouterAdapter — same SDK shape, just
+    different base URLs and provider names.
+    """
+    tool_map = request.tool_id_map if request.tool_id_map is not None else ToolIdMap()
+    wire_messages = _canonical_messages_to_openai(request.messages, request.system_prompt, tool_map)
+    wire_tools = [_tool_to_openai(t) for t in request.tools]
+
+    kwargs: dict = {
+        "model": wire_model,
+        "max_completion_tokens": request.max_output_tokens,
+        "messages": wire_messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if wire_tools:
+        kwargs["tools"] = wire_tools
+    if request.stop_sequences:
+        kwargs["stop"] = request.stop_sequences
+    if request.temperature is not None:
+        kwargs["temperature"] = request.temperature
+    if request.output_schema is not None:
+        kwargs["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "response",
+                "schema": request.output_schema,
+                "strict": True,
+            },
+        }
+
+    message_id = new_message_id()
+    accumulator = _OpenAIStreamAccumulator(message_id=message_id, tool_map=tool_map)
+    start = time.monotonic()
+
+    yield MessageStart(message_id=message_id, model=request.model)
+
+    try:
+        stream = await client.chat.completions.create(**kwargs)
+    except openai.APIStatusError as exc:
+        raise _on_translate_error(exc, request.request_id) from exc
+    except openai.APIConnectionError as exc:
+        raise NetworkError(
+            f"{provider_name} connection error: {exc}", request_id=request.request_id
+        ) from exc
+    except openai.APITimeoutError as exc:
+        raise NetworkError(
+            f"{provider_name} timeout: {exc}", request_id=request.request_id
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise NetworkError(f"http error: {exc}", request_id=request.request_id) from exc
+
+    async for chunk in stream:
+        for canonical_event in accumulator.consume(chunk):
+            yield canonical_event
+
+    latency_ms = int((time.monotonic() - start) * 1000)
+    yield MessageComplete(
+        message_id=message_id,
+        stop_reason=_stop_reason(accumulator.stop_reason),
+        final_content=accumulator.final_content(),
+        usage=accumulator.usage(),
+        latency_ms=latency_ms,
+    )
+
+
+class _OpenAIStreamAccumulator:
+    """Per-stream state for OpenAI-shape chunks.
+
+    OpenAI streams tool calls by index — first appearance has the id + name,
+    subsequent updates only contain argument fragments. We track per-index
+    state to emit the right canonical events.
+    """
+
+    def __init__(self, *, message_id: str, tool_map: ToolIdMap) -> None:
+        self.message_id = message_id
+        self.tool_map = tool_map
+        self.stop_reason: str | None = None
+        self._accumulated_text = ""
+        self._text_block_started = False
+        # Per-tool-call-index state.
+        self._tool_states: dict[int, dict] = {}
+        # Counter for content block indices. Text is always block 0 if present;
+        # tool calls are blocks 1..N (or 0..N-1 if no text).
+        self._next_block_index = 0
+        self._text_block_index: int | None = None
+        # Usage from the final chunk (when stream_options.include_usage=True).
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._cached_input_tokens = 0
+
+    def consume(self, chunk) -> list[StreamingEvent]:
+        emitted: list[StreamingEvent] = []
+        choices = getattr(chunk, "choices", None) or []
+        choice = choices[0] if choices else None
+
+        # Usage chunk: stream_options.include_usage=True sends a final chunk
+        # with no choices but a `usage` field.
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            self._input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+            self._output_tokens = getattr(usage, "completion_tokens", 0) or 0
+            details = getattr(usage, "prompt_tokens_details", None)
+            if details is not None:
+                self._cached_input_tokens = getattr(details, "cached_tokens", 0) or 0
+
+        if choice is None:
+            return emitted
+
+        # Capture finish_reason when set on this chunk.
+        finish = getattr(choice, "finish_reason", None)
+        if finish is not None:
+            self.stop_reason = finish
+
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            return emitted
+
+        # Text content.
+        content = getattr(delta, "content", None)
+        if isinstance(content, str) and content:
+            if not self._text_block_started:
+                self._text_block_index = self._next_block_index
+                self._next_block_index += 1
+                self._text_block_started = True
+            self._accumulated_text += content
+            emitted.append(
+                TextDelta(
+                    message_id=self.message_id,
+                    content_block_index=self._text_block_index or 0,
+                    text=content,
+                )
+            )
+
+        # Tool call deltas.
+        tool_calls = getattr(delta, "tool_calls", None) or []
+        for tc in tool_calls:
+            idx = getattr(tc, "index", None)
+            if idx is None:
+                continue
+            state = self._tool_states.get(idx)
+            tc_id = getattr(tc, "id", None)
+            fn = getattr(tc, "function", None)
+            fn_name = getattr(fn, "name", None) if fn is not None else None
+            fn_args = getattr(fn, "arguments", None) if fn is not None else None
+
+            if state is None:
+                # First time seeing this index: a new tool call begins.
+                block_index = self._next_block_index
+                self._next_block_index += 1
+                # Resolve / mint a canonical id.
+                provider_id = tc_id or ""
+                canonical_id = self.tool_map.to_canonical(provider_id) if provider_id else None
+                if canonical_id is None:
+                    canonical_id = new_tool_use_id()
+                    if provider_id:
+                        self.tool_map.remember(canonical_id, provider_id)
+                state = {
+                    "block_index": block_index,
+                    "canonical_id": canonical_id,
+                    "provider_id": provider_id,
+                    "name": fn_name or "",
+                    "args": "",
+                }
+                self._tool_states[idx] = state
+                emitted.append(
+                    ToolUseStart(
+                        message_id=self.message_id,
+                        content_block_index=block_index,
+                        tool_use_id=canonical_id,
+                        tool_name=state["name"],
+                    )
+                )
+            else:
+                # Continuation of a known tool call. Maybe a name update (rare)
+                # or just more arguments.
+                if fn_name and not state["name"]:
+                    state["name"] = fn_name
+
+            if fn_args:
+                state["args"] += fn_args
+                emitted.append(
+                    ToolUseInputDelta(
+                        message_id=self.message_id,
+                        content_block_index=state["block_index"],
+                        tool_use_id=state["canonical_id"],
+                        partial_json=fn_args,
+                    )
+                )
+
+        # finish_reason on this chunk means the message is complete; emit
+        # ToolUseEnd for each tool we collected (so consumers see end events
+        # in the right order).
+        if finish is not None and self._tool_states:
+            for state in sorted(self._tool_states.values(), key=lambda s: s["block_index"]):
+                try:
+                    final_input = json.loads(state["args"]) if state["args"] else {}
+                except json.JSONDecodeError:
+                    final_input = {}
+                state["final_input"] = final_input
+                emitted.append(
+                    ToolUseEnd(
+                        message_id=self.message_id,
+                        content_block_index=state["block_index"],
+                        tool_use_id=state["canonical_id"],
+                        final_input=final_input,
+                    )
+                )
+
+        return emitted
+
+    def final_content(self) -> list[ContentBlock]:
+        blocks: list[tuple[int, ContentBlock]] = []
+        if self._text_block_started and self._text_block_index is not None:
+            blocks.append((self._text_block_index, TextBlock(text=self._accumulated_text)))
+        for state in self._tool_states.values():
+            blocks.append(
+                (
+                    state["block_index"],
+                    ToolUseBlock(
+                        id=state["canonical_id"],
+                        name=state["name"],
+                        input=state.get("final_input", {}),
+                    ),
+                )
+            )
+        blocks.sort(key=lambda b: b[0])
+        return [b[1] for b in blocks]
+
+    def usage(self) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=self._input_tokens,
+            output_tokens=self._output_tokens,
+            cached_input_tokens=self._cached_input_tokens,
+            cache_creation_input_tokens=0,
+        )
 
 
 __all__ = ["OpenAIAdapter"]
