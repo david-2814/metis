@@ -1,0 +1,39 @@
+[project]
+name = "metis"
+version = "0.1.0"
+description = "Local-first AI agent server with provider-agnostic canonical message format."
+authors = [
+    { name = "David Ji", email = "david.ji.2814@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "msgspec>=0.19.0",
+    "python-ulid>=3.0.0",
+    "jsonschema>=4.23.0",
+    "anthropic>=0.40.0",
+    "httpx>=0.27.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.7.0",
+    "mypy>=1.13.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
