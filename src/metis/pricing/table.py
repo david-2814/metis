@@ -68,12 +68,26 @@ class PriceTable:
     def __contains__(self, model_id: object) -> bool:
         return model_id in self._models
 
+    def with_overlay(
+        self, *, overlay_version: str, overlay_models: dict[str, ModelPricing]
+    ) -> PriceTable:
+        """Return a new PriceTable with `overlay_models` merged in.
 
-# Default rates for the Claude 4.x line. Update when pricing changes — the
-# `version` string lets us walk historical traces and re-price as needed.
+        Used by adapters with dynamic pricing (e.g. OpenRouter fetches rates
+        at startup). The composed `version` string lets retroactive reprice
+        know which source/version was active when a cost was stamped.
+        """
+        merged = {**self._models, **overlay_models}
+        return PriceTable(version=f"{self._version}+{overlay_version}", models=merged)
+
+
+# Default rates for the Claude 4.x line and the GPT-5 line. Update when
+# pricing changes — the `version` string lets us walk historical traces and
+# re-price as needed.
 DEFAULT_PRICE_TABLE = PriceTable(
     version="2026-05-08",
     models={
+        # Anthropic
         "anthropic:claude-opus-4-7": ModelPricing(
             input_per_mtok=Decimal("15.00"),
             output_per_mtok=Decimal("75.00"),
@@ -91,6 +105,18 @@ DEFAULT_PRICE_TABLE = PriceTable(
             output_per_mtok=Decimal("5.00"),
             cached_read_per_mtok=Decimal("0.10"),
             cache_creation_per_mtok=Decimal("1.25"),
+        ),
+        # OpenAI — GPT-5 family. cache_creation_input_tokens is always 0 for
+        # OpenAI (their cache is provider-managed, not separately reported).
+        "openai:gpt-5": ModelPricing(
+            input_per_mtok=Decimal("2.50"),
+            output_per_mtok=Decimal("10.00"),
+            cached_read_per_mtok=Decimal("0.25"),
+        ),
+        "openai:gpt-5-mini": ModelPricing(
+            input_per_mtok=Decimal("0.50"),
+            output_per_mtok=Decimal("2.00"),
+            cached_read_per_mtok=Decimal("0.05"),
         ),
     },
 )

@@ -127,9 +127,13 @@ class SessionManager:
     # ---- Session lifecycle --------------------------------------------
 
     def create_session(self, *, workspace_path: str, active_model: str | None = None) -> Session:
-        session = self._store.create_session(
-            workspace_path=workspace_path, active_model=active_model
-        )
+        # Resolve aliases to canonical ids for consistency with set_active_model.
+        resolved: str | None = None
+        if active_model is not None:
+            resolved = self._registry.resolve_alias(active_model) or active_model
+            if not self._registry.is_configured(resolved):
+                raise UnknownAliasError(active_model)
+        session = self._store.create_session(workspace_path=workspace_path, active_model=resolved)
         self._tool_id_maps[session.id] = ToolIdMap()
         return session
 

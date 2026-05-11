@@ -164,7 +164,10 @@ class AnthropicAdapter:
     # ---- Single call --------------------------------------------------
 
     async def _call_once(self, request: CanonicalRequest) -> CanonicalResponse:
-        tool_map = request.tool_id_map or ToolIdMap()
+        # NOTE: `or ToolIdMap()` would break — ToolIdMap.__len__ makes an
+        # empty map falsy, so we'd silently allocate a new map and drop the
+        # caller's mutations on the floor.
+        tool_map = request.tool_id_map if request.tool_id_map is not None else ToolIdMap()
         anthropic_messages, system_text = _canonical_messages_to_anthropic(
             request.messages, request.system_prompt, tool_map
         )
