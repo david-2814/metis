@@ -9,7 +9,8 @@ from datetime import datetime
 from enum import StrEnum
 
 import msgspec
-from ulid import ULID
+
+from metis.canonical.ids import next_monotonic_ulid
 
 
 class Actor(StrEnum):
@@ -29,7 +30,7 @@ class Sensitivity(StrEnum):
 
 def new_event_id() -> str:
     """ULID, monotonic per process (see §4.2)."""
-    return str(ULID())
+    return str(next_monotonic_ulid())
 
 
 class Event(msgspec.Struct, frozen=True):
