@@ -36,6 +36,13 @@ class ModelEntry:
     adapter: ProviderAdapter
     capabilities: AdapterCapabilities
     aliases: tuple[str, ...] = field(default_factory=tuple)
+    task_profile: tuple[str, ...] = field(default_factory=tuple)
+    """Curated "what this model is good for" tags — short freeform strings
+    like ``"deep-reasoning"`` or ``"commits"``. These are *recommendations*,
+    not enforcement: routing rules (per `routing-engine.md §5`) are the
+    customization layer customers use to override them. See
+    `docs/standard-model-profiles.md` for the curated vocabulary and the
+    defaults shipped for known models."""
 
 
 class ModelRegistry:
@@ -51,6 +58,7 @@ class ModelRegistry:
         model_id: str,
         adapter: ProviderAdapter,
         aliases: list[str] | None = None,
+        task_profile: list[str] | None = None,
     ) -> ModelEntry:
         capabilities = adapter.capabilities_for(model_id)
         entry = ModelEntry(
@@ -58,6 +66,7 @@ class ModelRegistry:
             adapter=adapter,
             capabilities=capabilities,
             aliases=tuple(aliases or ()),
+            task_profile=tuple(task_profile or ()),
         )
         self._entries[model_id] = entry
         # The model id itself is its own alias.

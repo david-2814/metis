@@ -37,6 +37,7 @@ from starlette.websockets import WebSocket
 
 from metis.canonical.ids import new_message_id
 from metis.canonical.messages import Message
+from metis.cli.models_display import model_dict, resolve_models
 from metis.cli.runtime import ChatRuntime
 from metis.events.envelope import Actor
 from metis.events.payloads import SessionEnded, make_event
@@ -448,27 +449,62 @@ async def _list_messages(request: Request) -> Response:
 
 
 async def _list_models(request: Request) -> Response:
+    """GET /models — list registered models with capabilities + pricing.
+
+    Query params:
+      - ``primary_only=true``: collapse OpenRouter version siblings to one
+        latest entry per family (matches the TUI/CLI ``/models`` default).
+        Native ids are always kept. Default is the full list.
+      - ``pattern=<substring>``: case-insensitive substring filter applied
+        after the primary collapse (if both are set).
+    """
     st = _state(request)
     registry = st.runtime.registry
-    models = []
-    for model_id in registry.list_models():
-        entry = registry.get(model_id)
-        caps = entry.capabilities
-        models.append(
-            {
-                "id": model_id,
-                "adapter": registry.provider_of(model_id),
-                "aliases": list(entry.aliases),
-                "capabilities": {
-                    "supports_images": caps.supports_images,
-                    "supports_tools": caps.supports_tools,
-                    "max_context_tokens": caps.max_context_tokens,
-                    "max_output_tokens": caps.max_output_tokens,
-                },
-                "availability": "healthy",
-            }
+    pricing = st.runtime.pricing
+
+    primary_only = request.query_params.get("primary_only", "").lower() in ("1", "true", "yes")
+    pattern = request.query_params.get("pattern") or None
+
+    if primary_only and pattern:
+        # Apply primary collapse first, then pattern filter on the result.
+        ids, _total = resolve_models(registry=registry, mode="primary")
+        ids, _ = resolve_models(
+            registry=_StaticRegistryView(registry, ids),
+            mode="pattern",
+            pattern=pattern,
         )
+    elif primary_only:
+        ids, _total = resolve_models(registry=registry, mode="primary")
+    elif pattern:
+        ids, _total = resolve_models(registry=registry, mode="pattern", pattern=pattern)
+    else:
+        ids, _total = resolve_models(registry=registry, mode="all")
+
+    models = [model_dict(mid, registry=registry, pricing=pricing) for mid in ids]
     return _json({"models": models})
+
+
+class _StaticRegistryView:
+    """Adapter that lets ``resolve_models`` re-filter a pre-computed id set.
+
+    Used when the caller wants to compose `primary_only` + `pattern` — first
+    we collapse to primary, then we re-run `resolve_models(mode="pattern")`
+    against just that subset. The adapter satisfies the small `list_models`
+    interface `resolve_models` uses.
+    """
+
+    def __init__(self, base_registry, ids: list[str]) -> None:
+        self._base = base_registry
+        self._ids = list(ids)
+
+    def list_models(self) -> list[str]:
+        return list(self._ids)
+
+    def get(self, model_id: str):  # pragma: no cover — pass-through
+        return self._base.get(model_id)
+
+    def provider_of(self, model_id: str) -> str:  # pragma: no cover — pass-through
+        return self._base.provider_of(model_id)
 
 
 async def _stream(websocket: WebSocket) -> None:

@@ -19,7 +19,14 @@ from metis.adapters.streaming import (
     TextDelta,
     ToolUseStart,
 )
+from metis.cli.models_display import (
+    format_models_lines,
+    parse_models_command,
+    resolve_models,
+    truncation_hint,
+)
 from metis.cli.runtime import ChatRuntime, SetupError, setup_runtime, shutdown_runtime
+from metis.pricing.table import PriceTable
 from metis.routing import ModelRegistry
 from metis.routing.engine import RoutingError
 from metis.sessions import SessionManager, UnknownAliasError
@@ -93,7 +100,9 @@ async def run_chat(
             if text in ("exit", "quit"):
                 break
             if text.startswith("/"):
-                handled = await _handle_slash(text, manager, session, registry)
+                handled = await _handle_slash(
+                    text, manager, session, registry, runtime.pricing
+                )
                 if handled == "quit":
                     break
                 continue
@@ -167,6 +176,7 @@ async def _handle_slash(
     manager: SessionManager,
     session,
     registry: ModelRegistry,
+    pricing: PriceTable,
 ) -> str | None:
     parts = text.split(maxsplit=1)
     cmd = parts[0].lower()
@@ -175,13 +185,15 @@ async def _handle_slash(
     if cmd in ("/help", "/?"):
         print(
             "Commands:\n"
-            "  /model <alias|id>   set sticky model\n"
-            "  /model -            clear sticky (use defaults)\n"
-            "  /model show         print current sticky\n"
-            "  /cost               session cost so far\n"
-            "  /models             list configured models\n"
-            "  /help, /?           this list\n"
-            "  exit, quit, ^D      leave"
+            "  /model <alias|id>     set sticky model\n"
+            "  /model -              clear sticky (use defaults)\n"
+            "  /model show           print current sticky\n"
+            "  /models               list primary (latest) models\n"
+            "  /models all           list every registered model\n"
+            "  /models <pattern>     filter by substring (e.g. /models opus)\n"
+            "  /cost                 session cost so far\n"
+            "  /help, /?             this list\n"
+            "  exit, quit, ^D        leave"
         )
         return None
     if cmd == "/model":
@@ -199,10 +211,23 @@ async def _handle_slash(
             print(f"unknown model: {exc.alias}", file=sys.stderr)
         return None
     if cmd == "/models":
-        for model_id in registry.list_models():
-            entry = registry.get(model_id)
-            aliases = ", ".join(entry.aliases) or "—"
-            print(f"  {model_id}  (aliases: {aliases})")
+        mode, pattern = parse_models_command(arg)
+        displayed, total = resolve_models(
+            registry=registry,
+            mode=mode,
+            pattern=pattern,
+            always_include=session.active_model,
+        )
+        for line in format_models_lines(
+            displayed,
+            registry=registry,
+            pricing=pricing,
+            sticky_model=session.active_model,
+        ):
+            print(line)
+        hint = truncation_hint(displayed, total, mode=mode, pattern=pattern)
+        if hint:
+            print(hint)
         return None
     if cmd == "/cost":
         print(f"session cost so far: ${session.cost_so_far_usd:.4f} ({session.turn_count} turns)")

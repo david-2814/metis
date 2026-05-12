@@ -29,6 +29,7 @@ from metis.routing import (
     RoutingEngine,
     RoutingPolicy,
     load_policy_file,
+    standard_profile_for,
 )
 from metis.sessions import (
     SessionManager,
@@ -120,12 +121,22 @@ async def setup_runtime(
         anth = AnthropicAdapter(api_key=anthropic_key)
         adapters.append(anth)
         for model_id, aliases in ANTHROPIC_MODELS.items():
-            registry.register(model_id=model_id, adapter=anth, aliases=aliases)
+            registry.register(
+                model_id=model_id,
+                adapter=anth,
+                aliases=aliases,
+                task_profile=standard_profile_for(model_id),
+            )
     if openai_key:
         oai = OpenAIAdapter(api_key=openai_key)
         adapters.append(oai)
         for model_id, aliases in OPENAI_MODELS.items():
-            registry.register(model_id=model_id, adapter=oai, aliases=aliases)
+            registry.register(
+                model_id=model_id,
+                adapter=oai,
+                aliases=aliases,
+                task_profile=standard_profile_for(model_id),
+            )
     if openrouter_key:
         or_adapter = OpenRouterAdapter(
             api_key=openrouter_key, app_name="metis", http_referer="https://metis.local"
@@ -141,7 +152,18 @@ async def setup_runtime(
             )
         else:
             for model_id in sorted(catalog.capabilities.keys()):
-                registry.register(model_id=model_id, adapter=or_adapter, aliases=[])
+                aliases = _pick_auto_alias(model_id, registry)
+                # OpenRouter models start with no curated profile — customers
+                # tag them via routing rules. Known mirrors of native models
+                # (e.g. openrouter:anthropic/claude-opus-*) intentionally do
+                # NOT inherit the native profile here; the curated list is
+                # explicit, not pattern-matched.
+                registry.register(
+                    model_id=model_id,
+                    adapter=or_adapter,
+                    aliases=aliases,
+                    task_profile=standard_profile_for(model_id),
+                )
             if catalog.pricing:
                 pricing_table = pricing_table.with_overlay(
                     overlay_version=catalog.version,
@@ -243,6 +265,42 @@ def default_routing_policy_path() -> Path:
 def default_skills_dir() -> Path:
     """Global user-library skills directory (server-api.md §7.3)."""
     return Path.home() / ".metis" / "skills"
+
+
+def _auto_alias_candidates(model_id: str) -> list[str]:
+    """Generate short alias candidates derived from a canonical model id.
+
+    `openrouter:upstage/solar-pro-3` → ['solar-pro-3', 'upstage-solar-pro-3']
+    `anthropic:claude-sonnet-4-6`   → ['claude-sonnet-4-6']
+    `local-only-id`                 → []  (no `provider:` prefix → no candidates)
+
+    The trailing path is the most-ergonomic alias; the `provider-tail` form is
+    the fallback for collisions across providers that ship the same model name
+    (e.g. `openrouter:anthropic/claude-...` collides with the directly-registered
+    `anthropic:claude-...`). Forward slashes are flattened to hyphens so the
+    alias works as a single shell token.
+    """
+    if ":" not in model_id:
+        return []
+    _, tail = model_id.split(":", 1)
+    if "/" in tail:
+        provider, name = tail.split("/", 1)
+        short = name.replace("/", "-")
+        return [short, f"{provider}-{short}"]
+    return [tail]
+
+
+def _pick_auto_alias(model_id: str, registry: ModelRegistry) -> list[str]:
+    """Return the first non-colliding alias candidate, or `[]` if all are taken.
+
+    Collision check uses the registry's own alias index (which considers model
+    ids as their own aliases), so a candidate that matches an existing model id
+    is correctly rejected.
+    """
+    for candidate in _auto_alias_candidates(model_id):
+        if registry.resolve_alias(candidate) is None:
+            return [candidate]
+    return []
 
 
 def _load_routing_policy(

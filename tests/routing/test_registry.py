@@ -77,3 +77,30 @@ def test_list_models_sorted(registry: ModelRegistry):
     models = registry.list_models()
     assert models == sorted(models)
     assert "anthropic:claude-opus-4-7" in models
+
+
+# ---- task_profile ------------------------------------------------------
+
+
+def test_register_with_task_profile(caps_factory):
+    from tests.routing.conftest import StubAdapter
+
+    reg = ModelRegistry()
+    adapter = StubAdapter(caps_map={"anthropic:a": caps_factory()})
+    entry = reg.register(
+        model_id="anthropic:a",
+        adapter=adapter,
+        aliases=["x"],
+        task_profile=["deep-reasoning", "architecture"],
+    )
+    assert entry.task_profile == ("deep-reasoning", "architecture")
+    assert reg.get("anthropic:a").task_profile == ("deep-reasoning", "architecture")
+
+
+def test_register_without_task_profile_defaults_empty(caps_factory):
+    from tests.routing.conftest import StubAdapter
+
+    reg = ModelRegistry()
+    adapter = StubAdapter(caps_map={"anthropic:a": caps_factory()})
+    entry = reg.register(model_id="anthropic:a", adapter=adapter)
+    assert entry.task_profile == ()
