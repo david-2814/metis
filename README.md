@@ -2,7 +2,7 @@
 
 A local-first AI dev agent — provider-agnostic, self-improving, and cost-aware.
 
-> **Status:** Phase 1 prototype running. The `metis chat <workspace>` CLI drives a real Claude API loop end-to-end with tool use, cost tracking, and event tracing. 272 tests passing. Streaming, HTTP/WebSocket surface, and a Textual TUI are the remaining Phase 1 work.
+> **Status:** Phase 1 + early Phase 2 wedges shipped. Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, and SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), and `metis serve` (HTTP/WebSocket on loopback) all run. 544 tests passing. Configured routing rules, the tool-confirmation REST endpoint, and the pattern store are the next-up work.
 
 ---
 
@@ -81,22 +81,31 @@ Key design choices:
 - **Event bus + trace store.** Every meaningful action emits a structured event. Analytics, dashboards, and replay all consume the same stream.
 - **Cost-aware.** Tokens and USD tracked per turn, attributed to model and role (planner vs delegated worker), and visible in real time. Decimal math, no float drift.
 
-## What's working today (Phase 1 prototype)
+## What's working today
 
-- **Anthropic adapter.** Opus 4.7, Sonnet 4.6, Haiku 4.5 with full wire translation (system hoist, TOOL→tool_result merge), bounded retry with exponential backoff and `retry_after` honoring, and 8-class error classification.
-- **Five built-in tools.** `read_file`, `write_file`, `patch_file`, `list_dir`, `shell`. All workspace-scoped — `..` and out-of-root symlinks are rejected at the path-resolution layer.
-- **Routing engine.** Per-message `@alias` overrides, `/model` sticky, capability validation (vision / context-window / tools / system-prompt / structured-output), per-provider availability tracking. Exactly one `route.decided` event per turn including the full chain trace.
-- **Event bus + SQLite trace store.** WAL mode + `synchronous=NORMAL` for sub-millisecond fast-path writes. Replay queries, causal-chain walks, per-session isolation.
-- **Cost in real time.** Per-turn input/output/cached token costs computed by core (not parroted from provider), versioned for retroactive re-pricing.
-- **272 tests** covering canonical round-trips, JSON Schema subset enforcement, role-content invariants, event catalog membership, bus dispatch and filtering, workspace escape rejection, dispatcher flow + confirmation, adapter wire translation + error classification + retry + cancellation, routing chain with all 7 slots, end-to-end session manager turn loop.
+- **Three provider adapters.** Anthropic (Opus 4.7, Sonnet 4.6, Haiku 4.5), OpenAI (GPT-5, GPT-5-mini), and OpenRouter (catalog fetched at startup, pricing overlaid). Each implements wire translation, 8-class error classification, bounded retry with `retry_after` honoring, cancellation, per-model `AdapterCapabilities`, and `stream()` returning canonical streaming events. Cross-provider continuity is verified by a real-API smoke test that mid-session switches Anthropic→OpenAI→OpenRouter with tool-use round-trip.
+- **Streaming end-to-end.** Adapter `stream()` → `SessionManager` streaming event handler → both CLI live-render and WebSocket clients. Text deltas, tool-use start/input-delta/end, and message-complete events flow through.
+- **Five built-in tools + three memory tools.** `read_file`, `write_file`, `patch_file`, `list_dir`, `shell` (all workspace-scoped, `..` and out-of-root symlinks rejected). Plus `memory_add`, `memory_replace`, `memory_consolidate` for bounded memory mutation.
+- **Bounded memory.** Per-workspace `MEMORY.md` (~2 KB soft, 4 KB hard) and `USER.md` (~1.5 KB soft, 3 KB hard) under `.metis/`. Soft cap fires `memory.eviction`; hard cap rejects the write so the agent has to consolidate. The agent reads memory fresh from disk on every LLM call (composed into the system prompt). See [`docs/specs/memory-store.md`](docs/specs/memory-store.md).
+- **Session manager.** Turn-locked streaming loop, multi-call within a turn, tool cycle wiring, cost stamping, full event emission, parent-event-id chains.
+- **Routing engine.** Per-message `@alias` overrides, `/model` sticky, capability validation (vision / context-window / tools / system-prompt / structured-output), per-provider availability tracking. Exactly one `route.decided` event per turn including the full chain trace. Configured-rule (yaml policy) parsing has landed; integration into the chain is in flight.
+- **Event bus + SQLite trace store + SQLite session store.** WAL + `synchronous=NORMAL` for sub-millisecond fast-path writes. Replay queries, causal-chain walks, per-session isolation. Messages and sessions persist; restart preserves conversation history.
+- **HTTP/WebSocket server.** Starlette + uvicorn ASGI app. REST for sessions/turns/messages/models/health; WebSocket `/sessions/{id}/stream` with single-use attach tokens, snapshot+live replay, filter presets, cancel-via-WS, ping/pong. Loopback-only bind in v1.
+- **Three client surfaces.** `metis chat` (line REPL), `metis tui` (Textual app), `metis serve` (HTTP/WS server for external clients). Slash commands `/model`, `/cost`, `/models`, `/help`. Per-message `@alias` syntax.
+- **Cost in real time.** Per-turn input/output/cached token costs computed by core (not parroted from provider), `Decimal` math, versioned for retroactive re-pricing. OpenRouter prices overlaid at session start.
+- **544 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations.
 
-## What's not built yet (the rest of Phase 1)
+## What's NOT built yet (next-up)
 
-- **Streaming.** The adapter returns the whole response at once; tool-use turns feel like 2 batches rather than a live stream. The streaming-event layer per `streaming-protocol.md §5` is spec'd but unimplemented.
-- **HTTP / WebSocket surface.** `server-api.md` and the attach handshake are spec'd; the CLI currently calls `SessionManager` in-process.
-- **Textual TUI.** Only the line-based REPL exists.
-- **Configured routing rules.** The yaml policy format is spec'd in `routing-engine.md §5` but the parser arrives in Phase 2.
-- **Session message persistence.** Trace events persist; the canonical messages/tool_calls tables per `canonical-message-format.md §9.1` are not built. Restart loses conversation history but not the event trail.
+- **Configured routing rules in the chain.** The yaml parser, predicate set, and rule loader are in [`src/metis/routing/`](src/metis/routing/) (`policy.py`, `policy_loader.py`, `predicates.py`); the `rule` slot in `route.decided.chain` still reports `not_applicable` until the wiring is finished.
+- **Skills.** `src/metis/skills/` has a store and a `load_skill` tool with `skill.loaded` events emitting. Full agentskills.io conformance, FTS5 indexing, and auto-generation are still phase-2 work.
+- **Tool-confirmation REST endpoint.** [`server-api.md §4.2`](docs/specs/server-api.md) specs `POST /turns/{id}/confirmations/{request_id}`; it isn't wired. The dispatcher uses `AutoAllowHandler` (auto-approves everything; safe for single-user, not for shared).
+- **Pattern store + learned routing.** Phase 2.5.
+- **Delegation (`delegate()` tool).** Phase 4. The routing chain has a `DELEGATE_REQUEST` stub.
+- **Worker sessions** (`include_worker_sessions` accepted by the WS filter but no workers exist yet).
+- **Routing policy hot-reload + version surfacing** (`GET /sessions/{id}` returns `routing_policy_version: null`).
+
+See [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) for spec/impl gaps that are tracked but not yet fixed.
 
 ## Roadmap
 
@@ -112,18 +121,28 @@ Key design choices:
 
 ## Documentation
 
-The design is fully specified. Start here:
+The design is specified before code lands. Start here:
 
-- [docs/project-overview.md](docs/project-overview.md) — vision, principles, architecture, phasing
+**Project context** (read these first if you're new):
+
+- [AGENTS.md](AGENTS.md) — current state of the codebase, conventions, gotchas. Load-bearing for AI agents.
+- [docs/STRATEGY.md](docs/STRATEGY.md) — the *why*: cost-optimization thesis, buyer ≠ user, three cost levers, open strategic questions.
+- [docs/project-overview.md](docs/project-overview.md) — vision, principles, architecture, phasing.
+- [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) — spec/impl gaps tracked from prior reviews; the watchlist of "looks fine but is subtly wrong."
+
+**Component specs** (the contracts):
+
 - [docs/specs/canonical-message-format.md](docs/specs/canonical-message-format.md) — the load-bearing data contract
 - [docs/specs/event-bus-and-trace-catalog.md](docs/specs/event-bus-and-trace-catalog.md) — observability spine + closed event-type catalog
 - [docs/specs/routing-engine.md](docs/specs/routing-engine.md) — model selection, rules, delegation
 - [docs/specs/provider-adapter-contract.md](docs/specs/provider-adapter-contract.md) — adapter interface, wire translation, retry, errors
 - [docs/specs/tool-dispatcher.md](docs/specs/tool-dispatcher.md) — tool registry, side-effect classification, confirmation
-- [docs/specs/streaming-protocol.md](docs/specs/streaming-protocol.md) — WebSocket protocol for clients (planned)
-- [docs/specs/server-api.md](docs/specs/server-api.md) — REST endpoints (planned)
+- [docs/specs/streaming-protocol.md](docs/specs/streaming-protocol.md) — WebSocket protocol for clients
+- [docs/specs/server-api.md](docs/specs/server-api.md) — REST endpoints, attach handshake, session lifecycle
+- [docs/specs/memory-store.md](docs/specs/memory-store.md) — bounded MEMORY.md / USER.md schema and tools
 - [docs/specs/CHANGES.md](docs/specs/CHANGES.md) — cross-spec change log
-- [AGENTS.md](AGENTS.md) — context for AI agents (Claude Code, Cursor, etc.) working in this repo
+
+**Market context:** [docs/market-research/synthesis.md](docs/market-research/synthesis.md) and the four per-stream reports.
 
 ## License
 

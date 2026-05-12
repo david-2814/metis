@@ -128,8 +128,22 @@ Followup to the cross-spec sweep — five small but real defects caught in revie
 
 ---
 
+### 2026-05-12 — Implementation milestone + doc refresh
+
+Not a spec change; an alignment pass between the docs and what's actually been built.
+
+- **Files touched:** `README.md`, `docs/project-overview.md`, `docs/specs/project-overview.md`, new `docs/STRATEGY.md`, new `docs/KNOWN_ISSUES.md`, new `docs/specs/memory-store.md`.
+- **What landed in code since the last doc refresh:** three provider adapters (Anthropic / OpenAI / OpenRouter), streaming end-to-end (adapter → session manager → CLI + WebSocket), Textual TUI, HTTP/WebSocket server (`metis serve`, loopback-only), SQLite session/message persistence, bounded memory (MEMORY.md / USER.md + 3 tools), skills store + `load_skill` tool, configured-rule parser (yaml policy + predicate set + loader; integration into routing chain pending), cross-provider conformance suite. Test count went from 272 → 592.
+- **Spec-list status changes:** `memory-store.md` moved from "planned" to "drafted (v1)." `skill-format.md` and `pattern-store.md` remain planned.
+- **New strategy artifacts:** `docs/STRATEGY.md` captures the cost-optimization thesis, buyer ≠ user framing, three cost levers (skills / context / model selection), and the open replacement-agent-vs-gateway question. `docs/KNOWN_ISSUES.md` tracks carryover review findings (spec promises not yet honored by code).
+- **References to verify:** none in specs proper.
+- **Status:** doc-only update.
+
+---
+
 ## Pending cross-references
 
 When you land a spec change, move it from "pending review" up here for visibility, then back to "verified" when the dependent spec is updated.
 
 - `skill-format.md` (planned) — `skill.loaded.source` field added 2026-05-12 should be documented when this spec lands.
+- `pattern-store.md` (planned) — `routing-engine.md §5.5` references the pattern store's K-nearest aggregation and `cost_weight`; when the pattern-store spec lands, cross-check that the math and config knobs match.

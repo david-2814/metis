@@ -1,5 +1,9 @@
 # Project Overview
 
+> **Working context first.** Before reading this doc, AI agents working in the repo should read [`AGENTS.md`](../../AGENTS.md) for current implementation state and conventions, and [`docs/STRATEGY.md`](../STRATEGY.md) for the *why* — the cost-optimization thesis, B2B framing, and open strategic questions that aren't visible from the code. Spec/impl gaps are tracked in [`docs/KNOWN_ISSUES.md`](../KNOWN_ISSUES.md).
+>
+> This doc describes the *shape* of the system (vision, principles, architecture, phasing). It is not the current build status — see AGENTS.md for that.
+
 ## What we're building
 
 A local-first AI agent tool that sits between Claude Desktop and Cursor in capability — a developer-oriented assistant that gets more useful the longer it runs, with first-class support for switching between LLM providers, learning from past tasks, and operating on real workspaces.
@@ -158,13 +162,13 @@ Both reach attached WebSocket clients through the streaming server, which wraps 
 
 ## Phasing summary
 
-| Phase | Duration target | Headline deliverable |
-|-------|-----------------|----------------------|
-| **1. Core loop** | weeks 1–4 (full-time) | Two providers, canonical format, event bus, file/shell tools, basic TUI, manual routing. Daily-driver for you. |
-| **2. Skills, memory, dashboard** | weeks 5–8 | Hand-written skills, bounded memory, web dashboard, explicit feedback, configured routing rules. |
-| **2.5. Pattern learning** | weeks 9–10 | Fingerprints, cold-start suggestions, skill auto-generation with security scanner. |
-| **3. Polish + sync** | weeks 11–14 | In-session adjustment heuristics, full evaluator, MCP support, git sync, third provider. |
-| **4. Tauri + reveal** | weeks 15+ | Desktop app, public-ready UX, marketplace foundation. |
+| Phase | Duration target | Headline deliverable | Status (2026-05-12) |
+|-------|-----------------|----------------------|---------------------|
+| **1. Core loop** | weeks 1–4 (full-time) | Two providers, canonical format, event bus, file/shell tools, basic TUI, manual routing. Daily-driver. | **shipped.** Three providers (Anthropic / OpenAI / OpenRouter); streaming; CLI + TUI + HTTP/WS server; SQLite persistence; 544 tests. |
+| **2. Skills, memory, dashboard** | weeks 5–8 | Hand-written skills, bounded memory, web dashboard, explicit feedback, configured routing rules. | **partially shipped.** Bounded memory + 3 memory tools shipped; skills store + `load_skill` tool wired; configured-rule parser landed; rule integration into the chain and dashboard pending. |
+| **2.5. Pattern learning** | weeks 9–10 | Fingerprints, cold-start suggestions, skill auto-generation with security scanner. | not started. |
+| **3. Polish + sync** | weeks 11–14 | In-session adjustment heuristics, full evaluator, MCP support, git sync, third provider. | not started. |
+| **4. Tauri + reveal** | weeks 15+ | Desktop app, public-ready UX, marketplace foundation. | not started. |
 
 (Calendar time roughly doubles at part-time pace.)
 
@@ -177,6 +181,13 @@ Both reach attached WebSocket clients through the streaming server, which wraps 
 - **`docs/specs/provider-adapter-contract.md`** — Drafted (v1.1). Adapter interface, wire-format translation per provider, streaming normalization, error classification, cost reporting.
 - **`docs/specs/tool-dispatcher.md`** — Drafted (v1.1). Tool registry, dispatch flow, side-effect classification, confirmation policy, JSON Schema validation.
 - **`docs/specs/server-api.md`** — Drafted (v1.1). REST endpoints, attach handshake, session lifecycle, message pagination, confirmation responses.
+- **`docs/specs/memory-store.md`** — Drafted (v1, 2026-05-12). Bounded MEMORY.md / USER.md schema, caps, tools, events.
 - **`docs/specs/CHANGES.md`** — Drafted. Cross-spec drift log, dependency map, change history.
-- **`docs/specs/skill-format.md`** — Planned (before Phase 2). Frontmatter schema, on-disk layout, security-scanner contract.
-- *(planned, later phases)* `memory-store.md`, `pattern-store.md`, `evaluator.md`.
+- **`docs/specs/skill-format.md`** — Planned (before full Phase 2 ship). Frontmatter schema, on-disk layout, security-scanner contract.
+- *(planned, later phases)* `pattern-store.md`, `evaluator.md`.
+
+**Strategy and ops:**
+
+- [`docs/STRATEGY.md`](../STRATEGY.md) — Cost-optimization thesis, buyer ≠ user, three cost levers, open strategic questions.
+- [`docs/KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — Spec/impl carryover findings.
+- [`AGENTS.md`](../../AGENTS.md) — Current implementation state, conventions, gotchas.

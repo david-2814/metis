@@ -1,5 +1,9 @@
 # Project Overview
 
+> **Working context first.** Before reading this doc, AI agents working in the repo should read [AGENTS.md](../AGENTS.md) for current implementation state and conventions, and [docs/STRATEGY.md](STRATEGY.md) for the *why* — the cost-optimization thesis, B2B framing, and open strategic questions that aren't visible from the code. Spec/impl gaps are tracked in [docs/KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+>
+> This doc describes the *shape* of the system (vision, principles, architecture, phasing). It is not the current build status — see AGENTS.md for that.
+
 ## What we're building
 
 A local-first AI agent tool that sits between Claude Desktop and Cursor in capability — a developer-oriented assistant that gets more useful the longer it runs, with first-class support for switching between LLM providers, learning from past tasks, and operating on real workspaces.
@@ -138,20 +142,35 @@ A local-first AI agent tool that sits between Claude Desktop and Cursor in capab
 
 ## Phasing summary
 
-| Phase | Duration target | Headline deliverable |
-|-------|-----------------|----------------------|
-| **1. Core loop** | weeks 1–4 (full-time) | Two providers, canonical format, event bus, file/shell tools, basic TUI, manual routing. Daily-driver for you. |
-| **2. Skills, memory, dashboard** | weeks 5–8 | Hand-written skills, bounded memory, web dashboard, explicit feedback, configured routing rules. |
-| **2.5. Pattern learning** | weeks 9–10 | Fingerprints, cold-start suggestions, skill auto-generation with security scanner. |
-| **3. Polish + sync** | weeks 11–14 | In-session adjustment heuristics, full evaluator, MCP support, git sync, third provider. |
-| **4. Tauri + reveal** | weeks 15+ | Desktop app, public-ready UX, marketplace foundation. |
+| Phase | Duration target | Headline deliverable | Status (2026-05-12) |
+|-------|-----------------|----------------------|---------------------|
+| **1. Core loop** | weeks 1–4 (full-time) | Two providers, canonical format, event bus, file/shell tools, basic TUI, manual routing. Daily-driver. | **shipped.** Three providers (Anthropic / OpenAI / OpenRouter); streaming; CLI + TUI + HTTP/WS server; SQLite persistence; 544 tests. |
+| **2. Skills, memory, dashboard** | weeks 5–8 | Hand-written skills, bounded memory, web dashboard, explicit feedback, configured routing rules. | **partially shipped.** Bounded memory + 3 memory tools shipped; skills store + `load_skill` tool wired; configured-rule parser landed; rule integration into the chain and dashboard pending. |
+| **2.5. Pattern learning** | weeks 9–10 | Fingerprints, cold-start suggestions, skill auto-generation with security scanner. | not started. |
+| **3. Polish + sync** | weeks 11–14 | In-session adjustment heuristics, full evaluator, MCP support, git sync, third provider. | not started. |
+| **4. Tauri + reveal** | weeks 15+ | Desktop app, public-ready UX, marketplace foundation. | not started. |
 
 (Calendar time roughly doubles at part-time pace.)
 
 ## Specs and documents
 
-- **`docs/specs/canonical-message-format.md`** — Drafted. Defines messages, content blocks, tool calls, metadata, persistence, versioning, testing.
-- **`docs/specs/event-bus-and-trace-catalog.md`** — Planned next. Defines event bus interface, persistence guarantees, full event-type catalog with payload schemas.
-- **`docs/specs/streaming-protocol.md`** — Planned. WebSocket events, reconnection, cancellation, partial-input handling.
-- **`docs/specs/routing-engine.md`** — Planned. Pipeline shape, configured-rule format, pattern integration, delegation semantics.
-- **`docs/specs/skill-format.md`** — Planned (before week 4). Frontmatter schema, on-disk layout, security-scanner contract.
+**Strategy and ops:**
+
+- [`docs/STRATEGY.md`](STRATEGY.md) — Cost-optimization thesis, buyer ≠ user, three cost levers (skills / context / model selection), open strategic questions.
+- [`docs/KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — Carryover review findings; spec promises the code doesn't yet honor.
+- [`AGENTS.md`](../AGENTS.md) — Current implementation state, conventions, gotchas. Read first.
+
+**Component specs:**
+
+- [`docs/specs/canonical-message-format.md`](specs/canonical-message-format.md) — Drafted. Messages, content blocks, tool calls, metadata, persistence, versioning.
+- [`docs/specs/event-bus-and-trace-catalog.md`](specs/event-bus-and-trace-catalog.md) — Drafted. Event bus interface, full event-type catalog with payload schemas.
+- [`docs/specs/streaming-protocol.md`](specs/streaming-protocol.md) — Drafted. WebSocket protocol, snapshot/replay, three cancellation cases.
+- [`docs/specs/routing-engine.md`](specs/routing-engine.md) — Drafted. Policy chain, configured-rule format, capability validation, `delegate()` contract.
+- [`docs/specs/provider-adapter-contract.md`](specs/provider-adapter-contract.md) — Drafted. Adapter interface, wire translation, error classification.
+- [`docs/specs/tool-dispatcher.md`](specs/tool-dispatcher.md) — Drafted. Registry, dispatch, side-effect classification, confirmation policy.
+- [`docs/specs/server-api.md`](specs/server-api.md) — Drafted. REST endpoints, attach handshake, session lifecycle.
+- [`docs/specs/memory-store.md`](specs/memory-store.md) — Drafted. Bounded MEMORY.md / USER.md schema and tools.
+- [`docs/specs/CHANGES.md`](specs/CHANGES.md) — Cross-spec change log.
+- *(planned)* `skill-format.md`, `pattern-store.md`, `evaluator.md`.
+
+**Market context:** [`docs/market-research/synthesis.md`](market-research/synthesis.md) and four per-stream reports.
