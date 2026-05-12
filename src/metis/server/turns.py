@@ -12,6 +12,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+from metis.server.hub import StreamingHub
 from metis.sessions.manager import SessionManager, TurnResult
 
 logger = logging.getLogger(__name__)
@@ -29,8 +30,9 @@ class TurnExecutor:
     session. Cancellation propagates by cancelling the task — the session
     manager catches asyncio.CancelledError and emits `turn.cancelled`."""
 
-    def __init__(self, manager: SessionManager) -> None:
+    def __init__(self, manager: SessionManager, hub: StreamingHub | None = None) -> None:
         self._manager = manager
+        self._hub = hub
         self._in_flight: dict[str, InFlightTurn] = {}
 
     def has_in_flight(self, session_id: str) -> bool:
@@ -51,9 +53,19 @@ class TurnExecutor:
 
         placeholder_turn_id = str(ULID())
 
+        hub = self._hub
+
+        def on_event(event) -> None:
+            if hub is not None:
+                hub.publish(session_id, event)
+
         async def runner() -> TurnResult:
             try:
-                return await self._manager.submit_turn(session_id, user_text)
+                return await self._manager.submit_turn(
+                    session_id,
+                    user_text,
+                    on_streaming_event=on_event,
+                )
             finally:
                 # Always clear in-flight tracking — successful or not.
                 if self._in_flight.get(session_id, None) is not None:

@@ -24,6 +24,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from metis.canonical.messages import Message
 from metis.events.bus import EventBus, EventFilter, Subscription
 from metis.events.envelope import Actor, Event
+from metis.server.hub import StreamingHub
 from metis.sessions.store import Session, SessionStore
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ class _Subscribed:
     filter: EventFilter
     snapshot: bool
     since: str | None
+    streaming_event_types: frozenset[str] | None  # None means accept all streaming types
 
 
 class StreamingConnection:
@@ -83,14 +85,19 @@ class StreamingConnection:
         session_id: str,
         bus: EventBus,
         session_store: SessionStore,
+        hub: StreamingHub | None = None,
     ) -> None:
         self._ws = websocket
         self._session_id = session_id
         self._bus = bus
         self._store = session_store
+        self._hub = hub
         self._outbound: asyncio.Queue[dict] = asyncio.Queue(maxsize=OUTBOUND_QUEUE_SIZE)
         self._closed = False
         self._subscription_handle = None
+        self._hub_unsubscribe = None
+        self._streaming_types_filter: frozenset[str] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._cancel_callback = None  # set by the app to bridge to TurnExecutor
 
     def on_cancel(self, callback) -> None:
@@ -103,6 +110,7 @@ class StreamingConnection:
     async def run(self) -> None:
         """Drive the full lifecycle. Returns when the connection closes."""
         await self._ws.accept()
+        self._loop = asyncio.get_running_loop()
         try:
             first = await _recv_json(self._ws)
         except WebSocketDisconnect:
@@ -127,6 +135,8 @@ class StreamingConnection:
             await self._ws.close(code=1008)
             return
 
+        self._streaming_types_filter = subscribed.streaming_event_types
+
         # Wire the bus subscription BEFORE sending snapshot so no events are
         # lost between snapshot and live streaming.
         self._subscription_handle = self._bus.subscribe(
@@ -137,6 +147,12 @@ class StreamingConnection:
                 fast_path=False,
             )
         )
+
+        # Subscribe to streaming-only events from the hub.
+        if self._hub is not None:
+            self._hub_unsubscribe = self._hub.subscribe(
+                self._session_id, self._enqueue_streaming_frame
+            )
 
         await self._send(
             {
@@ -208,10 +224,17 @@ class StreamingConnection:
             event_types=bus_event_types,
             actors=actors,
         )
+        if event_types is None:
+            streaming_filter: frozenset[str] | None = None
+        else:
+            streaming_filter = frozenset(
+                t for t in event_types if t in _STREAMING_ONLY_TYPES
+            )
         return _Subscribed(
             filter=flt,
             snapshot=bool(frame.get("snapshot", False)),
             since=frame.get("since"),
+            streaming_event_types=streaming_filter,
         )
 
     async def _send_snapshot(self, session: Session) -> None:
@@ -239,6 +262,27 @@ class StreamingConnection:
         except asyncio.QueueFull:
             logger.warning(
                 "outbound queue overflow for session %s; closing", self._session_id
+            )
+            try:
+                self._outbound.put_nowait({"type": "_close", "code": 1008})
+            except asyncio.QueueFull:
+                pass
+
+    def _enqueue_streaming_frame(self, frame: dict) -> None:
+        """Hub subscriber. Called synchronously from `on_streaming_event`
+        on the same loop as the turn task; safe to call put_nowait."""
+        event_type = frame.get("event", {}).get("type")
+        if (
+            self._streaming_types_filter is not None
+            and event_type not in self._streaming_types_filter
+        ):
+            return
+        try:
+            self._outbound.put_nowait(frame)
+        except asyncio.QueueFull:
+            logger.warning(
+                "outbound streaming queue overflow for session %s; closing",
+                self._session_id,
             )
             try:
                 self._outbound.put_nowait({"type": "_close", "code": 1008})
@@ -294,6 +338,11 @@ class StreamingConnection:
         if self._subscription_handle is not None:
             try:
                 self._bus.unsubscribe(self._subscription_handle)
+            except Exception:
+                pass
+        if self._hub_unsubscribe is not None:
+            try:
+                self._hub_unsubscribe()
             except Exception:
                 pass
         try:

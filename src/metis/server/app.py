@@ -50,6 +50,7 @@ from metis.server.errors import (
     turn_not_found,
     workspace_not_found,
 )
+from metis.server.hub import StreamingHub
 from metis.server.streaming import StreamingConnection
 from metis.server.tokens import AttachTokenRegistry
 from metis.server.turns import TurnExecutor
@@ -71,16 +72,19 @@ class ServerConfig:
 class _AppState:
     runtime: ChatRuntime
     tokens: AttachTokenRegistry
+    hub: StreamingHub
     executor: TurnExecutor
     started_at: datetime
 
 
 def build_app(runtime: ChatRuntime) -> Starlette:
     """Build a Starlette app bound to a fully-wired runtime."""
+    hub = StreamingHub()
     state = _AppState(
         runtime=runtime,
         tokens=AttachTokenRegistry(),
-        executor=TurnExecutor(runtime.manager),
+        hub=hub,
+        executor=TurnExecutor(runtime.manager, hub=hub),
         started_at=datetime.now(UTC),
     )
 
@@ -417,6 +421,7 @@ async def _stream(websocket: WebSocket) -> None:
         session_id=sid,
         bus=st.runtime.bus,
         session_store=st.runtime.session_store,
+        hub=st.hub,
     )
     conn.on_cancel(lambda s, t, r: st.executor.cancel(s, t))
     await conn.run()
