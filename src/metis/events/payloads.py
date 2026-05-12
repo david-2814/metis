@@ -250,6 +250,29 @@ class RoutingProviderRecovered(msgspec.Struct, frozen=True):
     downtime_seconds: float
 
 
+# --- §6.7 Memory domain -----------------------------------------------------
+
+
+MemoryFileLiteral = Literal["MEMORY.md", "USER.md"]
+
+
+class MemoryUpdated(msgspec.Struct, frozen=True):
+    file: MemoryFileLiteral
+    operation: Literal["add", "replace", "consolidate"]
+    before_hash: str
+    after_hash: str
+    before_size_bytes: int
+    after_size_bytes: int
+
+
+class MemoryEviction(msgspec.Struct, frozen=True):
+    file: MemoryFileLiteral
+    trigger: Literal["size_cap_exceeded", "manual"]
+    entries_evicted: int
+    size_before_bytes: int
+    size_after_bytes: int
+
+
 # --- §6.10 Bus meta-events --------------------------------------------------
 
 
@@ -299,6 +322,9 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     "routing.policy_invalid": (RoutingPolicyInvalid, Sensitivity.PSEUDONYMOUS),
     "routing.provider_unavailable": (RoutingProviderUnavailable, Sensitivity.PSEUDONYMOUS),
     "routing.provider_recovered": (RoutingProviderRecovered, Sensitivity.PSEUDONYMOUS),
+    # memory (Phase 2)
+    "memory.updated": (MemoryUpdated, Sensitivity.PRIVATE),
+    "memory.eviction": (MemoryEviction, Sensitivity.PRIVATE),
     # bus
     "bus.subscriber_registered": (BusSubscriberRegistered, Sensitivity.PSEUDONYMOUS),
     "bus.subscriber_unregistered": (BusSubscriberUnregistered, Sensitivity.PSEUDONYMOUS),

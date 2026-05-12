@@ -134,6 +134,7 @@ class ToolDispatcher:
         turn_id: str,
         workspace_path: str,
         parent_event_id: str | None = None,
+        memory: object | None = None,
     ) -> ToolResultBlock:
         """Run a tool_use end-to-end. Always returns a ToolResultBlock; never
         raises for tool failures (errors come back as is_error result blocks).
@@ -240,6 +241,7 @@ class ToolDispatcher:
             tool_use_id=tool_use.id,
             workspace_path=workspace_path,
             workspace_files=workspace,  # type: ignore[arg-type]
+            memory=memory,
         )
         in_flight = _InFlight(tool=tool, context=context)
         self._in_flight.setdefault(session_id, []).append(in_flight)

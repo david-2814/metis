@@ -18,6 +18,7 @@ from metis.adapters.openai import OpenAIAdapter
 from metis.adapters.openrouter import OpenRouterAdapter
 from metis.adapters.protocol import ProviderAdapter
 from metis.events.bus import EventBus
+from metis.memory import MemoryStore, register_memory_tools
 from metis.pricing import DEFAULT_PRICE_TABLE, PriceTable
 from metis.routing import ModelRegistry, RoutingEngine
 from metis.sessions import (
@@ -143,6 +144,7 @@ async def setup_runtime(
     routing = RoutingEngine(registry=registry, bus=bus)
     dispatcher = ToolDispatcher(bus)
     register_builtins(dispatcher)
+    register_memory_tools(dispatcher)
 
     manager = SessionManager(
         registry=registry,
@@ -152,6 +154,7 @@ async def setup_runtime(
         store=session_store,
         pricing=pricing_table,
         global_default_model=global_default_model,
+        memory_factory=lambda ws: MemoryStore(ws),
     )
 
     return ChatRuntime(

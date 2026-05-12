@@ -51,11 +51,14 @@ from metis.events.payloads import (
     LLMCallCompleted,
     LLMCallFailed,
     LLMCallStarted,
+    MemoryEviction,
+    MemoryUpdated,
     TurnCancelled,
     TurnCompleted,
     TurnStarted,
     make_event,
 )
+from metis.memory.store import MemoryStore
 from metis.pricing import PriceTable
 from metis.routing import (
     ModelRegistry,
@@ -121,6 +124,7 @@ class SessionManager:
         global_default_model: str = "anthropic:claude-sonnet-4-6",
         workspace_default_model: str | None = None,
         max_output_tokens: int = 4096,
+        memory_factory: Callable[[str], MemoryStore] | None = None,
     ) -> None:
         self._registry = registry
         self._routing = routing
@@ -134,6 +138,10 @@ class SessionManager:
         self._max_output_tokens = max_output_tokens
         # Per-session bidirectional tool id maps (canonical-format §6.2).
         self._tool_id_maps: dict[str, ToolIdMap] = {}
+        # Per-session memory stores (Phase 2 bounded MEMORY.md / USER.md).
+        # None means the session has no memory; the memory tools will refuse.
+        self._memory_factory = memory_factory
+        self._memory_stores: dict[str, MemoryStore | None] = {}
 
     # ---- Session lifecycle --------------------------------------------
 
@@ -146,7 +154,15 @@ class SessionManager:
                 raise UnknownAliasError(active_model)
         session = self._store.create_session(workspace_path=workspace_path, active_model=resolved)
         self._tool_id_maps[session.id] = ToolIdMap()
+        if self._memory_factory is not None:
+            self._memory_stores[session.id] = self._memory_factory(workspace_path)
+        else:
+            self._memory_stores[session.id] = None
         return session
+
+    def memory_for(self, session_id: str) -> MemoryStore | None:
+        """Return the per-session memory store, if memory is configured."""
+        return self._memory_stores.get(session_id)
 
     def set_active_model(self, session_id: str, model: str | None) -> None:
         """Apply a /model command. `None` clears the sticky."""
@@ -234,20 +250,30 @@ class SessionManager:
         last_assistant_text = ""
         parent_event_id = turn_started_event
 
+        memory = self._memory_stores.get(session_id)
+
         try:
             while True:
                 history = self._store.get_messages(session_id)
+                # Compose system prompt fresh each LLM call so mid-turn
+                # memory writes (from a tool) are reflected in the next call.
+                turn_memory = self._memory_stores.get(session_id)
+                system_prompt = (
+                    turn_memory.assemble_system_prompt(self._system_prompt)
+                    if turn_memory is not None
+                    else self._system_prompt
+                )
                 request = CanonicalRequest(
                     request_id=new_message_id(),
                     messages=history,
                     tools=tool_definitions,
-                    system_prompt=self._system_prompt,
+                    system_prompt=system_prompt,
                     model=chosen_model,
                     max_output_tokens=self._max_output_tokens,
                     tool_id_map=self._tool_id_maps.get(session_id),
                 )
                 est_tokens = adapter.estimate_input_tokens(
-                    history, tool_definitions, self._system_prompt
+                    history, tool_definitions, system_prompt
                 )
 
                 llm_started_event = self._emit_llm_call_started(
@@ -344,6 +370,11 @@ class SessionManager:
                     final_stop_reason = StopReason.END_TURN
                     break
 
+                # Snapshot memory hashes before tool dispatch so we can
+                # detect mutations performed by memory tools and emit
+                # memory.updated events.
+                memory_before = _memory_hashes(memory)
+
                 results = await asyncio.gather(
                     *[
                         self._dispatcher.dispatch(
@@ -352,11 +383,23 @@ class SessionManager:
                             turn_id=turn_id,
                             workspace_path=session.workspace_path,
                             parent_event_id=llm_started_event,
+                            memory=memory,
                         )
                         for tu in tool_uses
                     ]
                 )
                 tool_calls += len(results)
+
+                # Emit memory.updated / memory.eviction events for any file
+                # that changed during this batch of tool calls.
+                self._emit_memory_events_for_changes(
+                    memory_before=memory_before,
+                    memory=memory,
+                    tool_uses=tool_uses,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    parent_event_id=llm_started_event,
+                )
 
                 # Each tool_result becomes its own TOOL message; the adapter
                 # merges consecutive TOOL messages into one wire user message.
@@ -654,6 +697,83 @@ class SessionManager:
             )
         )
 
+    def _emit_memory_events_for_changes(
+        self,
+        *,
+        memory_before: dict,
+        memory: MemoryStore | None,
+        tool_uses: list,
+        session_id: str,
+        turn_id: str,
+        parent_event_id: str,
+    ) -> None:
+        """Diff before/after hashes per file and emit memory.updated for
+        each change, plus memory.eviction if the file is over its soft cap.
+
+        Operation is inferred from which memory tool ran in this batch.
+        """
+        if memory is None:
+            return
+        memory_after = _memory_hashes(memory)
+        ops_by_file: dict[str, str] = {}
+        for tu in tool_uses:
+            name = tu.name
+            file_arg = (tu.input or {}).get("file")
+            if not file_arg:
+                continue
+            if name == "memory_add":
+                ops_by_file[file_arg] = "add"
+            elif name == "memory_replace":
+                ops_by_file[file_arg] = "replace"
+            elif name == "memory_consolidate":
+                ops_by_file[file_arg] = "consolidate"
+        for file_name, after in memory_after.items():
+            before = memory_before.get(file_name)
+            if before is None or before == after:
+                continue
+            operation = ops_by_file.get(file_name, "consolidate")
+            self._bus.emit(
+                make_event(
+                    type="memory.updated",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    actor=Actor.AGENT,
+                    payload=MemoryUpdated(
+                        file=file_name,  # type: ignore[arg-type]
+                        operation=operation,  # type: ignore[arg-type]
+                        before_hash=before["hash"],
+                        after_hash=after["hash"],
+                        before_size_bytes=before["size"],
+                        after_size_bytes=after["size"],
+                    ),
+                    timestamp=_now(),
+                    parent_event_id=parent_event_id,
+                )
+            )
+            # Over-soft-cap → eviction warning (no auto-truncate).
+            from metis.memory.store import MemoryFile
+            from metis.memory.store import MemoryStore as _MS
+
+            mf = MemoryFile(file_name)
+            if after["size"] > _MS.soft_cap(mf):
+                self._bus.emit(
+                    make_event(
+                        type="memory.eviction",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        actor=Actor.SYSTEM,
+                        payload=MemoryEviction(
+                            file=file_name,  # type: ignore[arg-type]
+                            trigger="size_cap_exceeded",
+                            entries_evicted=0,
+                            size_before_bytes=before["size"],
+                            size_after_bytes=after["size"],
+                        ),
+                        timestamp=_now(),
+                        parent_event_id=parent_event_id,
+                    )
+                )
+
 
 # ---------------------------------------------------------------------------
 # Module-private helpers
@@ -667,6 +787,23 @@ def _now() -> datetime:
 def _assistant_text(content: list[ContentBlock]) -> str:
     """Concatenate text blocks for CLI display. Ignores tool_use/thinking."""
     return "\n".join(b.text for b in content if isinstance(b, TextBlock))
+
+
+def _memory_hashes(memory: MemoryStore | None) -> dict:
+    """Snapshot the current hash + size of each memory file. Empty/missing
+    files have an empty hash and size 0."""
+    import hashlib as _hashlib
+
+    if memory is None:
+        return {}
+    snapshot: dict = {}
+    for name in ("MEMORY.md", "USER.md"):
+        content = memory.read(name)
+        snapshot[name] = {
+            "hash": _hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            "size": len(content.encode("utf-8")),
+        }
+    return snapshot
 
 
 async def _consume_stream(

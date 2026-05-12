@@ -9,11 +9,14 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from metis.canonical.content import ContentBlock
 from metis.canonical.tools import ToolDefinition
 from metis.tools.workspace import WorkspaceFileAPI
+
+if TYPE_CHECKING:  # pragma: no cover
+    pass
 
 
 @dataclass
@@ -27,6 +30,8 @@ class ToolContext:
     workspace_files: WorkspaceFileAPI
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("metis.tool"))
+    # Per-session bounded memory. None means memory tools should refuse to run.
+    memory: Any = None  # MemoryStore — Any to avoid an import cycle through tools
 
 
 @dataclass

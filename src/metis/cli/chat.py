@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import threading
 from decimal import Decimal
 from pathlib import Path
 
@@ -127,8 +128,38 @@ async def run_chat(
 
 
 async def _async_input(prompt: str) -> str:
-    """input() in a thread so we don't block the event loop."""
-    return await asyncio.to_thread(input, prompt)
+    """Read a line from stdin in a daemon thread.
+
+    `asyncio.to_thread` uses the default ThreadPoolExecutor, whose worker
+    threads are joined at interpreter shutdown — that hangs forever because
+    `input()` is blocked on stdin. A daemon thread is terminated at process
+    exit without being joined, which keeps Ctrl-C clean.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[str] = loop.create_future()
+
+    def reader() -> None:
+        try:
+            line = input(prompt)
+        except EOFError:
+            loop.call_soon_threadsafe(_set_exc_if_pending, future, EOFError())
+        except BaseException as exc:
+            loop.call_soon_threadsafe(_set_exc_if_pending, future, exc)
+        else:
+            loop.call_soon_threadsafe(_set_result_if_pending, future, line)
+
+    threading.Thread(target=reader, daemon=True, name="metis-stdin").start()
+    return await future
+
+
+def _set_result_if_pending(future: asyncio.Future, value: object) -> None:
+    if not future.done():
+        future.set_result(value)
+
+
+def _set_exc_if_pending(future: asyncio.Future, exc: BaseException) -> None:
+    if not future.done():
+        future.set_exception(exc)
 
 
 async def _handle_slash(
