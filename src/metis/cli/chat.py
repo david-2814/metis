@@ -191,6 +191,7 @@ async def _handle_slash(
             "  /models               list primary (latest) models\n"
             "  /models all           list every registered model\n"
             "  /models <pattern>     filter by substring (e.g. /models opus)\n"
+            "  /share                include the last slash output in the next message\n"
             "  /cost                 session cost so far\n"
             "  /help, /?             this list\n"
             "  exit, quit, ^D        leave"
@@ -218,16 +219,34 @@ async def _handle_slash(
             pattern=pattern,
             always_include=session.active_model,
         )
-        for line in format_models_lines(
+        rendered = format_models_lines(
             displayed,
             registry=registry,
             pricing=pricing,
             sticky_model=session.active_model,
-        ):
+        )
+        for line in rendered:
             print(line)
         hint = truncation_hint(displayed, total, mode=mode, pattern=pattern)
         if hint:
             print(hint)
+            rendered.append(hint)
+        # Capture for /share so the agent can see this if the user asks.
+        manager.buffer_slash_output(session.id, "\n".join(rendered))
+        return None
+    if cmd == "/share":
+        buffered = manager.mark_share_pending(session.id)
+        if buffered is None:
+            print(
+                "Nothing to share yet — run /models (or another slash command) first.",
+                file=sys.stderr,
+            )
+        else:
+            line_count = buffered.count("\n") + 1
+            print(
+                f"Will share {line_count} line(s) of recent slash output "
+                f"with the agent on your next message."
+            )
         return None
     if cmd == "/cost":
         print(f"session cost so far: ${session.cost_so_far_usd:.4f} ({session.turn_count} turns)")

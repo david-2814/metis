@@ -253,6 +253,7 @@ class MetisApp(App):
             log.write_line("  /models               list primary (latest) models")
             log.write_line("  /models all           list every registered model")
             log.write_line("  /models <pattern>     filter by substring (e.g. /models opus)")
+            log.write_line("  /share                include last slash output in the next message")
             log.write_line("  /copy [n]             copy nth-most-recent reply (default 1)")
             log.write_line("  /help, /?             this list")
             log.write_line("  exit, quit, ^D      leave")
@@ -291,16 +292,36 @@ class MetisApp(App):
             # column (4 cells past the left edge: "  " gutter + "* " marker
             # column) so wrapped label content visually nests under its
             # model entry rather than starting at column 0.
-            for line in format_models_lines(
+            rendered = format_models_lines(
                 displayed,
                 registry=self.runtime.registry,
                 pricing=self.runtime.pricing,
                 sticky_model=self.session.active_model,
-            ):
+            )
+            for line in rendered:
                 _write_wrapped(log, line, subsequent_indent="    ")
             hint = truncation_hint(displayed, total, mode=mode, pattern=pattern)
             if hint:
                 _write_wrapped(log, hint)
+                rendered.append(hint)
+            self.runtime.manager.buffer_slash_output(
+                self.session.id, "\n".join(rendered)
+            )
+            return
+        if cmd == "/share":
+            buffered = self.runtime.manager.mark_share_pending(self.session.id)
+            if buffered is None:
+                _write_wrapped(
+                    log,
+                    "Nothing to share yet — run /models (or another slash command) first.",
+                )
+            else:
+                line_count = buffered.count("\n") + 1
+                _write_wrapped(
+                    log,
+                    f"Will share {line_count} line(s) of recent slash output "
+                    f"with the agent on your next message.",
+                )
             return
         if cmd == "/cost":
             _write_wrapped(

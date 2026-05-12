@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import inspect
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -148,6 +149,11 @@ class SessionManager:
         # skill tools refuse to run.
         self._skill_store_factory = skill_store_factory
         self._skill_stores: dict[str, Any] = {}
+        # /share state — captures the most recent slash-command output per
+        # session so the next user message can include it. See `/share` in
+        # the CLI/TUI. One-shot: cleared on consumption.
+        self._slash_buffers: dict[str, str] = {}
+        self._share_pending: set[str] = set()
 
     # ---- Session lifecycle --------------------------------------------
 
@@ -177,6 +183,43 @@ class SessionManager:
     def skills_for(self, session_id: str) -> Any:
         """Return the per-session skill store, if skills are configured."""
         return self._skill_stores.get(session_id)
+
+    # ---- /share bridge ------------------------------------------------
+
+    def buffer_slash_output(self, session_id: str, text: str) -> None:
+        """Capture the rendered output of a slash command so the user can
+        later run `/share` to inject it into the next turn's context.
+
+        Buffers per-session; each call overwrites any prior buffer. The
+        agent doesn't see the buffer until the user explicitly opts in via
+        `/share` — slash commands are otherwise local to the client.
+        """
+        if text:
+            self._slash_buffers[session_id] = text
+
+    def mark_share_pending(self, session_id: str) -> str | None:
+        """Flag the buffered slash output for inclusion in the next turn.
+
+        Returns the buffered text (for the caller to render a preview /
+        confirmation), or None if nothing has been buffered yet.
+        """
+        text = self._slash_buffers.get(session_id)
+        if text is None:
+            return None
+        self._share_pending.add(session_id)
+        return text
+
+    def consume_pending_share(self, session_id: str) -> str | None:
+        """Return the buffered slash output if `/share` was pending, then
+        clear the flag. Internal: called by `submit_turn` at turn start.
+
+        Does NOT clear the buffer itself — subsequent slash commands
+        overwrite it normally. Only the one-shot pending flag clears.
+        """
+        if session_id not in self._share_pending:
+            return None
+        self._share_pending.discard(session_id)
+        return self._slash_buffers.get(session_id)
 
     def set_active_model(self, session_id: str, model: str | None) -> None:
         """Apply a /model command. `None` clears the sticky."""
@@ -208,12 +251,21 @@ class SessionManager:
         if override.is_unknown_alias:
             raise UnknownAliasError(override.raw_alias or "")
 
-        # 2. Add user message to the session.
+        # 2. If `/share` was pending, prepend the buffered slash-command
+        #    output to the user message. One-shot: the flag clears here.
+        #    The composed text is what gets persisted as the user Message
+        #    so the agent's behavior is reconstructible from history.
+        message_text = override.cleaned_text
+        shared = self.consume_pending_share(session_id)
+        if shared:
+            message_text = _compose_message_with_shared(shared, message_text)
+
+        # 3. Add user message to the session.
         user_message = Message(
             id=new_message_id(),
             session_id=session_id,
             role=Role.USER,
-            content=[TextBlock(text=override.cleaned_text)],
+            content=[TextBlock(text=message_text)],
             created_at=_now(),
         )
         self._store.add_message(session_id, user_message)
@@ -907,6 +959,64 @@ def _heuristic_token_estimate(history: list[Message], system_prompt: str | None)
         for block in m.content:
             chars += len(getattr(block, "text", ""))
     return max(1, chars // 4)
+
+
+_INTERNAL_WHITESPACE_RUN = re.compile(r" {2,}")
+_LEADING_SPACE_RUN = re.compile(r"^( *)")
+
+
+def _normalize_shared_text(text: str) -> str:
+    """Strip alignment whitespace before the shared output crosses into the
+    LLM context.
+
+    `/models` and similar slash output use column padding (often 4+ spaces
+    between fields) and trailing whitespace from right-padding — useful for
+    visual alignment on the human's screen, pure noise to the LLM. Tokenizers
+    don't compress mid-line whitespace runs well, so a 30-row /models dump
+    can carry 100+ tokens of pure padding.
+
+    Transforms applied per line:
+
+    - Tabs are expanded to 4 spaces (so they don't bias whitespace handling).
+    - Trailing whitespace is dropped.
+    - Empty lines are dropped.
+    - Leading indent is preserved (it carries the tree hierarchy of nested
+      provider / namespace headers in `/models` output).
+    - Internal runs of 2+ spaces in the line body collapse to a single space.
+
+    The original buffer (what the user saw on screen) is unaffected — only
+    the LLM-bound version goes through this. Trace history records the
+    normalized text, which is what the agent actually saw.
+    """
+    out: list[str] = []
+    for raw in text.splitlines():
+        line = raw.expandtabs(4).rstrip()
+        if not line:
+            continue
+        match = _LEADING_SPACE_RUN.match(line)
+        lead = match.group(1) if match else ""
+        body = line[len(lead):]
+        normalized_body = _INTERNAL_WHITESPACE_RUN.sub(" ", body)
+        out.append(lead + normalized_body)
+    return "\n".join(out)
+
+
+def _compose_message_with_shared(shared: str, user_text: str) -> str:
+    """Format the user message when `/share` injected slash output.
+
+    Wraps the (normalized) shared block in clear delimiters so the agent
+    can see the boundary between "context the user shared from their
+    terminal" and "what the user is actually asking." The normalized text
+    is what's persisted in history.
+    """
+    normalized = _normalize_shared_text(shared)
+    return (
+        "[Shared from my terminal — output of a slash command I ran:]\n"
+        f"{normalized}\n"
+        "[End of shared output]\n"
+        "\n"
+        f"{user_text}"
+    )
 
 
 # Re-export RoutingDecision for callers that want the typed result.

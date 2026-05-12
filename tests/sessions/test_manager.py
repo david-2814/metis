@@ -470,3 +470,279 @@ async def test_assistant_text_returned_for_display(bus, event_log, workspace):
     await bus.drain()
     await bus.stop()
     assert result.assistant_text == "line one\nline two"
+
+
+# ---- /share bridge -----------------------------------------------------
+
+
+async def test_buffer_slash_output_stores_text_per_session(bus, workspace):
+    """`buffer_slash_output` records the captured text; each session is isolated."""
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    s1 = manager.create_session(workspace_path=str(workspace))
+    s2 = manager.create_session(workspace_path=str(workspace))
+    manager.buffer_slash_output(s1.id, "session 1 output")
+    manager.buffer_slash_output(s2.id, "session 2 output")
+    # Sessions don't leak into each other.
+    assert manager.mark_share_pending(s1.id) == "session 1 output"
+    assert manager.mark_share_pending(s2.id) == "session 2 output"
+    await bus.stop()
+
+
+async def test_mark_share_pending_with_empty_buffer_returns_none(bus, workspace):
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    assert manager.mark_share_pending(session.id) is None
+    await bus.stop()
+
+
+async def test_consume_pending_share_is_one_shot(bus, workspace):
+    """A single /share applies to ONE turn only; subsequent turns see no
+    pending share unless /share is run again."""
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    manager.buffer_slash_output(session.id, "captured")
+    manager.mark_share_pending(session.id)
+    # First consume returns the buffer; second consume returns None.
+    assert manager.consume_pending_share(session.id) == "captured"
+    assert manager.consume_pending_share(session.id) is None
+    await bus.stop()
+
+
+async def test_buffer_persists_after_consume(bus, workspace):
+    """Buffer survives consume — user can /share the same output twice if
+    they run /share again. Only the pending flag is one-shot."""
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    manager.buffer_slash_output(session.id, "captured")
+    manager.mark_share_pending(session.id)
+    manager.consume_pending_share(session.id)
+    # Second /share works because the buffer is still there.
+    assert manager.mark_share_pending(session.id) == "captured"
+    assert manager.consume_pending_share(session.id) == "captured"
+    await bus.stop()
+
+
+async def test_submit_turn_with_pending_share_prepends_to_user_message(
+    bus, event_log, workspace
+):
+    """When /share is pending, the user Message persisted to the session
+    carries the buffered output as a labeled preamble, and the LLM's
+    request sees the composed text."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="ack")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    manager.buffer_slash_output(session.id, "anthropic:\n  claude-sonnet-4-6  $3 in / $15 out")
+    manager.mark_share_pending(session.id)
+    await manager.submit_turn(session.id, "which is cheapest?")
+    await bus.drain()
+    await bus.stop()
+
+    # Adapter saw exactly one request; its messages include the composed
+    # user content with both the shared block and the question.
+    assert len(adapter.requests) == 1
+    user_msg = adapter.requests[0].messages[-1]  # last is the new user message
+    assert user_msg.role.value == "user"
+    user_text = "".join(getattr(b, "text", "") for b in user_msg.content)
+    assert "Shared from my terminal" in user_text
+    assert "claude-sonnet-4-6" in user_text
+    assert "which is cheapest?" in user_text
+
+
+async def test_submit_turn_without_pending_share_unaffected(
+    bus, event_log, workspace
+):
+    """Without /share, behaviour is identical to before — just the raw
+    user text reaches the adapter."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="ack")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    manager.buffer_slash_output(session.id, "captured but never shared")
+    # NOTE: no mark_share_pending call.
+    await manager.submit_turn(session.id, "hello")
+    await bus.drain()
+    await bus.stop()
+
+    user_msg = adapter.requests[0].messages[-1]
+    user_text = "".join(getattr(b, "text", "") for b in user_msg.content)
+    assert "Shared from" not in user_text
+    assert "captured but never shared" not in user_text
+    assert user_text == "hello"
+
+
+async def test_share_only_applies_to_next_turn_not_subsequent(
+    bus, event_log, workspace
+):
+    """`/share` is one-shot. The turn AFTER the shared one sees the plain
+    user message, not the shared content again."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="r1")], stop_reason=StopReason.END_TURN
+            ),
+            _ScriptedResponse(
+                content=[TextBlock(text="r2")], stop_reason=StopReason.END_TURN
+            ),
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    manager.buffer_slash_output(session.id, "shared-data")
+    manager.mark_share_pending(session.id)
+
+    await manager.submit_turn(session.id, "first")
+    await manager.submit_turn(session.id, "second")
+    await bus.drain()
+    await bus.stop()
+
+    first_user = "".join(
+        getattr(b, "text", "") for b in adapter.requests[0].messages[-1].content
+    )
+    # Second request's history includes the (already-composed) first user
+    # message, but the *new* user message (last in the list) is plain.
+    second_user = "".join(
+        getattr(b, "text", "") for b in adapter.requests[1].messages[-1].content
+    )
+    assert "shared-data" in first_user
+    assert second_user == "second"
+
+
+async def test_empty_buffer_does_not_overwrite_existing(bus, workspace):
+    """An empty-string buffer call is a no-op so it can't accidentally
+    erase the previous slash output."""
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    manager.buffer_slash_output(session.id, "real content")
+    manager.buffer_slash_output(session.id, "")
+    assert manager.mark_share_pending(session.id) == "real content"
+    await bus.stop()
+
+
+# ---- shared-text normalization ------------------------------------------
+
+# The LLM-bound version of shared output should be compact: column padding
+# and trailing whitespace stripped, tabs expanded, empty lines dropped,
+# but tree hierarchy (leading indent) preserved.
+
+
+def _whitespace_normalize(text: str) -> str:
+    """Test helper — exposes the private normalizer."""
+    from metis.sessions.manager import _normalize_shared_text
+
+    return _normalize_shared_text(text)
+
+
+def test_normalize_collapses_internal_column_padding():
+    raw = "claude-sonnet-4-6    $3.00 in / $15.00 out / MTok     [coding, balanced]"
+    assert _whitespace_normalize(raw) == (
+        "claude-sonnet-4-6 $3.00 in / $15.00 out / MTok [coding, balanced]"
+    )
+
+
+def test_normalize_strips_trailing_whitespace():
+    raw = "anthropic:           "
+    assert _whitespace_normalize(raw) == "anthropic:"
+
+
+def test_normalize_drops_empty_lines():
+    raw = "a\n\n\nb\n  \nc"
+    assert _whitespace_normalize(raw) == "a\nb\nc"
+
+
+def test_normalize_expands_tabs_to_spaces():
+    raw = "name\t\tvalue"  # two tabs → 8 spaces → collapsed to single space
+    assert _whitespace_normalize(raw) == "name value"
+
+
+def test_normalize_preserves_leading_indent_for_tree_hierarchy():
+    """The `/models` tree format uses indent for nesting — keep it."""
+    raw = (
+        "anthropic:\n"
+        "   claude-opus-4-7      $15.00 in / $75.00 out / MTok    [deep-reasoning]\n"
+        " * claude-sonnet-4-6    $3.00 in / $15.00 out / MTok     [coding, balanced]\n"
+        "openrouter:\n"
+        "  deepseek:\n"
+        "     deepseek-chat-v3.1  $0.30 in / $0.90 out / MTok      [coding]"
+    )
+    out = _whitespace_normalize(raw)
+    lines = out.splitlines()
+    assert lines[0] == "anthropic:"
+    assert lines[1] == "   claude-opus-4-7 $15.00 in / $75.00 out / MTok [deep-reasoning]"
+    assert lines[2] == " * claude-sonnet-4-6 $3.00 in / $15.00 out / MTok [coding, balanced]"
+    assert lines[3] == "openrouter:"
+    assert lines[4] == "  deepseek:"
+    assert lines[5] == "     deepseek-chat-v3.1 $0.30 in / $0.90 out / MTok [coding]"
+
+
+def test_normalize_preserves_sticky_marker():
+    raw = " * claude-sonnet-4-6      $3.00 in / $15.00 out / MTok"
+    assert _whitespace_normalize(raw) == " * claude-sonnet-4-6 $3.00 in / $15.00 out / MTok"
+
+
+def test_normalize_is_idempotent():
+    """Running the normalizer twice gives the same result as running it once."""
+    raw = "  name    value   \n\n  other     value"
+    once = _whitespace_normalize(raw)
+    twice = _whitespace_normalize(once)
+    assert once == twice
+
+
+def test_normalize_empty_input_empty_output():
+    assert _whitespace_normalize("") == ""
+    assert _whitespace_normalize("   \n\t\n  ") == ""
+
+
+def test_normalize_single_spaces_preserved():
+    """Existing single spaces (already-compact text) aren't touched."""
+    raw = "the quick brown fox jumps over the lazy dog"
+    assert _whitespace_normalize(raw) == raw
+
+
+async def test_submit_turn_persists_normalized_shared_text(bus, event_log, workspace):
+    """The Message persisted in the session (and what the LLM sees) carries
+    the *normalized* shared text — column padding stripped — not the raw
+    buffer with display whitespace."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="ok")], stop_reason=StopReason.END_TURN
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    padded = (
+        "anthropic:\n"
+        "   claude-sonnet-4-6    $3.00 in / $15.00 out / MTok    [coding]   "
+    )
+    manager.buffer_slash_output(session.id, padded)
+    manager.mark_share_pending(session.id)
+    await manager.submit_turn(session.id, "which is cheapest?")
+    await bus.drain()
+    await bus.stop()
+
+    user_msg = adapter.requests[0].messages[-1]
+    user_text = "".join(getattr(b, "text", "") for b in user_msg.content)
+    # The original 4-space column gap is collapsed to a single space.
+    assert "claude-sonnet-4-6 $3.00 in" in user_text
+    # And the trailing whitespace after [coding] is gone.
+    assert "[coding]   " not in user_text
+    assert "[coding]\n" in user_text or user_text.endswith("[coding]") or "[coding]" in user_text
