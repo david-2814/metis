@@ -1,0 +1,256 @@
+"""Interactive line-based REPL (`metis chat`).
+
+For the richer Textual TUI, see `metis tui` (src/metis/tui/app.py).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import sys
+import threading
+from decimal import Decimal
+from pathlib import Path
+
+from metis.adapters.errors import AdapterError
+from metis.adapters.streaming import (
+    MessageStart,
+    StreamingEvent,
+    TextDelta,
+    ToolUseStart,
+)
+from metis.cli.runtime import ChatRuntime, SetupError, setup_runtime, shutdown_runtime
+from metis.routing import ModelRegistry
+from metis.routing.engine import RoutingError
+from metis.sessions import SessionManager, UnknownAliasError
+
+logger = logging.getLogger(__name__)
+
+
+async def run_chat(
+    *,
+    workspace_path: str,
+    initial_model: str | None,
+    db_path: str | None,
+    global_default_model: str,
+) -> int:
+    try:
+        runtime = await setup_runtime(
+            workspace_path=workspace_path,
+            db_path=db_path,
+            global_default_model=global_default_model,
+        )
+    except SetupError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    registry = runtime.registry
+    manager = runtime.manager
+
+    # Resolve initial model (alias accepted).
+    resolved_initial = None
+    if initial_model is not None:
+        resolved_initial = registry.resolve_alias(initial_model)
+        if resolved_initial is None:
+            print(
+                f"error: unknown model {initial_model!r}. "
+                f"Configured: {', '.join(sorted(registry.list_models()))}",
+                file=sys.stderr,
+            )
+            await shutdown_runtime(runtime)
+            return 1
+
+    workspace = Path(workspace_path).expanduser().resolve()
+    session = manager.create_session(workspace_path=str(workspace), active_model=resolved_initial)
+
+    # ---- Banner ----------------------------------------------------------
+
+    providers = sorted({registry.provider_of(m) for m in registry.list_models()})
+    print(f"Metis chat • workspace: {workspace}")
+    print(f"Session: {session.id}")
+    print(f"Providers: {', '.join(providers)}")
+    print(f"Active model: {session.active_model or f'(default: {runtime.global_default_model})'}")
+    print(f"Trace: {runtime.db_file}")
+    print(
+        "Type your message. Commands: /model <id>, /model -, /cost, /models, /help. "
+        "Ctrl-D or 'exit' to quit."
+    )
+    print()
+
+    # ---- REPL ------------------------------------------------------------
+
+    exit_code = 0
+    try:
+        while True:
+            try:
+                line = await _async_input("> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            text = line.strip()
+            if not text:
+                continue
+            if text in ("exit", "quit"):
+                break
+            if text.startswith("/"):
+                handled = await _handle_slash(text, manager, session, registry)
+                if handled == "quit":
+                    break
+                continue
+            renderer = _LiveRenderer()
+            try:
+                result = await manager.submit_turn(
+                    session.id, text, on_streaming_event=renderer.handle
+                )
+            except UnknownAliasError as exc:
+                print(f"unknown alias: @{exc.alias}", file=sys.stderr)
+                continue
+            except RoutingError as exc:
+                print(f"routing failed: {exc}", file=sys.stderr)
+                continue
+            except AdapterError as exc:
+                print(
+                    f"adapter error [{exc.error_class.value}]: {exc.message}",
+                    file=sys.stderr,
+                )
+                continue
+            renderer.finalize()
+            _print_result_tag(result)
+    except Exception:
+        logger.exception("unhandled error in chat loop")
+        exit_code = 1
+    finally:
+        await shutdown_runtime(runtime)
+    return exit_code
+
+
+# ---- REPL helpers ----------------------------------------------------------
+
+
+async def _async_input(prompt: str) -> str:
+    """Read a line from stdin in a daemon thread.
+
+    `asyncio.to_thread` uses the default ThreadPoolExecutor, whose worker
+    threads are joined at interpreter shutdown — that hangs forever because
+    `input()` is blocked on stdin. A daemon thread is terminated at process
+    exit without being joined, which keeps Ctrl-C clean.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[str] = loop.create_future()
+
+    def reader() -> None:
+        try:
+            line = input(prompt)
+        except EOFError:
+            loop.call_soon_threadsafe(_set_exc_if_pending, future, EOFError())
+        except BaseException as exc:
+            loop.call_soon_threadsafe(_set_exc_if_pending, future, exc)
+        else:
+            loop.call_soon_threadsafe(_set_result_if_pending, future, line)
+
+    threading.Thread(target=reader, daemon=True, name="metis-stdin").start()
+    return await future
+
+
+def _set_result_if_pending(future: asyncio.Future, value: object) -> None:
+    if not future.done():
+        future.set_result(value)
+
+
+def _set_exc_if_pending(future: asyncio.Future, exc: BaseException) -> None:
+    if not future.done():
+        future.set_exception(exc)
+
+
+async def _handle_slash(
+    text: str,
+    manager: SessionManager,
+    session,
+    registry: ModelRegistry,
+) -> str | None:
+    parts = text.split(maxsplit=1)
+    cmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if cmd in ("/help", "/?"):
+        print(
+            "Commands:\n"
+            "  /model <alias|id>   set sticky model\n"
+            "  /model -            clear sticky (use defaults)\n"
+            "  /model show         print current sticky\n"
+            "  /cost               session cost so far\n"
+            "  /models             list configured models\n"
+            "  /help, /?           this list\n"
+            "  exit, quit, ^D      leave"
+        )
+        return None
+    if cmd == "/model":
+        if not arg or arg == "show":
+            print(f"sticky: {session.active_model or '(none — using defaults)'}")
+            return None
+        if arg == "-":
+            manager.set_active_model(session.id, None)
+            print("sticky cleared")
+            return None
+        try:
+            manager.set_active_model(session.id, arg)
+            print(f"sticky: {session.active_model}")
+        except UnknownAliasError as exc:
+            print(f"unknown model: {exc.alias}", file=sys.stderr)
+        return None
+    if cmd == "/models":
+        for model_id in registry.list_models():
+            entry = registry.get(model_id)
+            aliases = ", ".join(entry.aliases) or "—"
+            print(f"  {model_id}  (aliases: {aliases})")
+        return None
+    if cmd == "/cost":
+        print(f"session cost so far: ${session.cost_so_far_usd:.4f} ({session.turn_count} turns)")
+        return None
+    print(f"unknown command: {cmd}. /help for the list.", file=sys.stderr)
+    return None
+
+
+class _LiveRenderer:
+    def __init__(self) -> None:
+        self._in_text = False
+        self._messages_started = 0
+
+    def handle(self, event: StreamingEvent) -> None:
+        if isinstance(event, MessageStart):
+            self._messages_started += 1
+            if self._messages_started > 1:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            self._in_text = False
+        elif isinstance(event, TextDelta):
+            if not self._in_text:
+                sys.stdout.write("\n")
+                self._in_text = True
+            sys.stdout.write(event.text)
+            sys.stdout.flush()
+        elif isinstance(event, ToolUseStart):
+            if self._in_text:
+                sys.stdout.write("\n")
+            sys.stdout.write(f"\n[{event.tool_name}(...)]")
+            sys.stdout.flush()
+            self._in_text = False
+
+    def finalize(self) -> None:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+def _print_result_tag(result) -> None:
+    cost = f"${result.cost_usd:.4f}" if result.cost_usd >= Decimal("0.0001") else "<$0.0001"
+    tag = (
+        f"[{result.chosen_model} • {cost} • "
+        f"{result.llm_call_count} LLM / {result.tool_call_count} tool]"
+    )
+    print(tag)
+    print()
+
+
+# Backwards-compatibility export — pyproject "metis = metis.cli.main:main".
+__all__ = ["run_chat"]
+_ = ChatRuntime  # re-export indirectly

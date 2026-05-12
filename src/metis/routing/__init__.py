@@ -1,0 +1,59 @@
+"""Routing engine.
+
+See docs/specs/routing-engine.md.
+
+Surface: per-message override, manual sticky, configured rules, workspace
+default, global default. PATTERN_RECOMMENDATION and DELEGATE_REQUEST slots
+exist in the chain but always return NOT_APPLICABLE — filled in in later phases.
+"""
+
+from metis.routing.availability import (
+    AvailabilityState,
+    ProviderAvailability,
+)
+from metis.routing.context import RoutingDecision, TurnContext
+from metis.routing.engine import RoutingEngine, RoutingError
+from metis.routing.overrides import OverrideParseResult, parse_per_message_override
+from metis.routing.policy import (
+    EMPTY_POLICY,
+    PatternConfig,
+    RoutingPolicy,
+    Rule,
+    TierMap,
+    WorkspaceScope,
+)
+from metis.routing.policy_loader import (
+    PolicyValidationError,
+    load_policy_file,
+    parse_policy,
+    parse_policy_text,
+)
+from metis.routing.registry import (
+    ModelEntry,
+    ModelRegistry,
+    UnknownModelError,
+)
+
+__all__ = [
+    "EMPTY_POLICY",
+    "AvailabilityState",
+    "ModelEntry",
+    "ModelRegistry",
+    "OverrideParseResult",
+    "PatternConfig",
+    "PolicyValidationError",
+    "ProviderAvailability",
+    "RoutingDecision",
+    "RoutingEngine",
+    "RoutingError",
+    "RoutingPolicy",
+    "Rule",
+    "TierMap",
+    "TurnContext",
+    "UnknownModelError",
+    "WorkspaceScope",
+    "load_policy_file",
+    "parse_per_message_override",
+    "parse_policy",
+    "parse_policy_text",
+]
