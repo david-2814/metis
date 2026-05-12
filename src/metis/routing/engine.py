@@ -1,14 +1,14 @@
 """Routing engine: the policy chain.
 
-See routing-engine.md §4. For Phase 1, this implements:
+See routing-engine.md §4. Implements:
 
     1. PER_MESSAGE_OVERRIDE   ← from TurnContext.per_message_override
     2. MANUAL_STICKY          ← from TurnContext.session_active_model
-    3. CONFIGURED_RULES       ← stub (always not_applicable)
-    4. PATTERN_RECOMMENDATION ← stub
-    5. DELEGATE_REQUEST       ← stub
-    6. WORKSPACE_DEFAULT      ← from TurnContext.workspace_default_model
-    7. GLOBAL_DEFAULT         ← from TurnContext.global_default_model
+    3. CONFIGURED_RULES       ← first matching rule in RoutingPolicy
+    4. PATTERN_RECOMMENDATION ← stub (Phase 2.5)
+    5. DELEGATE_REQUEST       ← stub (Phase 4)
+    6. WORKSPACE_DEFAULT      ← from RoutingPolicy.workspaces[].default or ctx.workspace_default_model
+    7. GLOBAL_DEFAULT         ← from RoutingPolicy.global_default or ctx.global_default_model
 
 Validation (§4.4) rejects unconfigured / unavailable / capability-mismatched
 candidates and falls through. Hard failure (§4.7) raises RoutingError so the
@@ -33,6 +33,8 @@ from metis.events.payloads import (
 )
 from metis.routing.availability import ProviderAvailability
 from metis.routing.context import RoutingDecision, TurnContext
+from metis.routing.policy import EMPTY_POLICY, RoutingPolicy
+from metis.routing.predicates import evaluate as evaluate_predicate
 from metis.routing.registry import ModelRegistry
 
 
@@ -73,14 +75,24 @@ class RoutingEngine:
         registry: ModelRegistry,
         bus: EventBus,
         availability: ProviderAvailability | None = None,
+        policy: RoutingPolicy | None = None,
     ) -> None:
         self._registry = registry
         self._bus = bus
         self._availability = availability or ProviderAvailability()
+        self._policy = policy or EMPTY_POLICY
 
     @property
     def availability(self) -> ProviderAvailability:
         return self._availability
+
+    @property
+    def policy(self) -> RoutingPolicy:
+        return self._policy
+
+    def set_policy(self, policy: RoutingPolicy) -> None:
+        """Swap the active policy. Used by hot-reload (not wired in v1)."""
+        self._policy = policy
 
     # ---- Decide --------------------------------------------------------
 
@@ -142,6 +154,18 @@ class RoutingEngine:
     # ---- Chain construction --------------------------------------------
 
     def _build_chain(self, ctx: TurnContext) -> list[_Candidate]:
+        rule_candidate = self._evaluate_rules(ctx)
+        # Workspace and global defaults come from the policy when set; the
+        # TurnContext fields are the legacy fallback (used when no
+        # routing.yaml is loaded).
+        workspace_scope = (
+            self._policy.workspace_for(ctx.workspace_path) if ctx.workspace_path else None
+        )
+        workspace_default = (
+            workspace_scope.default if workspace_scope and workspace_scope.default is not None
+            else ctx.workspace_default_model
+        )
+        global_default = self._policy.global_default or ctx.global_default_model
         return [
             _Candidate(
                 policy="per_message_override",
@@ -155,11 +179,7 @@ class RoutingEngine:
                 reason_when_applicable="session sticky model (/model)",
                 reason_when_not_applicable="no sticky model set",
             ),
-            _Candidate(
-                policy="rule",
-                model=None,
-                reason_when_not_applicable="configured rules not enabled (Phase 2)",
-            ),
+            rule_candidate,
             _Candidate(
                 policy="pattern",
                 model=None,
@@ -172,17 +192,48 @@ class RoutingEngine:
             ),
             _Candidate(
                 policy="workspace_default",
-                model=ctx.workspace_default_model,
+                model=workspace_default,
                 reason_when_applicable="workspace default",
                 reason_when_not_applicable="no workspace default configured",
             ),
             _Candidate(
                 policy="global_default",
-                model=ctx.global_default_model,
+                model=global_default,
                 reason_when_applicable="global default fallback",
                 reason_when_not_applicable="no global default configured",
             ),
         ]
+
+    def _evaluate_rules(self, ctx: TurnContext) -> _Candidate:
+        """Return a rule-slot candidate. Workspace rules evaluate before
+        global rules; first match wins (routing-engine.md §5.2).
+        """
+        workspace_scope = (
+            self._policy.workspace_for(ctx.workspace_path) if ctx.workspace_path else None
+        )
+        candidates = []
+        if workspace_scope is not None:
+            candidates.extend(workspace_scope.rules)
+        candidates.extend(self._policy.rules)
+        for rule in candidates:
+            if evaluate_predicate(rule.when, ctx):
+                return _Candidate(
+                    policy="rule",
+                    model=rule.use,
+                    rule_name=rule.name,
+                    reason_when_applicable=f"matched rule {rule.name!r}",
+                )
+        if not candidates:
+            return _Candidate(
+                policy="rule",
+                model=None,
+                reason_when_not_applicable="no rules configured",
+            )
+        return _Candidate(
+            policy="rule",
+            model=None,
+            reason_when_not_applicable="no rule matched this turn",
+        )
 
     # ---- Validation ----------------------------------------------------
 

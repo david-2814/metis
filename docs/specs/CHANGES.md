@@ -117,10 +117,19 @@ Followup to the cross-spec sweep — five small but real defects caught in revie
 - **References to verify:** none beyond the files updated above.
 - **Status:** verified.
 
+### 2026-05-12 — event-bus: `skill.loaded.source` added
+
+- **Spec:** `event-bus-and-trace-catalog.md` §6.6.
+- **Change:** Added `source: Literal["global", "workspace"]` to `skill.loaded` payload so traces record which directory served the skill after the workspace-overrides-global merge.
+- **Type:** additive. Existing consumers ignore unknown fields; no migration required for stored events (the field defaults to None on records written before this entry, since the implementation defaulted it None on the typed struct — though all in-process emitters set it).
+- **References to verify:**
+  - `skill-format.md` *(planned)* — when that spec lands, document `source` alongside the other fields. Note pending below.
+- **Status:** verified (event-bus spec updated in this change; implementation in `src/metis/events/payloads.py::SkillLoaded` + emitter in `src/metis/skills/tools.py::SkillLoadTool`).
+
 ---
 
 ## Pending cross-references
 
 When you land a spec change, move it from "pending review" up here for visibility, then back to "verified" when the dependent spec is updated.
 
-*(empty — no pending items as of the v3 sweep)*
+- `skill-format.md` (planned) — `skill.loaded.source` field added 2026-05-12 should be documented when this spec lands.

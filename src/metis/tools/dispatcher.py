@@ -95,7 +95,9 @@ class ToolDispatcher:
     ) -> None:
         self._bus = bus
         self._confirmation_policy = confirmation_policy
-        self._confirmation_handler = confirmation_handler or AutoAllowHandler()
+        self._confirmation_handler: ConfirmationHandler = (
+            confirmation_handler or AutoAllowHandler()
+        )
         self._confirmation_timeout = confirmation_timeout_seconds
         self._timeouts = {**_TIMEOUT_DEFAULTS, **(timeouts or {})}
         self._registry: dict[str, _Registered] = {}
@@ -121,6 +123,16 @@ class ToolDispatcher:
     def unregister(self, tool_name: str) -> None:
         self._registry.pop(tool_name, None)
 
+    @property
+    def confirmation_handler(self) -> ConfirmationHandler:
+        return self._confirmation_handler
+
+    def set_confirmation_handler(self, handler: ConfirmationHandler) -> None:
+        """Swap the confirmation handler. The HTTP/WS server uses this to
+        install a remote handler that awaits a REST response per
+        server-api.md §4.2."""
+        self._confirmation_handler = handler
+
     def get_definitions(self) -> list[ToolDefinition]:
         return [r.definition for r in self._registry.values()]
 
@@ -135,6 +147,7 @@ class ToolDispatcher:
         workspace_path: str,
         parent_event_id: str | None = None,
         memory: object | None = None,
+        skills: object | None = None,
     ) -> ToolResultBlock:
         """Run a tool_use end-to-end. Always returns a ToolResultBlock; never
         raises for tool failures (errors come back as is_error result blocks).
@@ -242,6 +255,8 @@ class ToolDispatcher:
             workspace_path=workspace_path,
             workspace_files=workspace,  # type: ignore[arg-type]
             memory=memory,
+            skills=skills,
+            bus=self._bus,
         )
         in_flight = _InFlight(tool=tool, context=context)
         self._in_flight.setdefault(session_id, []).append(in_flight)

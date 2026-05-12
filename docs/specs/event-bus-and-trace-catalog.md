@@ -780,7 +780,8 @@ The session continues with the original routing decision; this event is purely i
     "skill_version": str,
     "load_reason": Literal["always", "on_demand", "auto_suggested"],
     "load_size_tokens": int,
-    "triggered_by_tool_use_id": str | None,   # for on_demand loads via load_skill tool
+    "source": Literal["global", "workspace"],  # which directory served the skill (additive 2026-05-12)
+    "triggered_by_tool_use_id": str | None,    # for on_demand loads via load_skill tool
 }
 ```
 

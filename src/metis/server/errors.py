@@ -90,3 +90,19 @@ def session_already_ended(session_id: str) -> APIError:
 
 def validation_error(message: str) -> APIError:
     return APIError("validation_error", 400, message)
+
+
+def confirmation_not_found(request_id: str) -> APIError:
+    return APIError(
+        "confirmation_not_found",
+        404,
+        f"no pending confirmation with id {request_id}",
+    )
+
+
+def confirmation_already_resolved(request_id: str) -> APIError:
+    return APIError(
+        "confirmation_already_resolved",
+        409,
+        f"confirmation {request_id} has already been resolved",
+    )

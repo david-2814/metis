@@ -250,6 +250,29 @@ class RoutingProviderRecovered(msgspec.Struct, frozen=True):
     downtime_seconds: float
 
 
+# --- §6.6 Skill domain ------------------------------------------------------
+
+
+SkillLoadReason = Literal["always", "on_demand", "auto_suggested"]
+SkillSourceLiteral = Literal["global", "workspace"]
+
+
+class SkillLoaded(msgspec.Struct, frozen=True):
+    """`skill.loaded` per event-bus-and-trace-catalog §6.6.
+
+    `source` is an additive field tracking which directory served the
+    skill (global ~/.metis/skills/ or per-workspace .metis/skills/) so
+    traces can show provenance after a merge.
+    """
+
+    skill_id: str
+    skill_version: str
+    load_reason: SkillLoadReason
+    load_size_tokens: int
+    source: SkillSourceLiteral
+    triggered_by_tool_use_id: str | None = None
+
+
 # --- §6.7 Memory domain -----------------------------------------------------
 
 
@@ -322,6 +345,8 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     "routing.policy_invalid": (RoutingPolicyInvalid, Sensitivity.PSEUDONYMOUS),
     "routing.provider_unavailable": (RoutingProviderUnavailable, Sensitivity.PSEUDONYMOUS),
     "routing.provider_recovered": (RoutingProviderRecovered, Sensitivity.PSEUDONYMOUS),
+    # skills (Phase 2)
+    "skill.loaded": (SkillLoaded, Sensitivity.PSEUDONYMOUS),
     # memory (Phase 2)
     "memory.updated": (MemoryUpdated, Sensitivity.PRIVATE),
     "memory.eviction": (MemoryEviction, Sensitivity.PRIVATE),

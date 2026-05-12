@@ -233,3 +233,191 @@ async def test_attach_token_minted_per_get(client, workspace):
     a = (await client.get(f"/sessions/{sid}")).json()["attach_token"]
     b = (await client.get(f"/sessions/{sid}")).json()["attach_token"]
     assert a != b
+
+
+# ---- Body-level edge cases ---------------------------------------------
+
+
+async def test_post_session_empty_body_returns_400(client):
+    """A POST with no body still parses as `{}` and trips the missing-field
+    check — surfaces as invalid_content rather than a 500."""
+    r = await client.post(
+        "/sessions",
+        content=b"",
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_content"
+
+
+async def test_post_session_malformed_json_returns_400(client):
+    r = await client.post(
+        "/sessions",
+        content=b"{not valid json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert r.status_code == 400
+    body = r.json()
+    assert body["error"]["code"] == "invalid_content"
+    assert "invalid JSON" in body["error"]["message"]
+
+
+async def test_patch_session_missing_active_model_returns_400(client, workspace):
+    r = await client.post("/sessions", json={"workspace_path": str(workspace)})
+    sid = r.json()["id"]
+    r = await client.patch(f"/sessions/{sid}", json={})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_content"
+
+
+# ---- Confirmation endpoint ---------------------------------------------
+
+
+async def test_confirmation_unknown_request_id_returns_404(client, workspace):
+    r = await client.post("/sessions", json={"workspace_path": str(workspace)})
+    sid = r.json()["id"]
+    r = await client.post(
+        f"/sessions/{sid}/turns/01HZ_t/confirmations/conf_nope",
+        json={"decision": "allow"},
+    )
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "confirmation_not_found"
+
+
+async def test_confirmation_invalid_decision_returns_400(client, workspace):
+    r = await client.post("/sessions", json={"workspace_path": str(workspace)})
+    sid = r.json()["id"]
+    r = await client.post(
+        f"/sessions/{sid}/turns/01HZ_t/confirmations/conf_x",
+        json={"decision": "maybe"},
+    )
+    assert r.status_code == 400
+    assert "must be 'allow' or 'deny'" in r.json()["error"]["message"]
+
+
+async def test_confirmation_invalid_scope_returns_400(client, workspace):
+    r = await client.post("/sessions", json={"workspace_path": str(workspace)})
+    sid = r.json()["id"]
+    r = await client.post(
+        f"/sessions/{sid}/turns/01HZ_t/confirmations/conf_x",
+        json={"decision": "allow", "scope": "forever"},
+    )
+    assert r.status_code == 400
+    assert "scope" in r.json()["error"]["message"]
+
+
+async def test_confirmation_resolved_happy_path(client, workspace, runtime):
+    """Manually register a pending confirmation on the handler, then post a
+    resolve. The endpoint should return applied: true and the handler should
+    no longer report it as pending."""
+    import asyncio
+
+    from metis.canonical.tools import SideEffects
+    from metis.server.app import build_app
+    from metis.tools.confirmation import ConfirmationRequest
+
+    # Reuse the same runtime; the app fixture's `build_app` already swapped
+    # the dispatcher's handler. Recover that handler via app state.
+    app = build_app(runtime)
+    handler = app.state.app_state.confirmation_handler
+
+    # Kick off a request() in the background so the handler has a pending entry.
+    req = ConfirmationRequest(
+        tool_use_id="tu_http",
+        tool_name="writer",
+        side_effects=SideEffects.WRITE,
+        input_summary="(test)",
+    )
+    pending_task = asyncio.create_task(handler.request(req))
+    # Wait for registration.
+    for _ in range(50):
+        if handler.is_pending("conf_tu_http"):
+            break
+        await asyncio.sleep(0.01)
+    assert handler.is_pending("conf_tu_http")
+
+    # Resolve via the REST endpoint.
+    import httpx
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as c:
+        sid = (await c.post("/sessions", json={"workspace_path": str(workspace)})).json()[
+            "id"
+        ]
+        r = await c.post(
+            f"/sessions/{sid}/turns/01HZ_t/confirmations/conf_tu_http",
+            json={"decision": "allow", "scope": "once"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["applied"] is True
+        assert body["decision"] == "allow"
+
+    # The pending task should now resolve.
+    decision = await pending_task
+    assert decision.value == "allow"
+
+
+async def test_confirmation_double_resolve_returns_404_or_409(client, workspace, runtime):
+    """After resolve, the handler drops the pending entry, so a second
+    POST returns 404 (the unknown path) in v1. (server-api.md allows
+    confirmation_already_resolved as an alternative; this asserts whichever
+    we picked.)"""
+    import asyncio
+
+    from metis.canonical.tools import SideEffects
+    from metis.server.app import build_app
+    from metis.tools.confirmation import ConfirmationRequest
+
+    app = build_app(runtime)
+    handler = app.state.app_state.confirmation_handler
+
+    req = ConfirmationRequest(
+        tool_use_id="tu_dbl",
+        tool_name="writer",
+        side_effects=SideEffects.WRITE,
+        input_summary="(test)",
+    )
+    task = asyncio.create_task(handler.request(req))
+    for _ in range(50):
+        if handler.is_pending("conf_tu_dbl"):
+            break
+        await asyncio.sleep(0.01)
+
+    import httpx
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as c:
+        sid = (await c.post("/sessions", json={"workspace_path": str(workspace)})).json()[
+            "id"
+        ]
+        first = await c.post(
+            f"/sessions/{sid}/turns/01HZ_t/confirmations/conf_tu_dbl",
+            json={"decision": "allow"},
+        )
+        assert first.status_code == 200
+        # Allow the background task to finish + the handler to drop pending.
+        await task
+        await asyncio.sleep(0.01)
+        second = await c.post(
+            f"/sessions/{sid}/turns/01HZ_t/confirmations/conf_tu_dbl",
+            json={"decision": "deny"},
+        )
+        assert second.status_code in (404, 409)
+        assert second.json()["error"]["code"] in (
+            "confirmation_not_found",
+            "confirmation_already_resolved",
+        )
+
+
+async def test_confirmation_endpoint_unknown_session_returns_404(client):
+    r = await client.post(
+        "/sessions/sess_unknown/turns/01HZ/confirmations/conf_x",
+        json={"decision": "allow"},
+    )
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "session_not_found"

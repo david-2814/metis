@@ -32,6 +32,11 @@ class ToolContext:
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("metis.tool"))
     # Per-session bounded memory. None means memory tools should refuse to run.
     memory: Any = None  # MemoryStore — Any to avoid an import cycle through tools
+    # Per-session skill store. None means skill tools should refuse to run.
+    skills: Any = None  # SkillStore — Any to avoid an import cycle
+    # Event bus reference for tools that emit their own catalog events
+    # (e.g., skill_load emits skill.loaded). Optional — tools must handle None.
+    bus: Any = None  # EventBus — Any to avoid the import dependency direction
 
 
 @dataclass

@@ -40,8 +40,11 @@ from metis.canonical.messages import Message
 from metis.cli.runtime import ChatRuntime
 from metis.events.envelope import Actor
 from metis.events.payloads import SessionEnded, make_event
+from metis.server.confirmations import RemoteConfirmationHandler
 from metis.server.errors import (
     APIError,
+    confirmation_already_resolved,
+    confirmation_not_found,
     error_response,
     invalid_content,
     model_not_configured,
@@ -55,6 +58,7 @@ from metis.server.streaming import StreamingConnection
 from metis.server.tokens import AttachTokenRegistry
 from metis.server.turns import TurnExecutor
 from metis.sessions.manager import UnknownAliasError
+from metis.tools.confirmation import ConfirmationDecision
 
 logger = logging.getLogger(__name__)
 
@@ -74,17 +78,27 @@ class _AppState:
     tokens: AttachTokenRegistry
     hub: StreamingHub
     executor: TurnExecutor
+    confirmation_handler: RemoteConfirmationHandler
     started_at: datetime
 
 
 def build_app(runtime: ChatRuntime) -> Starlette:
-    """Build a Starlette app bound to a fully-wired runtime."""
+    """Build a Starlette app bound to a fully-wired runtime.
+
+    The dispatcher's confirmation handler is swapped to a
+    `RemoteConfirmationHandler` so tools that require confirmation block on
+    a REST response (per server-api.md §4.2). CLI / TUI runtimes still use
+    the original `AutoAllowHandler`.
+    """
     hub = StreamingHub()
+    confirmation = RemoteConfirmationHandler()
+    runtime.dispatcher.set_confirmation_handler(confirmation)
     state = _AppState(
         runtime=runtime,
         tokens=AttachTokenRegistry(),
         hub=hub,
         executor=TurnExecutor(runtime.manager, hub=hub),
+        confirmation_handler=confirmation,
         started_at=datetime.now(UTC),
     )
 
@@ -114,6 +128,11 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         Route(
             "/sessions/{session_id}/turns/{turn_id}/cancel",
             _cancel_turn,
+            methods=["POST"],
+        ),
+        Route(
+            "/sessions/{session_id}/turns/{turn_id}/confirmations/{request_id}",
+            _resolve_confirmation,
             methods=["POST"],
         ),
         Route(
@@ -351,6 +370,49 @@ async def _cancel_turn(request: Request) -> Response:
     return _json(
         {"turn_id": turn_id, "cancellation_initiated": True},
         status=202,
+    )
+
+
+async def _resolve_confirmation(request: Request) -> Response:
+    """Server-api.md §4.2 `POST .../confirmations/{request_id}`.
+
+    Body: `{"decision": "allow" | "deny", "scope": "once" | "session"}`.
+    First-write-wins; subsequent attempts get 409 confirmation_already_resolved.
+    """
+    st = _state(request)
+    sid = request.path_params["session_id"]
+    rid = request.path_params["request_id"]
+    try:
+        st.runtime.session_store.get_session(sid)
+    except KeyError:
+        raise session_not_found(sid) from None
+
+    body = await _read_json(request)
+    decision_raw = body.get("decision")
+    if decision_raw not in ("allow", "deny"):
+        raise invalid_content("decision must be 'allow' or 'deny'")
+    scope = body.get("scope", "once")
+    if scope not in ("once", "session"):
+        raise invalid_content("scope must be 'once' or 'session'")
+
+    decision = (
+        ConfirmationDecision.ALLOW if decision_raw == "allow" else ConfirmationDecision.DENY
+    )
+    if not st.confirmation_handler.is_pending(rid):
+        # Either the id is unknown or it was already resolved. Distinguish
+        # by checking whether it's a known-but-resolved one; in v1 we drop
+        # resolved entries, so "unknown" is the only case we can detect.
+        # We treat both as not_found unless we add a resolved-history cache.
+        raise confirmation_not_found(rid)
+    applied = st.confirmation_handler.resolve(rid, decision=decision, scope=scope)
+    if not applied:
+        raise confirmation_already_resolved(rid)
+    return _json(
+        {
+            "request_id": rid,
+            "decision": decision.value,
+            "applied": True,
+        }
     )
 
 

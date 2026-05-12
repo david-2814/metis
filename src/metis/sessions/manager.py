@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from ulid import ULID
 
@@ -125,6 +126,7 @@ class SessionManager:
         workspace_default_model: str | None = None,
         max_output_tokens: int = 4096,
         memory_factory: Callable[[str], MemoryStore] | None = None,
+        skill_store_factory: Callable[[str], Any] | None = None,
     ) -> None:
         self._registry = registry
         self._routing = routing
@@ -142,6 +144,10 @@ class SessionManager:
         # None means the session has no memory; the memory tools will refuse.
         self._memory_factory = memory_factory
         self._memory_stores: dict[str, MemoryStore | None] = {}
+        # Per-session skill stores. None means the session has no skills;
+        # skill tools refuse to run.
+        self._skill_store_factory = skill_store_factory
+        self._skill_stores: dict[str, Any] = {}
 
     # ---- Session lifecycle --------------------------------------------
 
@@ -158,11 +164,19 @@ class SessionManager:
             self._memory_stores[session.id] = self._memory_factory(workspace_path)
         else:
             self._memory_stores[session.id] = None
+        if self._skill_store_factory is not None:
+            self._skill_stores[session.id] = self._skill_store_factory(workspace_path)
+        else:
+            self._skill_stores[session.id] = None
         return session
 
     def memory_for(self, session_id: str) -> MemoryStore | None:
         """Return the per-session memory store, if memory is configured."""
         return self._memory_stores.get(session_id)
+
+    def skills_for(self, session_id: str) -> Any:
+        """Return the per-session skill store, if skills are configured."""
+        return self._skill_stores.get(session_id)
 
     def set_active_model(self, session_id: str, model: str | None) -> None:
         """Apply a /model command. `None` clears the sticky."""
@@ -251,6 +265,7 @@ class SessionManager:
         parent_event_id = turn_started_event
 
         memory = self._memory_stores.get(session_id)
+        skill_store = self._skill_stores.get(session_id)
 
         try:
             while True:
@@ -263,6 +278,9 @@ class SessionManager:
                     if turn_memory is not None
                     else self._system_prompt
                 )
+                # Inject the skill discovery index (agentskills.io stage 1).
+                if skill_store is not None and len(skill_store) > 0:
+                    system_prompt = _append_skill_index(system_prompt, skill_store)
                 request = CanonicalRequest(
                     request_id=new_message_id(),
                     messages=history,
@@ -384,6 +402,7 @@ class SessionManager:
                             workspace_path=session.workspace_path,
                             parent_event_id=llm_started_event,
                             memory=memory,
+                            skills=skill_store,
                         )
                         for tu in tool_uses
                     ]
@@ -484,6 +503,19 @@ class SessionManager:
             if seed_adapter
             else _heuristic_token_estimate(history, self._system_prompt)
         )
+        has_tool_calls_in_history = any(
+            isinstance(b, ToolUseBlock) for m in history for b in m.content
+        )
+        user_message_text = ""
+        # The new USER message is the last USER message in the (already-stored)
+        # history. Pull the first text block's content out for predicate eval.
+        for msg in reversed(history):
+            if msg.role == Role.USER:
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        user_message_text = block.text
+                        break
+                break
         return TurnContext(
             session_id=session_id,
             turn_id=turn_id,
@@ -491,10 +523,13 @@ class SessionManager:
             has_images=has_images,
             has_tool_definitions=bool(tool_definitions),
             has_system_prompt=bool(self._system_prompt),
+            has_tool_calls_in_history=has_tool_calls_in_history,
             per_message_override=override.resolved_model,
             session_active_model=session.active_model,
             workspace_default_model=workspace_default,
             global_default_model=global_default,
+            user_message_text=user_message_text,
+            workspace_path=session.workspace_path,
         )
 
     # ---- Event emitters -----------------------------------------------
@@ -787,6 +822,20 @@ def _now() -> datetime:
 def _assistant_text(content: list[ContentBlock]) -> str:
     """Concatenate text blocks for CLI display. Ignores tool_use/thinking."""
     return "\n".join(b.text for b in content if isinstance(b, TextBlock))
+
+
+def _append_skill_index(system_prompt: str, skill_store: Any) -> str:
+    """Append the discovery index (agentskills.io stage 1) to the system prompt.
+
+    One line per skill: `- <name>: <description>`. Bodies are NOT injected —
+    the agent calls `skill_load(name)` to activate one.
+    """
+    lines = ["## Available skills",
+             "Use `skill_search(query)` to filter and `skill_load(name)` to read a body.",
+             ""]
+    for name, description in skill_store.discovery_index():
+        lines.append(f"- {name}: {description}")
+    return system_prompt.rstrip() + "\n\n" + "\n".join(lines)
 
 
 def _memory_hashes(memory: MemoryStore | None) -> dict:

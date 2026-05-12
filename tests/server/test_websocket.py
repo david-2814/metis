@@ -133,3 +133,83 @@ def test_ws_pong_responds_to_ping(test_client: TestClient, workspace):
         pong = json.loads(ws.receive_text())
         assert pong["type"] == "pong"
         assert pong["nonce"] == "abc123"
+
+
+def test_ws_cancel_frame_invokes_executor_cancel(runtime, workspace):
+    """A `cancel` frame from the client should call TurnExecutor.cancel and
+    the connection should stay open (so the client can keep receiving)."""
+    from metis.server.app import build_app
+
+    app = build_app(runtime)
+    state = app.state.app_state
+    calls: list[tuple[str, str]] = []
+    original_cancel = state.executor.cancel
+
+    def recording_cancel(session_id: str, turn_id: str) -> bool:
+        calls.append((session_id, turn_id))
+        return original_cancel(session_id, turn_id)
+
+    state.executor.cancel = recording_cancel  # type: ignore[method-assign]
+
+    with TestClient(app) as client:
+        sid = _create_session(client, str(workspace))
+        token = _get_attach(client, sid)
+        with client.websocket_connect(
+            f"/sessions/{sid}/stream?attach={token}"
+        ) as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "subscribe",
+                        "filter": "preset:chat",
+                        "since": None,
+                        "snapshot": False,
+                    }
+                )
+            )
+            assert json.loads(ws.receive_text())["type"] == "subscribe_ack"
+
+            # Send cancel for a non-existent turn — should be a no-op but the
+            # callback still fires and the connection stays open.
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "cancel",
+                        "turn_id": "01HZ_does_not_exist",
+                        "reason": "user_cancel",
+                    }
+                )
+            )
+            # Round-trip a ping to confirm the connection wasn't closed.
+            ws.send_text(json.dumps({"type": "ping", "nonce": "n1"}))
+            pong = json.loads(ws.receive_text())
+            assert pong["type"] == "pong"
+
+    assert calls == [(sid, "01HZ_does_not_exist")]
+
+
+def test_ws_unknown_control_frame_ignored(test_client: TestClient, workspace):
+    """Unknown control frames are skipped silently (forward-compat) — the
+    connection must not close."""
+    sid = _create_session(test_client, str(workspace))
+    token = _get_attach(test_client, sid)
+    with test_client.websocket_connect(
+        f"/sessions/{sid}/stream?attach={token}"
+    ) as ws:
+        ws.send_text(
+            json.dumps(
+                {
+                    "type": "subscribe",
+                    "filter": "preset:chat",
+                    "since": None,
+                    "snapshot": False,
+                }
+            )
+        )
+        assert json.loads(ws.receive_text())["type"] == "subscribe_ack"
+        ws.send_text(json.dumps({"type": "made_up_frame_type"}))
+        # Confirm connection still alive via ping.
+        ws.send_text(json.dumps({"type": "ping", "nonce": "n2"}))
+        pong = json.loads(ws.receive_text())
+        assert pong["type"] == "pong"
+        assert pong["nonce"] == "n2"
