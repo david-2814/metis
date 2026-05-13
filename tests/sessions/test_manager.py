@@ -344,6 +344,72 @@ async def test_per_message_override_wins(bus, event_log, workspace):
     assert user_msgs[-1].content[0].text == "what is 2+2?"
 
 
+async def test_rejected_sticky_surfaces_fallthrough_note(bus, event_log, workspace):
+    """A sticky model that fails capability validation should produce a
+    visible note on TurnResult and the chain should fall through to the
+    global default."""
+    no_tools = AdapterCapabilities(
+        supports_thinking=False,
+        supports_images=False,
+        supports_tools=False,
+        supports_system_prompt=True,
+        supports_structured_output=False,
+        supports_streaming=True,
+        supports_streaming_tool_calls=False,
+        supports_parallel_tool_calls=False,
+        supports_prompt_caching=False,
+        supports_system_messages_in_list=False,
+        max_context_tokens=8_192,
+        max_output_tokens=4_096,
+    )
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="answer")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ],
+        capability_overrides={"anthropic:claude-haiku-4-5": no_tools},
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(
+        workspace_path=str(workspace),
+        active_model="anthropic:claude-haiku-4-5",
+    )
+    result = await manager.submit_turn(session.id, "hello")
+    await bus.drain()
+    await bus.stop()
+
+    assert result.chosen_model == "anthropic:claude-sonnet-4-6"
+    assert result.routing_fallthrough is not None
+    assert "anthropic:claude-haiku-4-5" in result.routing_fallthrough
+    assert "no_tool_support" in result.routing_fallthrough
+    assert "anthropic:claude-sonnet-4-6" in result.routing_fallthrough
+
+
+async def test_no_fallthrough_note_when_sticky_chosen(bus, event_log, workspace):
+    """When the sticky model passes validation it owns the turn and no
+    fallthrough note should be set."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(
+        workspace_path=str(workspace),
+        active_model="anthropic:claude-haiku-4-5",
+    )
+    result = await manager.submit_turn(session.id, "hello")
+    await bus.drain()
+    await bus.stop()
+    assert result.chosen_model == "anthropic:claude-haiku-4-5"
+    assert result.routing_fallthrough is None
+
+
 async def test_unknown_alias_raises_before_llm_call(bus, event_log, workspace):
     adapter = _ScriptedAnthropicAdapter([])
     manager, _ = _build_manager(bus, adapter)
@@ -381,6 +447,84 @@ async def test_set_active_model_to_unknown_raises(bus, event_log, workspace):
     session = manager.create_session(workspace_path=str(workspace))
     with pytest.raises(UnknownAliasError):
         manager.set_active_model(session.id, "wildebeest")
+
+
+async def test_get_session_reflects_set_active_model(bus, workspace):
+    """`manager.get_session` returns the current sticky after `set_active_model`."""
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    manager.set_active_model(session.id, "haiku")
+    refreshed = manager.get_session(session.id)
+    assert refreshed.active_model == "anthropic:claude-haiku-4-5"
+
+
+async def test_get_session_reflects_clear_sticky(bus, workspace):
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(
+        workspace_path=str(workspace), active_model="haiku"
+    )
+    manager.set_active_model(session.id, None)
+    refreshed = manager.get_session(session.id)
+    assert refreshed.active_model is None
+
+
+async def test_get_session_with_sqlite_store_returns_fresh_record(bus, workspace, tmp_path):
+    """SqliteSessionStore rehydrates rows on each `get_session` call —
+    callers holding a long-lived Session reference get stale data. This
+    test confirms `manager.get_session` returns the *current* record,
+    fixing the stale-snapshot bug behind the `sticky: None` display lie."""
+    from metis.sessions import SqliteSessionStore
+
+    adapter = _ScriptedAnthropicAdapter([])
+    db_file = tmp_path / "sessions.db"
+    store = SqliteSessionStore(db_file)
+    try:
+        registry = ModelRegistry()
+        registry.register(
+            model_id="anthropic:claude-sonnet-4-6",
+            adapter=adapter,
+            aliases=["sonnet"],
+        )
+        registry.register(
+            model_id="anthropic:claude-haiku-4-5",
+            adapter=adapter,
+            aliases=["haiku"],
+        )
+        routing = RoutingEngine(registry=registry, bus=bus)
+        dispatcher = ToolDispatcher(bus)
+        manager = SessionManager(
+            registry=registry,
+            routing=routing,
+            dispatcher=dispatcher,
+            bus=bus,
+            store=store,
+            pricing=DEFAULT_PRICE_TABLE,
+        )
+        session = manager.create_session(workspace_path=str(workspace))
+        # Local snapshot says no sticky.
+        assert session.active_model is None
+        # Set via manager.
+        manager.set_active_model(session.id, "haiku")
+        # The local copy IS stale (SqliteSessionStore rehydrates per-call).
+        assert session.active_model is None
+        # Fresh fetch shows the truth — what the display code must use.
+        refreshed = manager.get_session(session.id)
+        assert refreshed.active_model == "anthropic:claude-haiku-4-5"
+    finally:
+        store.close()
+
+
+async def test_set_active_model_returns_resolved_canonical_id(bus, workspace):
+    """Callers can rely on the return value for display without re-fetching."""
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    returned = manager.set_active_model(session.id, "haiku")
+    assert returned == "anthropic:claude-haiku-4-5"
+    cleared = manager.set_active_model(session.id, None)
+    assert cleared is None
 
 
 async def test_cost_accumulates_across_turns(bus, event_log, workspace):
@@ -622,6 +766,181 @@ async def test_share_only_applies_to_next_turn_not_subsequent(
     )
     assert "shared-data" in first_user
     assert second_user == "second"
+
+
+async def test_set_active_model_auto_resolves_unambiguous_suffix(
+    bus, workspace
+):
+    """Typing `openai/gpt-oss-20b` resolves to the unique canonical id
+    `openrouter:openai/gpt-oss-20b` when there's only one match."""
+    from metis.sessions.manager import AmbiguousModelError  # noqa: F401
+
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    # Register a model with an OpenRouter-style id so suffix matching has
+    # something to resolve to.
+    from metis.canonical.capabilities import AdapterCapabilities
+
+    caps = AdapterCapabilities(
+        supports_thinking=False,
+        supports_images=False,
+        supports_tools=True,
+        supports_system_prompt=True,
+        supports_structured_output=False,
+        supports_streaming=True,
+        supports_streaming_tool_calls=True,
+        supports_parallel_tool_calls=True,
+        supports_prompt_caching=False,
+        supports_system_messages_in_list=False,
+        max_context_tokens=100_000,
+        max_output_tokens=4096,
+    )
+
+    class _Stub:
+        name = "openrouter"
+
+        def capabilities_for(self, _m):
+            return caps
+
+        async def close(self):
+            return None
+
+    manager._registry.register(
+        model_id="openrouter:openai/gpt-oss-20b", adapter=_Stub()
+    )
+    session = manager.create_session(workspace_path=str(workspace))
+    resolved = manager.set_active_model(session.id, "openai/gpt-oss-20b")
+    assert resolved == "openrouter:openai/gpt-oss-20b"
+    await bus.stop()
+
+
+async def test_set_active_model_short_suffix_also_resolves(bus, workspace):
+    """`gpt-oss-20b` also resolves to the same model — `/` is a boundary too."""
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    from metis.canonical.capabilities import AdapterCapabilities
+
+    caps = AdapterCapabilities(
+        supports_thinking=False,
+        supports_images=False,
+        supports_tools=True,
+        supports_system_prompt=True,
+        supports_structured_output=False,
+        supports_streaming=True,
+        supports_streaming_tool_calls=True,
+        supports_parallel_tool_calls=True,
+        supports_prompt_caching=False,
+        supports_system_messages_in_list=False,
+        max_context_tokens=100_000,
+        max_output_tokens=4096,
+    )
+
+    class _Stub:
+        name = "openrouter"
+
+        def capabilities_for(self, _m):
+            return caps
+
+        async def close(self):
+            return None
+
+    manager._registry.register(
+        model_id="openrouter:openai/gpt-oss-20b", adapter=_Stub()
+    )
+    session = manager.create_session(workspace_path=str(workspace))
+    assert (
+        manager.set_active_model(session.id, "gpt-oss-20b")
+        == "openrouter:openai/gpt-oss-20b"
+    )
+    await bus.stop()
+
+
+async def test_set_active_model_ambiguous_raises_with_candidates(
+    bus, workspace
+):
+    """When 2+ ids match the suffix, raise with the candidate list so the
+    user can pick. Sticky is unchanged on failure."""
+    from metis.sessions.manager import AmbiguousModelError
+
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    from metis.canonical.capabilities import AdapterCapabilities
+
+    caps = AdapterCapabilities(
+        supports_thinking=False,
+        supports_images=False,
+        supports_tools=True,
+        supports_system_prompt=True,
+        supports_structured_output=False,
+        supports_streaming=True,
+        supports_streaming_tool_calls=True,
+        supports_parallel_tool_calls=True,
+        supports_prompt_caching=False,
+        supports_system_messages_in_list=False,
+        max_context_tokens=100_000,
+        max_output_tokens=4096,
+    )
+
+    class _Stub:
+        name = "stub"
+
+        def capabilities_for(self, _m):
+            return caps
+
+        async def close(self):
+            return None
+
+    # Both end in `gpt-5` at a boundary character.
+    manager._registry.register(model_id="openai:gpt-5", adapter=_Stub())
+    manager._registry.register(model_id="openrouter:openai/gpt-5", adapter=_Stub())
+    session = manager.create_session(workspace_path=str(workspace))
+    before = session.active_model
+    with pytest.raises(AmbiguousModelError) as exc_info:
+        manager.set_active_model(session.id, "gpt-5")
+    err = exc_info.value
+    assert err.input == "gpt-5"
+    assert sorted(err.candidates) == ["openai:gpt-5", "openrouter:openai/gpt-5"]
+    # Sticky is not changed on ambiguity.
+    fresh = manager._store.get_session(session.id)
+    assert fresh.active_model == before
+    await bus.stop()
+
+
+async def test_set_active_model_unknown_input_raises_unknown_alias(
+    bus, workspace
+):
+    """Unknown inputs that don't match anything still raise UnknownAliasError."""
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    with pytest.raises(UnknownAliasError):
+        manager.set_active_model(session.id, "totally-bogus-name")
+    await bus.stop()
+
+
+async def test_set_active_model_returns_resolved_id(bus, workspace):
+    """The return value is the canonical id — fixes the stale-display bug."""
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    resolved = manager.set_active_model(session.id, "haiku")
+    assert resolved == "anthropic:claude-haiku-4-5"
+    cleared = manager.set_active_model(session.id, None)
+    assert cleared is None
+    await bus.stop()
+
+
+async def test_set_active_model_alias_still_takes_precedence(bus, workspace):
+    """Explicit alias wins over suffix match — `sonnet` resolves to the
+    aliased canonical id, not via suffix scan."""
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    # `sonnet` is a registered alias for anthropic:claude-sonnet-4-6 (set up
+    # by the conftest fixture).
+    resolved = manager.set_active_model(session.id, "sonnet")
+    assert resolved == "anthropic:claude-sonnet-4-6"
+    await bus.stop()
 
 
 async def test_empty_buffer_does_not_overwrite_existing(bus, workspace):

@@ -17,6 +17,7 @@ The interesting parts are unique to OpenRouter:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -396,6 +397,18 @@ def _translate_status_error(exc: openai.APIStatusError, request_id: str) -> Adap
     classification = _classify_openai_response(status, body)
     msg = _provider_message(body) or str(exc)
     retry_after = _retry_after_seconds(exc)
+    # Log the full upstream body separately from the surfaced message so
+    # users have a place to dig when the composed error isn't enough.
+    # WARN level so it shows up in default logging but doesn't drown out
+    # normal traffic; the file destination is configured by the CLI/server
+    # runtime per `METIS_LOG_FILE`.
+    logger.warning(
+        "openrouter adapter error: status=%d request_id=%s composed=%r body=%r",
+        status,
+        request_id,
+        msg,
+        body,
+    )
     return error_for_class(
         classification,
         f"openrouter {status}: {msg}",
@@ -407,11 +420,160 @@ def _translate_status_error(exc: openai.APIStatusError, request_id: str) -> Adap
 
 
 def _provider_message(body: dict | None) -> str:
+    """Compose the most informative error message we can from OpenRouter's body.
+
+    OpenRouter is an aggregator: when an upstream inference provider rejects
+    the request, OpenRouter returns a 400 with a generic top-level message
+    (typically ``"Provider returned error"``) and stashes the *real* reason
+    in ``error.metadata``. The shape varies but commonly looks like::
+
+        {
+          "error": {
+            "message": "Provider returned error",
+            "code": 400,
+            "metadata": {
+              "raw": "{\\"error\\":{\\"message\\":\\"Function calling not supported\\",...}}",
+              "provider_name": "Fireworks"
+            }
+          }
+        }
+
+    Without surfacing ``metadata.raw``, users see ``"Provider returned error"``
+    and have no idea which upstream rejected them or why. This helper
+    composes a message like::
+
+        Provider returned error (Fireworks: Function calling not supported)
+
+    so the failure mode is diagnostic out of the box.
+
+    Backward compatibility: when there's no ``metadata`` (a direct
+    OpenRouter-level error, not an upstream passthrough), behavior is
+    identical to the prior implementation — just returns ``error.message``.
+    """
     if not body or not isinstance(body, dict):
         return ""
     err = body.get("error")
+    if not isinstance(err, dict):
+        return ""
+    base = err.get("message", "") or ""
+    metadata = err.get("metadata")
+    if not isinstance(metadata, dict):
+        return base
+
+    provider_name = metadata.get("provider_name") or ""
+    upstream_msg = _extract_raw_upstream_message(metadata.get("raw"))
+    request_id = _extract_raw_request_id(metadata.get("raw"))
+
+    # Glue the parts: prefer "(Provider: message [req: ...])", degrade
+    # gracefully when one or more pieces are missing.
+    body_parts = []
+    if upstream_msg:
+        body_parts.append(upstream_msg)
+    if request_id:
+        body_parts.append(f"[req: {request_id}]")
+    body = " ".join(body_parts)
+
+    if provider_name and body:
+        suffix = f"({provider_name}: {body})"
+    elif provider_name:
+        suffix = f"(via {provider_name})"
+    elif body:
+        suffix = f"(upstream: {body})"
+    else:
+        return base
+
+    return f"{base} {suffix}" if base else suffix
+
+
+def _extract_raw_upstream_message(raw: object) -> str:
+    """Extract the upstream provider's actual error message from
+    ``error.metadata.raw``.
+
+    OpenRouter stores this in inconsistent forms:
+    - A dict with ``{"error": {"message": ...}}`` (most providers, normalized).
+    - A JSON-encoded **string** of that shape (some providers, opaque pass-through).
+    - A plain string (rare; legacy or stringly-typed providers).
+
+    Returns the most specific message we can find, or an empty string.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, dict):
+        return _message_from_error_dict(raw)
+    if isinstance(raw, str):
+        # Try JSON-decoding; fall back to the raw string if it isn't JSON.
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return raw
+        if isinstance(parsed, dict):
+            extracted = _message_from_error_dict(parsed)
+            return extracted or raw
+        return raw
+    return str(raw)
+
+
+def _extract_raw_request_id(raw: object) -> str:
+    """Pull a request id from an upstream provider body. Used in support
+    tickets — if a user reports an error, the request id lets us (or the
+    upstream provider) trace it.
+
+    Field name varies by provider: `request_id` (AtlasCloud, some Alibaba),
+    `requestId` (camelCase variants), `id` (OpenAI-shape error.id), or
+    `x-request-id` (header-style payload). Empty string if none found.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, dict):
+        return _request_id_from_dict(raw)
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return ""
+        if isinstance(parsed, dict):
+            return _request_id_from_dict(parsed)
+    return ""
+
+
+def _request_id_from_dict(d: dict) -> str:
+    candidate_keys = ("request_id", "requestId", "x-request-id", "id")
+    err = d.get("error")
     if isinstance(err, dict):
-        return err.get("message", "")
+        for key in candidate_keys:
+            value = err.get(key)
+            if value:
+                return str(value)
+    for key in candidate_keys:
+        value = d.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _message_from_error_dict(d: dict) -> str:
+    """Pull the human-facing error string out of an upstream provider's body.
+
+    Upstream OpenAI-shaped providers nest under ``error.message`` (OpenAI,
+    Anthropic, Fireworks, Together). Some Asian providers (e.g. AtlasCloud,
+    some Alibaba endpoints) use ``msg`` at the top level. FastAPI-style
+    services use ``detail``. Try each in priority order at both nesting
+    levels and return the first non-empty hit.
+
+    Returns ``""`` when nothing matches — the caller falls back to the raw
+    body so we never silently drop a useful error.
+    """
+    candidate_keys = ("message", "msg", "detail", "description")
+    err = d.get("error")
+    if isinstance(err, dict):
+        for key in candidate_keys:
+            value = err.get(key)
+            if value:
+                return str(value)
+    for key in candidate_keys:
+        value = d.get(key)
+        if value:
+            return str(value)
     return ""
 
 

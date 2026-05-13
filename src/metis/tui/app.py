@@ -49,7 +49,7 @@ from metis.cli.models_display import (
 )
 from metis.cli.runtime import ChatRuntime, SetupError, setup_runtime, shutdown_runtime
 from metis.routing.engine import RoutingError
-from metis.sessions import UnknownAliasError
+from metis.sessions import AmbiguousModelError, UnknownAliasError
 from metis.sessions.store import Session
 
 logger = logging.getLogger(__name__)
@@ -246,9 +246,9 @@ class MetisApp(App):
             # Short fixed-format help lines: keep as raw write_line so the
             # column alignment isn't re-wrapped on narrow terminals.
             log.write_line("Commands:")
-            log.write_line("  /model <alias|id>     set sticky model")
-            log.write_line("  /model -              clear sticky (use defaults)")
-            log.write_line("  /model show           print current sticky")
+            log.write_line("  /model <alias|id>     set the Active model for this session")
+            log.write_line("  /model -              clear the Active model (use defaults)")
+            log.write_line("  /model show           print the current Active model")
             log.write_line("  /cost                 session cost so far")
             log.write_line("  /models               list primary (latest) models")
             log.write_line("  /models all           list every registered model")
@@ -263,20 +263,38 @@ class MetisApp(App):
             return
         if cmd == "/model":
             if not arg or arg == "show":
+                # Refresh first so a stale local snapshot can't lie.
+                self.session = self.runtime.manager.get_session(self.session.id)
                 _write_wrapped(
                     log,
-                    f"sticky: {self.session.active_model or '(none — using defaults)'}",
+                    f"Active model: {self.session.active_model or '(none — using defaults)'}",
                 )
                 return
             if arg == "-":
                 self.runtime.manager.set_active_model(self.session.id, None)
-                _write_wrapped(log, "sticky cleared")
+                self.session = self.runtime.manager.get_session(self.session.id)
+                _write_wrapped(log, "Active model cleared")
                 self._refresh_title()
                 return
             try:
                 self.runtime.manager.set_active_model(self.session.id, arg)
-                _write_wrapped(log, f"sticky: {self.session.active_model}")
+                # Refresh local session so the title / future /model show
+                # reads the truth, not the stale snapshot we cached at
+                # session creation.
+                self.session = self.runtime.manager.get_session(self.session.id)
+                resolved = self.session.active_model
+                if resolved != arg:
+                    _write_wrapped(
+                        log, f"Active model: {resolved}   (matched from {arg!r})"
+                    )
+                else:
+                    _write_wrapped(log, f"Active model: {resolved}")
                 self._refresh_title()
+            except AmbiguousModelError as exc:
+                _write_wrapped(log, f"ambiguous model: {exc.input}")
+                _write_wrapped(log, "  did you mean one of:")
+                for candidate in exc.candidates:
+                    _write_wrapped(log, f"    {candidate}")
             except UnknownAliasError as exc:
                 _write_wrapped(log, f"unknown model: {exc.alias}")
             return
@@ -398,6 +416,8 @@ class MetisApp(App):
             return
 
         renderer.finalize()
+        if result.routing_fallthrough:
+            _write_wrapped(log, result.routing_fallthrough)
         cost = f"${result.cost_usd:.4f}" if result.cost_usd >= Decimal("0.0001") else "<$0.0001"
         _write_wrapped(
             log,

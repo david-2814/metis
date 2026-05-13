@@ -29,7 +29,7 @@ from metis.cli.runtime import ChatRuntime, SetupError, setup_runtime, shutdown_r
 from metis.pricing.table import PriceTable
 from metis.routing import ModelRegistry
 from metis.routing.engine import RoutingError
-from metis.sessions import SessionManager, UnknownAliasError
+from metis.sessions import AmbiguousModelError, SessionManager, UnknownAliasError
 
 logger = logging.getLogger(__name__)
 
@@ -185,9 +185,9 @@ async def _handle_slash(
     if cmd in ("/help", "/?"):
         print(
             "Commands:\n"
-            "  /model <alias|id>     set sticky model\n"
-            "  /model -              clear sticky (use defaults)\n"
-            "  /model show           print current sticky\n"
+            "  /model <alias|id>     set the Active model for this session\n"
+            "  /model -              clear the Active model (use defaults)\n"
+            "  /model show           print the current Active model\n"
             "  /models               list primary (latest) models\n"
             "  /models all           list every registered model\n"
             "  /models <pattern>     filter by substring (e.g. /models opus)\n"
@@ -199,15 +199,27 @@ async def _handle_slash(
         return None
     if cmd == "/model":
         if not arg or arg == "show":
-            print(f"sticky: {session.active_model or '(none — using defaults)'}")
+            # Re-fetch so the display matches what `submit_turn` will see.
+            current = manager.get_session(session.id).active_model
+            print(f"Active model: {current or '(none — using defaults)'}")
             return None
         if arg == "-":
             manager.set_active_model(session.id, None)
-            print("sticky cleared")
+            print("Active model cleared")
             return None
         try:
-            manager.set_active_model(session.id, arg)
-            print(f"sticky: {session.active_model}")
+            resolved = manager.set_active_model(session.id, arg)
+            if resolved != arg:
+                # Suggest matched a longer canonical id; show the user what
+                # we settled on so the resolution is transparent.
+                print(f"Active model: {resolved}   (matched from {arg!r})")
+            else:
+                print(f"Active model: {resolved}")
+        except AmbiguousModelError as exc:
+            print(f"ambiguous model: {exc.input}", file=sys.stderr)
+            print("  did you mean one of:", file=sys.stderr)
+            for candidate in exc.candidates:
+                print(f"    {candidate}", file=sys.stderr)
         except UnknownAliasError as exc:
             print(f"unknown model: {exc.alias}", file=sys.stderr)
         return None
@@ -286,6 +298,8 @@ class _LiveRenderer:
 
 
 def _print_result_tag(result) -> None:
+    if result.routing_fallthrough:
+        print(result.routing_fallthrough)
     cost = f"${result.cost_usd:.4f}" if result.cost_usd >= Decimal("0.0001") else "<$0.0001"
     tag = (
         f"[{result.chosen_model} • {cost} • "

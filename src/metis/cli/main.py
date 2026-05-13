@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
             help=(
                 "Initial model alias or canonical id "
                 "(e.g. 'sonnet' or 'anthropic:claude-sonnet-4-6'). "
-                "Sets the manual sticky for the session."
+                "Sets the Active model for the session."
             ),
             default=None,
         )
@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
         p.add_argument(
             "--global-default",
-            help="Model used when no sticky / override is set. "
+            help="Model used when no Active model / override is set. "
             "Default: anthropic:claude-sonnet-4-6",
             default="anthropic:claude-sonnet-4-6",
         )
@@ -62,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--global-default",
-        help="Model used when no sticky / override is set. Default: anthropic:claude-sonnet-4-6",
+        help="Model used when no Active model / override is set. Default: anthropic:claude-sonnet-4-6",
         default="anthropic:claude-sonnet-4-6",
     )
     serve.add_argument("--host", default="127.0.0.1", help="Bind host (loopback-only in v1).")

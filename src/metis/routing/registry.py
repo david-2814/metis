@@ -116,6 +116,41 @@ class ModelRegistry:
     def list_models(self) -> list[str]:
         return sorted(self._entries.keys())
 
+    def find_by_suffix(self, input: str) -> list[str]:
+        """Return canonical model ids whose tail matches `input` at a boundary.
+
+        A "boundary" is the ``:`` separating provider from name, or any ``/``
+        inside an OpenRouter-style id. This rejects mid-name substring
+        matches that are likely typos. An input that is itself a full
+        registered canonical id is also returned (the boundary check is
+        skipped when the lengths match).
+
+        Used by the `/model` resolver to let users type the visible tail of
+        a model id and have it auto-resolved when unambiguous.
+
+        Examples (with `openrouter:openai/gpt-oss-20b` and
+        `openai:gpt-5`, `openrouter:openai/gpt-5` registered)::
+
+            find_by_suffix("gpt-oss-20b")    → ["openrouter:openai/gpt-oss-20b"]
+            find_by_suffix("openai/gpt-5")   → ["openrouter:openai/gpt-5"]
+            find_by_suffix("gpt-5")          → ["openai:gpt-5", "openrouter:openai/gpt-5"]
+            find_by_suffix("t-5")            → []  # boundary check fails
+        """
+        if not input:
+            return []
+        out: list[str] = []
+        for model_id in self._entries:
+            if not model_id.endswith(input):
+                continue
+            if len(model_id) == len(input):
+                # Whole-id match; no boundary character to check.
+                out.append(model_id)
+                continue
+            before = model_id[-len(input) - 1]
+            if before in (":", "/"):
+                out.append(model_id)
+        return sorted(out)
+
     def __len__(self) -> int:
         return len(self._entries)
 

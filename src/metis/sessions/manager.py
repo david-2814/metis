@@ -92,6 +92,22 @@ class UnknownAliasError(ValueError):
         self.alias = alias
 
 
+class AmbiguousModelError(ValueError):
+    """The user's model input matches multiple registered canonical ids.
+
+    Raised by `/model` resolution when a suffix match returns 2+ candidates.
+    Carries the candidate list so the CLI/TUI can prompt for clarification.
+    """
+
+    def __init__(self, input: str, candidates: list[str]) -> None:
+        super().__init__(
+            f"ambiguous model {input!r}; matches {len(candidates)} ids: "
+            f"{', '.join(candidates)}"
+        )
+        self.input = input
+        self.candidates = list(candidates)
+
+
 @dataclass(frozen=True)
 class TurnResult:
     turn_id: str
@@ -104,6 +120,12 @@ class TurnResult:
     llm_call_count: int
     tool_call_count: int
     wall_time_seconds: float
+    routing_fallthrough: str | None = None
+    """Set when a user-explicit choice (per-message `@model` override or
+    session sticky model) was rejected during routing validation and the
+    chain fell back to a later candidate. Carries a one-line summary the
+    CLI/TUI can show so the rejection isn't silent. None when routing
+    chose the user's explicit candidate or no explicit candidate was set."""
 
 
 # Callback signature for live streaming events. May be sync or async.
@@ -176,6 +198,16 @@ class SessionManager:
             self._skill_stores[session.id] = None
         return session
 
+    def get_session(self, session_id: str) -> Session:
+        """Return the current Session record from the store.
+
+        Always re-reads from `SessionStore` — never returns a cached copy.
+        Callers that hold a long-lived Session reference (REPL, TUI) should
+        call this after any mutation (`set_active_model`, post-turn updates)
+        to avoid showing stale fields like `active_model` or `cost_so_far_usd`.
+        """
+        return self._store.get_session(session_id)
+
     def memory_for(self, session_id: str) -> MemoryStore | None:
         """Return the per-session memory store, if memory is configured."""
         return self._memory_stores.get(session_id)
@@ -221,17 +253,43 @@ class SessionManager:
         self._share_pending.discard(session_id)
         return self._slash_buffers.get(session_id)
 
-    def set_active_model(self, session_id: str, model: str | None) -> None:
-        """Apply a /model command. `None` clears the sticky."""
+    def set_active_model(self, session_id: str, model: str | None) -> str | None:
+        """Apply a /model command. `None` clears the Active model.
+
+        Returns the resolved canonical id (or None when cleared) so callers
+        can display the resolution result without re-reading their stale
+        local Session reference.
+
+        Resolution policy for non-None inputs:
+
+        1. Exact alias / canonical-id match → use it.
+        2. Boundary-respecting suffix match (`ModelRegistry.find_by_suffix`):
+           - Exactly one match: auto-resolve. Common case for users typing
+             `openai/gpt-oss-20b` instead of `openrouter:openai/gpt-oss-20b`.
+           - Two or more matches: raise `AmbiguousModelError` carrying the
+             candidate list so the caller can prompt for clarification.
+        3. No match anywhere: raise `UnknownAliasError`.
+        """
         session = self._store.get_session(session_id)
         if model is not None:
-            resolved = self._registry.resolve_alias(model) or model
-            if not self._registry.is_configured(resolved):
-                raise UnknownAliasError(model)
+            resolved = self._resolve_model_input(model)
             session.active_model = resolved
         else:
             session.active_model = None
         self._store.update_session(session)
+        return session.active_model
+
+    def _resolve_model_input(self, input: str) -> str:
+        """Lookup policy for `/model <input>`. See `set_active_model` docs."""
+        direct = self._registry.resolve_alias(input)
+        if direct is not None:
+            return direct
+        candidates = self._registry.find_by_suffix(input)
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            raise AmbiguousModelError(input, candidates)
+        raise UnknownAliasError(input)
 
     # ---- Turn loop ----------------------------------------------------
 
@@ -305,6 +363,7 @@ class SessionManager:
         chosen_model = decision.chosen_model
         provider = self._registry.provider_of(chosen_model)
         adapter = self._registry.adapter_for(chosen_model)
+        fallthrough_note = _routing_fallthrough_note(decision)
 
         # 5. Tool-cycle loop with the turn-locked model.
         llm_calls = 0
@@ -518,6 +577,7 @@ class SessionManager:
             llm_call_count=llm_calls,
             tool_call_count=tool_calls,
             wall_time_seconds=wall_time,
+            routing_fallthrough=fallthrough_note,
         )
 
     # ---- Helpers ------------------------------------------------------
@@ -933,6 +993,37 @@ async def _consume_stream(
             latency_ms=0,
         )
     return final
+
+
+_USER_EXPLICIT_POLICIES = ("per_message_override", "manual_sticky")
+
+
+def _routing_fallthrough_note(decision: RoutingDecision) -> str | None:
+    """Summarize a routing fall-through when the user's explicit choice was
+    rejected. Returns None if the user's choice won or no explicit choice
+    was made.
+
+    Scans the decision chain for the first ``rejected`` entry whose policy
+    slot is user-explicit (``per_message_override`` or ``manual_sticky``);
+    that's the choice the user typed and the system overrode. The trailing
+    ``chose`` entry tells us what was substituted.
+    """
+    for evaluation in decision.chain:
+        if evaluation.policy not in _USER_EXPLICIT_POLICIES:
+            continue
+        if evaluation.verdict != "rejected":
+            continue
+        source = (
+            "@model override"
+            if evaluation.policy == "per_message_override"
+            else "active model"
+        )
+        failure = evaluation.validation_failure or "rejected"
+        return (
+            f"note: {source} {evaluation.candidate_model} rejected ({failure}); "
+            f"used {decision.chosen_model} instead"
+        )
+    return None
 
 
 def _mode_for_chain_index(index: int) -> RoutingMode:
