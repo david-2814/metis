@@ -35,7 +35,12 @@ from metis.events.envelope import Event
 from metis.pricing import DEFAULT_PRICE_TABLE
 from metis.routing import ModelRegistry, RoutingEngine
 from metis.routing.engine import RoutingError
-from metis.sessions import InMemorySessionStore, SessionManager, UnknownAliasError
+from metis.sessions import (
+    InMemorySessionStore,
+    SessionManager,
+    UnknownAliasError,
+    UserExplicitModelRejectedError,
+)
 from metis.tools.dispatcher import ToolDispatcher
 
 # ---- Fake adapter ------------------------------------------------------
@@ -344,10 +349,10 @@ async def test_per_message_override_wins(bus, event_log, workspace):
     assert user_msgs[-1].content[0].text == "what is 2+2?"
 
 
-async def test_rejected_sticky_surfaces_fallthrough_note(bus, event_log, workspace):
-    """A sticky model that fails capability validation should produce a
-    visible note on TurnResult and the chain should fall through to the
-    global default."""
+async def test_rejected_sticky_refuses_turn(bus, event_log, workspace):
+    """A sticky model that fails capability validation should raise
+    UserExplicitModelRejectedError instead of silently falling through to
+    the global default."""
     no_tools = AdapterCapabilities(
         supports_thinking=False,
         supports_images=False,
@@ -363,12 +368,7 @@ async def test_rejected_sticky_surfaces_fallthrough_note(bus, event_log, workspa
         max_output_tokens=4_096,
     )
     adapter = _ScriptedAnthropicAdapter(
-        [
-            _ScriptedResponse(
-                content=[TextBlock(text="answer")],
-                stop_reason=StopReason.END_TURN,
-            )
-        ],
+        [],  # no responses needed — turn should refuse before any LLM call
         capability_overrides={"anthropic:claude-haiku-4-5": no_tools},
     )
     manager, _ = _build_manager(bus, adapter)
@@ -376,20 +376,58 @@ async def test_rejected_sticky_surfaces_fallthrough_note(bus, event_log, workspa
         workspace_path=str(workspace),
         active_model="anthropic:claude-haiku-4-5",
     )
-    result = await manager.submit_turn(session.id, "hello")
+    with pytest.raises(UserExplicitModelRejectedError) as excinfo:
+        await manager.submit_turn(session.id, "hello")
     await bus.drain()
     await bus.stop()
 
-    assert result.chosen_model == "anthropic:claude-sonnet-4-6"
-    assert result.routing_fallthrough is not None
-    assert "anthropic:claude-haiku-4-5" in result.routing_fallthrough
-    assert "no_tool_support" in result.routing_fallthrough
-    assert "anthropic:claude-sonnet-4-6" in result.routing_fallthrough
+    err = excinfo.value
+    assert err.model == "anthropic:claude-haiku-4-5"
+    assert err.validation_failure == "no_tool_support"
+    assert err.would_fall_back_to == "anthropic:claude-sonnet-4-6"
+    assert err.source == "active model"
+    # No LLM call should have happened — the refusal preempts it.
+    assert adapter.requests == []
+    # route.decided is still emitted so the trace records the rejection.
+    event_types = [e.type for e in event_log]
+    assert "route.decided" in event_types
+    assert "llm.call_started" not in event_types
 
 
-async def test_no_fallthrough_note_when_sticky_chosen(bus, event_log, workspace):
-    """When the sticky model passes validation it owns the turn and no
-    fallthrough note should be set."""
+async def test_rejected_override_refuses_turn(bus, event_log, workspace):
+    """A per-message @override that fails validation refuses the turn,
+    crediting the override (not the sticky) as the source."""
+    no_tools = AdapterCapabilities(
+        supports_thinking=False,
+        supports_images=False,
+        supports_tools=False,
+        supports_system_prompt=True,
+        supports_structured_output=False,
+        supports_streaming=True,
+        supports_streaming_tool_calls=False,
+        supports_parallel_tool_calls=False,
+        supports_prompt_caching=False,
+        supports_system_messages_in_list=False,
+        max_context_tokens=8_192,
+        max_output_tokens=4_096,
+    )
+    adapter = _ScriptedAnthropicAdapter(
+        [],
+        capability_overrides={"anthropic:claude-haiku-4-5": no_tools},
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    with pytest.raises(UserExplicitModelRejectedError) as excinfo:
+        await manager.submit_turn(session.id, "@haiku hello")
+    await bus.drain()
+    await bus.stop()
+    assert excinfo.value.source == "@model override"
+    assert excinfo.value.model == "anthropic:claude-haiku-4-5"
+
+
+async def test_compatible_sticky_runs_normally(bus, event_log, workspace):
+    """When the sticky model passes validation the turn proceeds normally
+    with no exception."""
     adapter = _ScriptedAnthropicAdapter(
         [
             _ScriptedResponse(
@@ -407,7 +445,6 @@ async def test_no_fallthrough_note_when_sticky_chosen(bus, event_log, workspace)
     await bus.drain()
     await bus.stop()
     assert result.chosen_model == "anthropic:claude-haiku-4-5"
-    assert result.routing_fallthrough is None
 
 
 async def test_unknown_alias_raises_before_llm_call(bus, event_log, workspace):

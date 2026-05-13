@@ -9,6 +9,7 @@ from metis.sessions.manager import (
     SessionManager,
     TurnResult,
     UnknownAliasError,
+    UserExplicitModelRejectedError,
 )
 from metis.sessions.sqlite_store import SqliteSessionStore
 from metis.sessions.store import InMemorySessionStore, Session, SessionStore
@@ -22,4 +23,5 @@ __all__ = [
     "SqliteSessionStore",
     "TurnResult",
     "UnknownAliasError",
+    "UserExplicitModelRejectedError",
 ]

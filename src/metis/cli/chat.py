@@ -29,7 +29,12 @@ from metis.cli.runtime import ChatRuntime, SetupError, setup_runtime, shutdown_r
 from metis.pricing.table import PriceTable
 from metis.routing import ModelRegistry
 from metis.routing.engine import RoutingError
-from metis.sessions import AmbiguousModelError, SessionManager, UnknownAliasError
+from metis.sessions import (
+    AmbiguousModelError,
+    SessionManager,
+    UnknownAliasError,
+    UserExplicitModelRejectedError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +118,9 @@ async def run_chat(
                 )
             except UnknownAliasError as exc:
                 print(f"unknown alias: @{exc.alias}", file=sys.stderr)
+                continue
+            except UserExplicitModelRejectedError as exc:
+                print(str(exc), file=sys.stderr)
                 continue
             except RoutingError as exc:
                 print(f"routing failed: {exc}", file=sys.stderr)
@@ -298,8 +306,6 @@ class _LiveRenderer:
 
 
 def _print_result_tag(result) -> None:
-    if result.routing_fallthrough:
-        print(result.routing_fallthrough)
     cost = f"${result.cost_usd:.4f}" if result.cost_usd >= Decimal("0.0001") else "<$0.0001"
     tag = (
         f"[{result.chosen_model} • {cost} • "

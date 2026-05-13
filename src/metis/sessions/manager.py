@@ -120,12 +120,45 @@ class TurnResult:
     llm_call_count: int
     tool_call_count: int
     wall_time_seconds: float
-    routing_fallthrough: str | None = None
-    """Set when a user-explicit choice (per-message `@model` override or
-    session sticky model) was rejected during routing validation and the
-    chain fell back to a later candidate. Carries a one-line summary the
-    CLI/TUI can show so the rejection isn't silent. None when routing
-    chose the user's explicit candidate or no explicit candidate was set."""
+
+
+class UserExplicitModelRejectedError(Exception):
+    """Raised when the user's explicit model choice — a per-message
+    ``@model`` override or the session sticky model set via ``/model`` —
+    fails routing capability validation.
+
+    Without this check, routing silently falls through to the next chain
+    slot (typically the global default), so the user is billed for a model
+    they didn't pick. The clear UX is to refuse the turn and tell the user
+    why so they can switch model, clear the sticky, or change the turn so
+    the missing capability isn't needed.
+
+    The ``route.decided`` event still records the rejection in the trace.
+    """
+
+    def __init__(
+        self,
+        *,
+        source: str,
+        model: str,
+        validation_failure: str,
+        would_fall_back_to: str | None,
+    ) -> None:
+        self.source = source
+        self.model = model
+        self.validation_failure = validation_failure
+        self.would_fall_back_to = would_fall_back_to
+        fallback_phrase = (
+            f" (would have fallen back to {would_fall_back_to})"
+            if would_fall_back_to
+            else ""
+        )
+        super().__init__(
+            f"{source} {model} can't handle this turn: {validation_failure}"
+            f"{fallback_phrase}. "
+            f"Pick a different model, clear the sticky with `/model -`, or "
+            f"adjust the turn (e.g. drop tools/images)."
+        )
 
 
 # Callback signature for live streaming events. May be sync or async.
@@ -360,10 +393,17 @@ class SessionManager:
             )
             raise
 
+        # Refuse to silently fall through when the user picked a model
+        # explicitly (@override or sticky) and it failed validation. The
+        # `route.decided` event already carries the rejection in the trace;
+        # we just don't proceed to call a different model behind their back.
+        explicit_rejection = _user_explicit_rejection(decision)
+        if explicit_rejection is not None:
+            raise explicit_rejection
+
         chosen_model = decision.chosen_model
         provider = self._registry.provider_of(chosen_model)
         adapter = self._registry.adapter_for(chosen_model)
-        fallthrough_note = _routing_fallthrough_note(decision)
 
         # 5. Tool-cycle loop with the turn-locked model.
         llm_calls = 0
@@ -577,7 +617,6 @@ class SessionManager:
             llm_call_count=llm_calls,
             tool_call_count=tool_calls,
             wall_time_seconds=wall_time,
-            routing_fallthrough=fallthrough_note,
         )
 
     # ---- Helpers ------------------------------------------------------
@@ -998,15 +1037,16 @@ async def _consume_stream(
 _USER_EXPLICIT_POLICIES = ("per_message_override", "manual_sticky")
 
 
-def _routing_fallthrough_note(decision: RoutingDecision) -> str | None:
-    """Summarize a routing fall-through when the user's explicit choice was
-    rejected. Returns None if the user's choice won or no explicit choice
-    was made.
+def _user_explicit_rejection(decision: RoutingDecision) -> UserExplicitModelRejectedError | None:
+    """If the user's explicit model choice (per-message override or session
+    sticky) was rejected by routing validation, build the error to raise.
 
-    Scans the decision chain for the first ``rejected`` entry whose policy
-    slot is user-explicit (``per_message_override`` or ``manual_sticky``);
-    that's the choice the user typed and the system overrode. The trailing
-    ``chose`` entry tells us what was substituted.
+    Routing's default behavior is to fall through to the next candidate
+    when validation fails. For user-explicit choices that's the wrong UX:
+    the user picked a specific model, so we'd rather refuse the turn than
+    bill them for something else. Returns None when neither user-explicit
+    slot was rejected (either the user's choice won, or no explicit choice
+    was set in the first place).
     """
     for evaluation in decision.chain:
         if evaluation.policy not in _USER_EXPLICIT_POLICIES:
@@ -1018,10 +1058,11 @@ def _routing_fallthrough_note(decision: RoutingDecision) -> str | None:
             if evaluation.policy == "per_message_override"
             else "active model"
         )
-        failure = evaluation.validation_failure or "rejected"
-        return (
-            f"note: {source} {evaluation.candidate_model} rejected ({failure}); "
-            f"used {decision.chosen_model} instead"
+        return UserExplicitModelRejectedError(
+            source=source,
+            model=evaluation.candidate_model or "",
+            validation_failure=evaluation.validation_failure or "rejected",
+            would_fall_back_to=decision.chosen_model or None,
         )
     return None
 
@@ -1111,5 +1152,10 @@ def _compose_message_with_shared(shared: str, user_text: str) -> str:
 
 
 # Re-export RoutingDecision for callers that want the typed result.
-__all__ = ["SessionManager", "TurnResult", "UnknownAliasError"]
+__all__ = [
+    "SessionManager",
+    "TurnResult",
+    "UnknownAliasError",
+    "UserExplicitModelRejectedError",
+]
 _ = RoutingDecision  # exported via metis.routing

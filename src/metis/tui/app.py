@@ -49,7 +49,7 @@ from metis.cli.models_display import (
 )
 from metis.cli.runtime import ChatRuntime, SetupError, setup_runtime, shutdown_runtime
 from metis.routing.engine import RoutingError
-from metis.sessions import AmbiguousModelError, UnknownAliasError
+from metis.sessions import AmbiguousModelError, UnknownAliasError, UserExplicitModelRejectedError
 from metis.sessions.store import Session
 
 logger = logging.getLogger(__name__)
@@ -404,6 +404,9 @@ class MetisApp(App):
         except UnknownAliasError as exc:
             _write_wrapped(log, f"unknown alias: @{exc.alias}")
             return
+        except UserExplicitModelRejectedError as exc:
+            _write_wrapped(log, str(exc))
+            return
         except RoutingError as exc:
             _write_wrapped(log, f"routing failed: {exc}")
             return
@@ -416,8 +419,6 @@ class MetisApp(App):
             return
 
         renderer.finalize()
-        if result.routing_fallthrough:
-            _write_wrapped(log, result.routing_fallthrough)
         cost = f"${result.cost_usd:.4f}" if result.cost_usd >= Decimal("0.0001") else "<$0.0001"
         _write_wrapped(
             log,
