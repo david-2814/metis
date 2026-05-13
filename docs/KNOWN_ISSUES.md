@@ -22,7 +22,7 @@ When you fix one, **delete the entry**. This file is not a changelog; it's a wat
 
 ### 🔴 `provider_raw` is not excluded from equality / hashing
 
-[`canonical-message-format.md §6.5`](specs/canonical-message-format.md) says: *"`provider_raw` is not part of equality comparisons or hashing."* [`src/metis/canonical/messages.py`](../src/metis/canonical/messages.py) uses `msgspec.Struct(frozen=True)`, which includes every field in `__eq__` and `__hash__`.
+[`canonical-message-format.md §6.5`](specs/canonical-message-format.md) says: *"`provider_raw` is not part of equality comparisons or hashing."* [`packages/metis-core/src/metis_core/canonical/messages.py`](../packages/metis-core/src/metis_core/canonical/messages.py) uses `msgspec.Struct(frozen=True)`, which includes every field in `__eq__` and `__hash__`.
 
 ```text
 >>> a = MessageMetadata(model='m', provider='p', provider_raw={'x': 1})
@@ -49,7 +49,7 @@ Spec says `Literal["base64", "url", "file_ref"]`. Impl uses `str`. msgspec will 
 
 ### 🔴 `AnthropicAdapter` `ImageBlock.kind="file_ref"` is interpreted as base64
 
-[`src/metis/adapters/anthropic.py`](../src/metis/adapters/anthropic.py) treats `file_ref` source by stuffing the workspace-relative path string into Anthropic's base64 `data` field. The path needs to be resolved (read bytes, base64-encode, fill `media_type`). Currently a `file_ref` ImageBlock through this adapter would deliver garbled payload to the API. No test exercises `file_ref`.
+[`packages/metis-core/src/metis_core/adapters/anthropic.py`](../packages/metis-core/src/metis_core/adapters/anthropic.py) treats `file_ref` source by stuffing the workspace-relative path string into Anthropic's base64 `data` field. The path needs to be resolved (read bytes, base64-encode, fill `media_type`). Currently a `file_ref` ImageBlock through this adapter would deliver garbled payload to the API. No test exercises `file_ref`.
 
 ### 🟡 Anthropic `supports_streaming` honesty — verify
 
@@ -57,7 +57,7 @@ Last reviewed before `adapters/streaming.py` landed. After streaming layer arriv
 
 ### 🟢 `CanonicalResponse` shape divergence from spec
 
-Spec §3.3 returns `CanonicalResponse.message: Message`. Impl returns `content: list[ContentBlock]` + `model` + `provider`. Acknowledged in [`adapters/protocol.py`](../src/metis/adapters/protocol.py) docstring and AGENTS.md "Implementation conventions." Reasonable trade-off; the spec needs an entry in CHANGES.md and a §3.3 edit so downstream readers don't write to the original shape.
+Spec §3.3 returns `CanonicalResponse.message: Message`. Impl returns `content: list[ContentBlock]` + `model` + `provider`. Acknowledged in [`adapters/protocol.py`](../packages/metis-core/src/metis_core/adapters/protocol.py) docstring and AGENTS.md "Implementation conventions." Reasonable trade-off; the spec needs an entry in CHANGES.md and a §3.3 edit so downstream readers don't write to the original shape.
 
 ---
 
@@ -65,7 +65,7 @@ Spec §3.3 returns `CanonicalResponse.message: Message`. Impl returns `content: 
 
 ### 🔴 Canonical JSON Schema subset is not enforced at registration
 
-`tool-dispatcher.md §7.1` says tools registering with `oneOf` / `$ref` / `allOf` / `not` / etc. must fail loudly. [`src/metis/tools/dispatcher.py`](../src/metis/tools/dispatcher.py) calls only `jsonschema.Draft7Validator.check_schema()` — that validates *valid JSON Schema*, not the canonical *subset*. The canonical module exposes [`validate_tool_input_schema`](../src/metis/canonical/tools.py) for this exact check; it isn't called.
+`tool-dispatcher.md §7.1` says tools registering with `oneOf` / `$ref` / `allOf` / `not` / etc. must fail loudly. [`packages/metis-core/src/metis_core/tools/dispatcher.py`](../packages/metis-core/src/metis_core/tools/dispatcher.py) calls only `jsonschema.Draft7Validator.check_schema()` — that validates *valid JSON Schema*, not the canonical *subset*. The canonical module exposes [`validate_tool_input_schema`](../packages/metis-core/src/metis_core/canonical/tools.py) for this exact check; it isn't called.
 
 Fix is one line: add `validate_tool_input_schema(definition.input_schema)` before the existing `check_schema` call.
 
@@ -95,7 +95,7 @@ Auto-approves *everything* including WRITE/EXECUTE/NETWORK. Fine for single-user
 
 ### 🔴 Per-(provider, model) availability collapsed to per-provider only
 
-`routing-engine.md §4.5` makes per-(provider, model) the *default* scope: a 401 on Opus should not blackout Sonnet. [`src/metis/routing/availability.py`](../src/metis/routing/availability.py) tracks per-provider only, with a comment acknowledging the deviation as deferred. Spec test §10.1.19 cannot pass.
+`routing-engine.md §4.5` makes per-(provider, model) the *default* scope: a 401 on Opus should not blackout Sonnet. [`packages/metis-core/src/metis_core/routing/availability.py`](../packages/metis-core/src/metis_core/routing/availability.py) tracks per-provider only, with a comment acknowledging the deviation as deferred. Spec test §10.1.19 cannot pass.
 
 ### 🔴 Consecutive-failure window is not enforced
 
@@ -111,7 +111,7 @@ Spec §4.5.1: *"≥3 distinct models from one provider hit Unavailable within 2 
 
 ### 🟢 Bare `@haiku` (no trailing text) accepted as override
 
-Spec §9.2: *"The override syntax must be at the start of the message and followed by whitespace."* [`overrides.py`](../src/metis/routing/overrides.py) accepts a one-token message (`@haiku` alone → rest=""). Either reject or document.
+Spec §9.2: *"The override syntax must be at the start of the message and followed by whitespace."* [`overrides.py`](../packages/metis-core/src/metis_core/routing/overrides.py) accepts a one-token message (`@haiku` alone → rest=""). Either reject or document.
 
 ---
 
@@ -139,7 +139,7 @@ Spec §6.10 / §9.1 test 3 defines a startup ULID-gap scan; the payload struct i
 
 ### 🟡 Datetime fields in payloads stored as strings, never re-typed
 
-[`trace/store.py`](../src/metis/trace/store.py) uses `json.dumps(..., default=str)`. Payload fields like `tool.confirmation_requested.expires_at` become ISO strings on write and stay strings on read. Downstream readers expecting `datetime` need to round-trip through `msgspec.convert`. Either standardize on stringly-typed payload reads (and document it) or store payloads via `msgspec.json.encode` and decode back via the registered Struct class on read.
+[`trace/store.py`](../packages/metis-core/src/metis_core/trace/store.py) uses `json.dumps(..., default=str)`. Payload fields like `tool.confirmation_requested.expires_at` become ISO strings on write and stay strings on read. Downstream readers expecting `datetime` need to round-trip through `msgspec.convert`. Either standardize on stringly-typed payload reads (and document it) or store payloads via `msgspec.json.encode` and decode back via the registered Struct class on read.
 
 ### 🟢 No `FOREIGN KEY (session_id) REFERENCES sessions(id)`
 

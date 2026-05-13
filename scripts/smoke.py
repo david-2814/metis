@@ -16,16 +16,15 @@ import os
 import sys
 from pathlib import Path
 
-from metis.adapters.anthropic import AnthropicAdapter
-from metis.events.bus import EventBus, EventFilter, Subscription
-from metis.events.envelope import Event
-from metis.pricing import DEFAULT_PRICE_TABLE
-from metis.routing import ModelRegistry, RoutingEngine
-from metis.sessions import InMemorySessionStore, SessionManager
-from metis.tools.builtins import register_builtins
-from metis.tools.dispatcher import ToolDispatcher
-from metis.trace.store import TraceStore
-
+from metis_core.adapters.anthropic import AnthropicAdapter
+from metis_core.events.bus import EventBus, EventFilter, Subscription
+from metis_core.events.envelope import Event
+from metis_core.pricing import DEFAULT_PRICE_TABLE
+from metis_core.routing import ModelRegistry, RoutingEngine
+from metis_core.sessions import InMemorySessionStore, SessionManager
+from metis_core.tools.builtins import register_builtins
+from metis_core.tools.dispatcher import ToolDispatcher
+from metis_core.trace.store import TraceStore
 
 ANTHROPIC_MODELS = {
     "anthropic:claude-opus-4-7": ["opus", "deep"],
@@ -70,9 +69,7 @@ async def main() -> int:
         event_log.append(e)
 
     bus.subscribe(
-        Subscription(
-            filter=EventFilter(), handler=collector, name="smoke-log", fast_path=True
-        )
+        Subscription(filter=EventFilter(), handler=collector, name="smoke-log", fast_path=True)
     )
 
     db_path = REPO_ROOT / ".metis" / "smoke-trace.db"
@@ -105,11 +102,9 @@ async def main() -> int:
         print(f"unknown model: {args.model}", file=sys.stderr)
         return 1
 
-    session = manager.create_session(
-        workspace_path=str(REPO_ROOT), active_model=resolved
-    )
+    session = manager.create_session(workspace_path=str(REPO_ROOT), active_model=resolved)
 
-    print(f"=== Metis smoke test ===")
+    print("=== Metis smoke test ===")
     print(f"Workspace: {REPO_ROOT}")
     print(f"Model:     {resolved}")
     print(f"Session:   {session.id}")
@@ -146,8 +141,8 @@ async def main() -> int:
     await adapter.close()
 
     # Summary
-    print(f"=== Session totals ===")
-    fresh = manager._store.get_session(session.id)  # noqa: SLF001
+    print("=== Session totals ===")
+    fresh = manager._store.get_session(session.id)
     print(f"Turns:      {fresh.turn_count}")
     print(f"Total cost: ${fresh.cost_so_far_usd:.6f}")
     type_counts: dict[str, int] = {}

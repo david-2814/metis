@@ -23,18 +23,18 @@ import os
 import sys
 from pathlib import Path
 
-from metis.adapters.anthropic import AnthropicAdapter
-from metis.adapters.openai import OpenAIAdapter
-from metis.adapters.openrouter import OpenRouterAdapter
-from metis.canonical.content import ToolUseBlock
-from metis.canonical.messages import Role
-from metis.events.bus import EventBus
-from metis.pricing import DEFAULT_PRICE_TABLE
-from metis.routing import ModelRegistry, RoutingEngine
-from metis.sessions import InMemorySessionStore, SessionManager
-from metis.tools.builtins import register_builtins
-from metis.tools.dispatcher import ToolDispatcher
-from metis.trace.store import TraceStore
+from metis_core.adapters.anthropic import AnthropicAdapter
+from metis_core.adapters.openai import OpenAIAdapter
+from metis_core.adapters.openrouter import OpenRouterAdapter
+from metis_core.canonical.content import ToolUseBlock
+from metis_core.canonical.messages import Role
+from metis_core.events.bus import EventBus
+from metis_core.pricing import DEFAULT_PRICE_TABLE
+from metis_core.routing import ModelRegistry, RoutingEngine
+from metis_core.sessions import InMemorySessionStore, SessionManager
+from metis_core.tools.builtins import register_builtins
+from metis_core.tools.dispatcher import ToolDispatcher
+from metis_core.trace.store import TraceStore
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -82,26 +82,16 @@ async def main() -> int:
     )
 
     registry = ModelRegistry()
-    registry.register(
-        model_id="anthropic:claude-haiku-4-5", adapter=anth, aliases=["haiku"]
-    )
-    registry.register(
-        model_id="anthropic:claude-sonnet-4-6", adapter=anth, aliases=["sonnet"]
-    )
-    registry.register(
-        model_id="openai:gpt-5-mini", adapter=oai, aliases=["mini", "gpt5-mini"]
-    )
+    registry.register(model_id="anthropic:claude-haiku-4-5", adapter=anth, aliases=["haiku"])
+    registry.register(model_id="anthropic:claude-sonnet-4-6", adapter=anth, aliases=["sonnet"])
+    registry.register(model_id="openai:gpt-5-mini", adapter=oai, aliases=["mini", "gpt5-mini"])
 
     print("Fetching OpenRouter catalog…")
     catalog = await or_adapter.fetch_catalog()
     # Pick a cheap OpenRouter model. Llama 3.1 8B Instruct is consistently
     # available and inexpensive; fall back to any model in the catalog.
     or_model_id = next(
-        (
-            m
-            for m in catalog.capabilities
-            if "llama-3.1-8b-instruct" in m or "deepseek-chat" in m
-        ),
+        (m for m in catalog.capabilities if "llama-3.1-8b-instruct" in m or "deepseek-chat" in m),
         None,
     )
     if or_model_id is None:
@@ -132,9 +122,9 @@ async def main() -> int:
 
     print("=== Cross-provider continuity smoke test ===")
     print(f"Workspace: {REPO_ROOT}")
-    print(f"Models:")
-    print(f"  Turn 1 — Anthropic:  anthropic:claude-haiku-4-5")
-    print(f"  Turn 2 — OpenAI:     openai:gpt-5-mini")
+    print("Models:")
+    print("  Turn 1 — Anthropic:  anthropic:claude-haiku-4-5")
+    print("  Turn 2 — OpenAI:     openai:gpt-5-mini")
     print(f"  Turn 3 — OpenRouter: {or_model_id}")
     print(f"Session: {session.id}")
     print()
@@ -158,7 +148,7 @@ async def main() -> int:
     print()
 
     # Check that the session history has a tool_use + tool_result.
-    messages = manager._store.get_messages(session.id)  # noqa: SLF001
+    messages = manager._store.get_messages(session.id)
     tool_use_ids = []
     for m in messages:
         if m.role == Role.ASSISTANT:
@@ -203,7 +193,7 @@ async def main() -> int:
         )
         # We don't assert content for turn 3 strictly — OR models vary widely.
         # Just verifying the swap doesn't crash is the key signal.
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         failures.append(f"Turn 3: OpenRouter swap failed: {type(exc).__name__}: {exc}")
         print(f"  FAILED: {exc}")
     print()
@@ -217,7 +207,7 @@ async def main() -> int:
     await or_adapter.close()
     trace.close()
 
-    fresh = manager._store.get_session(session.id)  # noqa: SLF001
+    fresh = manager._store.get_session(session.id)
     print("=== Result ===")
     print(f"Total cost:  ${fresh.cost_so_far_usd:.6f}")
     print(f"Turn count:  {fresh.turn_count}")

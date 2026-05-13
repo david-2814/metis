@@ -2,7 +2,7 @@
 
 A local-first AI dev agent — provider-agnostic, self-improving, and cost-aware.
 
-> **Status:** Phase 1 + early Phase 2 wedges shipped. Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, and SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), and `metis serve` (HTTP/WebSocket on loopback) all run. 544 tests passing. Configured routing rules, the tool-confirmation REST endpoint, and the pattern store are the next-up work.
+> **Status:** Phase 1 + early Phase 2 wedges shipped. Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, and SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), and `metis serve` (HTTP/WebSocket on loopback) all run. 729 tests passing. Configured routing rules, the tool-confirmation REST endpoint, and the pattern store are the next-up work.
 
 ---
 
@@ -10,7 +10,7 @@ A local-first AI dev agent — provider-agnostic, self-improving, and cost-aware
 
 ```bash
 # Python 3.13 + uv required.
-uv sync
+uv sync   # resolves the workspace (metis-core, metis-server, metis-cli)
 
 # Put your Anthropic API key in a gitignored .env file
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
@@ -18,6 +18,8 @@ echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 # Start a chat in any workspace directory
 uv run metis chat . --model sonnet
 ```
+
+The repo is a uv-workspace monorepo: [`packages/metis-core/`](packages/metis-core/) is the library (canonical types, events, adapters, routing, tools, memory, sessions, pricing, skills, trace); [`apps/server/`](apps/server/) and [`apps/cli/`](apps/cli/) are the deployable surfaces. The `metis` console-script is shipped by `metis-cli`.
 
 Inside the REPL: type your message and hit return. Slash commands: `/model <alias|id>`, `/model -` (clear sticky), `/cost`, `/models`, `/help`. Ctrl-D or `exit` to leave. Per-message override: start a message with `@haiku` (or any alias) to route that single message to a different model.
 
@@ -93,12 +95,12 @@ Key design choices:
 - **HTTP/WebSocket server.** Starlette + uvicorn ASGI app. REST for sessions/turns/messages/models/health; WebSocket `/sessions/{id}/stream` with single-use attach tokens, snapshot+live replay, filter presets, cancel-via-WS, ping/pong. Loopback-only bind in v1.
 - **Three client surfaces.** `metis chat` (line REPL), `metis tui` (Textual app), `metis serve` (HTTP/WS server for external clients). Slash commands `/model`, `/cost`, `/models`, `/help`. Per-message `@alias` syntax.
 - **Cost in real time.** Per-turn input/output/cached token costs computed by core (not parroted from provider), `Decimal` math, versioned for retroactive re-pricing. OpenRouter prices overlaid at session start.
-- **544 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations.
+- **729 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations.
 
 ## What's NOT built yet (next-up)
 
-- **Configured routing rules in the chain.** The yaml parser, predicate set, and rule loader are in [`src/metis/routing/`](src/metis/routing/) (`policy.py`, `policy_loader.py`, `predicates.py`); the `rule` slot in `route.decided.chain` still reports `not_applicable` until the wiring is finished.
-- **Skills.** `src/metis/skills/` has a store and a `load_skill` tool with `skill.loaded` events emitting. Full agentskills.io conformance, FTS5 indexing, and auto-generation are still phase-2 work.
+- **Configured routing rules in the chain.** The yaml parser, predicate set, and rule loader are in [`packages/metis-core/src/metis_core/routing/`](packages/metis-core/src/metis_core/routing/) (`policy.py`, `policy_loader.py`, `predicates.py`); the `rule` slot in `route.decided.chain` still reports `not_applicable` until the wiring is finished.
+- **Skills.** `packages/metis-core/src/metis_core/skills/` has a store and a `load_skill` tool with `skill.loaded` events emitting. Full agentskills.io conformance, FTS5 indexing, and auto-generation are still phase-2 work.
 - **Tool-confirmation REST endpoint.** [`server-api.md §4.2`](docs/specs/server-api.md) specs `POST /turns/{id}/confirmations/{request_id}`; it isn't wired. The dispatcher uses `AutoAllowHandler` (auto-approves everything; safe for single-user, not for shared).
 - **Pattern store + learned routing.** Phase 2.5.
 - **Delegation (`delegate()` tool).** Phase 4. The routing chain has a `DELEGATE_REQUEST` stub.

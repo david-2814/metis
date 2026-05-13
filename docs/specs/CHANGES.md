@@ -124,7 +124,7 @@ Followup to the cross-spec sweep — five small but real defects caught in revie
 - **Type:** additive. Existing consumers ignore unknown fields; no migration required for stored events (the field defaults to None on records written before this entry, since the implementation defaulted it None on the typed struct — though all in-process emitters set it).
 - **References to verify:**
   - `skill-format.md` *(planned)* — when that spec lands, document `source` alongside the other fields. Note pending below.
-- **Status:** verified (event-bus spec updated in this change; implementation in `src/metis/events/payloads.py::SkillLoaded` + emitter in `src/metis/skills/tools.py::SkillLoadTool`).
+- **Status:** verified (event-bus spec updated in this change; implementation in `packages/metis-core/src/metis_core/events/payloads.py::SkillLoaded` + emitter in `packages/metis-core/src/metis_core/skills/tools.py::SkillLoadTool`).
 
 ---
 

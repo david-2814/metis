@@ -1,24 +1,27 @@
 [project]
 name = "metis"
 version = "0.1.0"
-description = "Local-first AI agent server with provider-agnostic canonical message format."
+description = "Metis monorepo root: metis-core library, metis-server HTTP/WS surface, metis-cli (chat/tui/serve)."
 authors = [
     { name = "David Ji", email = "david.ji.2814@gmail.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "msgspec>=0.19.0",
-    "python-ulid>=3.0.0",
-    "jsonschema>=4.23.0",
-    "anthropic>=0.40.0",
-    "openai>=1.55.0",
-    "httpx>=0.27.0",
-    "textual>=0.86.0",
-    "python-dotenv>=1.0.0",
-    "starlette>=0.41.0",
-    "uvicorn>=0.32.0",
-    "pyyaml>=6.0",
+    "metis-core",
+    "metis-server",
+    "metis-cli",
 ]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*", "apps/*"]
+
+[tool.uv.sources]
+metis-core = { workspace = true }
+metis-server = { workspace = true }
+metis-cli = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -27,13 +30,6 @@ dev = [
     "ruff>=0.7.0",
     "mypy>=1.13.0",
 ]
-
-[project.scripts]
-metis = "metis.cli.main:main"
-
-[build-system]
-requires = ["uv_build>=0.10.0,<0.11.0"]
-build-backend = "uv_build"
 
 [tool.ruff]
 line-length = 100
@@ -44,5 +40,9 @@ select = ["E", "F", "I", "B", "UP", "RUF"]
 ignore = ["E501"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = [
+    "packages/metis-core/tests",
+    "apps/server/tests",
+    "apps/cli/tests",
+]
 asyncio_mode = "auto"
