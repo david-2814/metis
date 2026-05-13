@@ -1,0 +1,274 @@
+---
+import Layout from "../layouts/Layout.astro";
+import TerminalDemo from "../components/TerminalDemo.astro";
+
+// TODO: swap to the public repo URL when the project is open-sourced.
+const GITHUB_URL = "https://github.com/2sumai/metis";
+
+const pillars = [
+  {
+    n: "01",
+    title: "Context engineering",
+    body: "Prompt-cache discipline, history pruning, lazy skill loading, stable tool-def prefixes. Cache reads at 0.1× versus writes at 1.25× swing long-session bills by 5–10×. The largest lever, applied automatically.",
+  },
+  {
+    n: "02",
+    title: "Skills on demand",
+    body: "Focused expert instructions, loaded only when the task needs them. Progressive disclosure keeps the metadata cost near zero until activated. Smaller models do focused work when given a focused prompt. Compatible with the agentskills.io open standard.",
+  },
+  {
+    n: "03",
+    title: "Model selection",
+    body: "A layered routing chain picks the cheapest model that can do the task well, with capability validation before dispatch. Sticky per session, configurable per workload, learned from past patterns.",
+  },
+];
+
+const wedges = [
+  {
+    title: "Bounded, agent-curated memory",
+    body: "MEMORY.md and USER.md are intentionally small (∼2 KB and ∼1.5 KB). The agent adds, replaces, and consolidates entries on its own — the eviction is the feature. Unbounded vector stores destroy context quality; bounded memory keeps it surgical.",
+  },
+  {
+    title: "Lossless canonical message format",
+    body: "One internal representation of messages, content blocks, and tool calls. Provider adapters translate to and from each wire format. Mid-session model swaps work because the canonical state is provider-agnostic. Replays survive because content is preserved.",
+  },
+  {
+    title: "Pattern learning over your workload",
+    body: "Task fingerprints with outcomes drive cold-start routing recommendations and auto-derived skills. The longer you use it, the more it knows what worked on this codebase — and the cheaper the next turn gets.",
+  },
+];
+
+const shipped = [
+  "Three providers wired: Anthropic, OpenAI, OpenRouter",
+  "Canonical message format with mid-session provider swap",
+  "Bounded MEMORY.md / USER.md with agent self-edit tools",
+  "Workspace-scoped file and shell tools with path security",
+  "SQLite-backed session and trace store; full event catalog",
+  "Streaming over HTTP + WebSocket; CLI, TUI, and server",
+];
+
+const inProgress = [
+  "Configured routing rules (yaml policy)",
+  "Skill format + skill store (agentskills.io compatible)",
+  "Pattern store + cold-start routing suggestions",
+  "Cost dashboard and evaluator",
+  "Cross-device sync (git remote)",
+];
+---
+
+<Layout>
+  <!-- subtle dotted grid background, fades at edges -->
+  <div class="pointer-events-none fixed inset-0 grid-bg opacity-60 [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]"></div>
+
+  <div class="relative">
+    <!-- NAV -->
+    <header class="border-b border-border">
+      <div class="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
+        <a href="/" class="flex items-baseline gap-2 text-fg">
+          <span class="text-accent">&gt;_</span>
+          <span class="text-base font-bold tracking-tight">metis</span>
+        </a>
+        <nav class="flex items-center gap-6 text-sm">
+          <a href="#thesis" class="text-fg-muted hover:text-fg">thesis</a>
+          <a href="#status" class="text-fg-muted hover:text-fg">status</a>
+          <a
+            href={GITHUB_URL}
+            class="rounded border border-border-strong px-3 py-1.5 text-fg hover:border-accent hover:text-accent"
+          >
+            github
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <!-- HERO -->
+    <section class="mx-auto max-w-6xl px-6 pb-20 pt-20 sm:pt-28">
+      <div class="mb-6 inline-flex items-center gap-2 rounded-full border border-border-strong bg-bg-card px-3 py-1 text-xs">
+        <span class="relative flex h-2 w-2">
+          <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50"></span>
+          <span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span>
+        </span>
+        <span class="text-fg-muted">phase 1 shipped &middot; pre-launch</span>
+      </div>
+
+      <h1 class="max-w-4xl text-4xl font-bold leading-[1.1] tracking-tight sm:text-5xl md:text-6xl">
+        the AI dev agent
+        <br class="hidden sm:block" />
+        that gets <span class="text-accent">cheaper</span> the longer
+        <br class="hidden sm:block" />
+        you use it.
+      </h1>
+
+      <p class="mt-6 max-w-2xl text-base leading-relaxed text-fg-muted sm:text-lg">
+        Metis is a local-first agent that switches between Claude, OpenAI, and
+        OpenRouter mid-session. Bounded memory and curated skills keep prompts
+        lean. Pattern learning routes the right model for the job. Your costs
+        go down as the agent learns your workload.
+      </p>
+
+      <div class="mt-10 flex flex-wrap items-center gap-4">
+        <a
+          href={GITHUB_URL}
+          class="inline-flex items-center gap-2 rounded border border-accent bg-accent/10 px-5 py-3 text-sm font-bold text-accent hover:bg-accent hover:text-bg"
+        >
+          <span>view on github</span>
+          <span aria-hidden="true">&rarr;</span>
+        </a>
+        <span class="text-sm text-fg-muted">
+          binary releases coming soon &middot; runs on macOS / Linux
+        </span>
+      </div>
+
+      <!-- terminal demo -->
+      <div class="mt-16">
+        <TerminalDemo />
+      </div>
+    </section>
+
+    <!-- THESIS / PILLARS -->
+    <section id="thesis" class="border-t border-border bg-bg-elev/40">
+      <div class="mx-auto max-w-6xl px-6 py-20">
+        <div class="mb-12 max-w-2xl">
+          <p class="prompt-before mb-3 text-sm text-fg-muted">
+            <span class="text-fg">cat docs/thesis.md</span>
+          </p>
+          <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">
+            Three levers. Applied together.
+          </h2>
+          <p class="mt-4 text-fg-muted">
+            Cost optimization isn&apos;t one trick &mdash; it&apos;s the compounding
+            effect of getting all three right. The order of impact:
+            <span class="text-fg">context &gt; skills &gt; model selection.</span>
+          </p>
+        </div>
+
+        <div class="grid gap-6 md:grid-cols-3">
+          {pillars.map((p) => (
+            <div class="rounded-lg border border-border bg-bg-card p-6 transition-colors hover:border-border-strong">
+              <p class="font-mono text-xs text-accent">{p.n}</p>
+              <h3 class="mt-2 text-lg font-bold">{p.title}</h3>
+              <p class="mt-3 text-sm leading-relaxed text-fg-muted">{p.body}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <!-- WEDGE / DIFFERENTIATION -->
+    <section class="border-t border-border">
+      <div class="mx-auto max-w-6xl px-6 py-20">
+        <div class="mb-12 max-w-2xl">
+          <p class="prompt-before mb-3 text-sm text-fg-muted">
+            <span class="text-fg">grep -r &quot;moat&quot; .</span>
+          </p>
+          <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">
+            What everyone else doesn&apos;t ship.
+          </h2>
+          <p class="mt-4 text-fg-muted">
+            Multi-provider support and cost tracking are table stakes now. The
+            defensible work is here:
+          </p>
+        </div>
+
+        <div class="space-y-px overflow-hidden rounded-lg border border-border">
+          {wedges.map((w) => (
+            <div class="bg-bg-card p-6 sm:p-8">
+              <div class="flex items-start gap-4">
+                <span class="mt-1.5 text-accent" aria-hidden="true">&rarr;</span>
+                <div>
+                  <h3 class="text-lg font-bold sm:text-xl">{w.title}</h3>
+                  <p class="mt-2 text-sm leading-relaxed text-fg-muted sm:text-base">
+                    {w.body}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <!-- STATUS -->
+    <section id="status" class="border-t border-border bg-bg-elev/40">
+      <div class="mx-auto max-w-6xl px-6 py-20">
+        <div class="mb-12 max-w-2xl">
+          <p class="prompt-before mb-3 text-sm text-fg-muted">
+            <span class="text-fg">git log --oneline | head</span>
+          </p>
+          <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">
+            Where the build is, today.
+          </h2>
+          <p class="mt-4 text-fg-muted">
+            We&apos;d rather show you the actual state than the eventual one.
+          </p>
+        </div>
+
+        <div class="grid gap-8 md:grid-cols-2">
+          <div>
+            <h3 class="mb-4 text-sm font-bold uppercase tracking-wider text-accent">
+              shipped
+            </h3>
+            <ul class="space-y-2.5">
+              {shipped.map((item) => (
+                <li class="flex items-start gap-3 text-sm">
+                  <span class="mt-0.5 text-accent" aria-hidden="true">[x]</span>
+                  <span class="text-fg">{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <h3 class="mb-4 text-sm font-bold uppercase tracking-wider text-amber">
+              in progress
+            </h3>
+            <ul class="space-y-2.5">
+              {inProgress.map((item) => (
+                <li class="flex items-start gap-3 text-sm">
+                  <span class="mt-0.5 text-amber" aria-hidden="true">[ ]</span>
+                  <span class="text-fg-muted">{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA / DOWNLOAD -->
+    <section class="border-t border-border">
+      <div class="mx-auto max-w-6xl px-6 py-24 text-center">
+        <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">
+          Ready when you are.
+        </h2>
+        <p class="mx-auto mt-4 max-w-xl text-fg-muted">
+          Metis runs locally on your machine, against your API keys. When
+          binary releases drop, you&apos;ll be able to install with a single
+          command. For now, the source is on GitHub.
+        </p>
+        <div class="mt-8">
+          <a
+            href={GITHUB_URL}
+            class="inline-flex items-center gap-2 rounded border border-accent bg-accent/10 px-5 py-3 text-sm font-bold text-accent hover:bg-accent hover:text-bg"
+          >
+            <span>view on github</span>
+            <span aria-hidden="true">&rarr;</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="border-t border-border">
+      <div class="mx-auto flex max-w-6xl flex-col items-start justify-between gap-4 px-6 py-8 text-xs text-fg-dim sm:flex-row sm:items-center">
+        <div class="flex items-center gap-2">
+          <span class="text-accent">&gt;_</span>
+          <span>metis &mdash; local-first AI dev agent</span>
+        </div>
+        <div class="flex items-center gap-6">
+          <a href={GITHUB_URL} class="hover:text-fg">github</a>
+          <span>&copy; 2026</span>
+        </div>
+      </div>
+    </footer>
+  </div>
+</Layout>
