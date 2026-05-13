@@ -1,6 +1,6 @@
 # Memory Store Specification
 
-**Status:** Draft v1 (retrospective; documents the existing implementation in [src/metis/memory/](../../src/metis/memory/))
+**Status:** Draft v1 (retrospective; documents the existing implementation in [packages/metis-core/src/metis_core/memory/](../../packages/metis-core/src/metis_core/memory/))
 **Last updated:** 2026-05-12
 
 ---

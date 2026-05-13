@@ -12,16 +12,16 @@ These tags are **recommendations, not enforcement.** Routing rules (per [`routin
 
 ## Where the data lives
 
-[`src/metis/routing/profiles.py`](../src/metis/routing/profiles.py) — two sources:
+[`packages/metis-core/src/metis_core/routing/profiles.py`](../packages/metis-core/src/metis_core/routing/profiles.py) — two sources:
 
 - `STANDARD_TASK_PROFILES: dict[str, list[str]]` — exact-match dict, keyed by canonical model id. Used for natively adapted models (Anthropic, OpenAI). Curated by hand; tested.
 - `OPENROUTER_PROFILE_PATTERNS: list[tuple[re.Pattern, list[str]]]` — ordered regex patterns matched in sequence (first match wins). Used as a heuristic for OpenRouter mirrors of common upstream models.
 
 The resolver function `standard_profile_for(model_id)` tries exact match first, then OpenRouter patterns, then returns an empty list.
 
-[`src/metis/routing/registry.py`](../src/metis/routing/registry.py) — `ModelEntry.task_profile: tuple[str, ...]`. The registered runtime value.
+[`packages/metis-core/src/metis_core/routing/registry.py`](../packages/metis-core/src/metis_core/routing/registry.py) — `ModelEntry.task_profile: tuple[str, ...]`. The registered runtime value.
 
-[`src/metis/cli/runtime.py`](../src/metis/cli/runtime.py) — fetches the curated tags via `standard_profile_for(model_id)` at registration time.
+[`apps/cli/src/metis_cli/runtime.py`](../apps/cli/src/metis_cli/runtime.py) — fetches the curated tags via `standard_profile_for(model_id)` at registration time.
 
 ## Vocabulary (v1 — intentionally free-form)
 
@@ -132,12 +132,12 @@ These are the **actual cost-shaping decisions** — the standard profiles are ju
 
 When adding a new model to the standard registration list:
 
-1. Add the canonical model id to `ANTHROPIC_MODELS` / `OPENAI_MODELS` in [`cli/runtime.py`](../src/metis/cli/runtime.py).
-2. Add an entry to `STANDARD_TASK_PROFILES` in [`routing/profiles.py`](../src/metis/routing/profiles.py).
+1. Add the canonical model id to `ANTHROPIC_MODELS` / `OPENAI_MODELS` in [`cli/runtime.py`](../apps/cli/src/metis_cli/runtime.py).
+2. Add an entry to `STANDARD_TASK_PROFILES` in [`routing/profiles.py`](../packages/metis-core/src/metis_core/routing/profiles.py).
 3. Pick tags from the existing vocabulary unless none fit; introducing a new tag is fine but check it isn't a synonym of an existing one.
 4. Update the table above.
 
-Tests in [`tests/routing/test_profiles.py`](../tests/routing/test_profiles.py) enforce that every curated model has a non-empty profile, tag vocabulary is consistent, and unknown models return empty profiles.
+Tests in [`packages/metis-core/tests/routing/test_profiles.py`](../packages/metis-core/tests/routing/test_profiles.py) enforce that every curated model has a non-empty profile, tag vocabulary is consistent, and unknown models return empty profiles.
 
 ## Open questions
 

@@ -1,0 +1,21 @@
+[project]
+name = "metis-cli"
+version = "0.1.0"
+description = "Metis CLI + Textual TUI. Provides the `metis` entry point for chat, tui, and serve subcommands."
+authors = [
+    { name = "David Ji", email = "david.ji.2814@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "metis-core",
+    "metis-server",
+    "textual>=0.86.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+metis = "metis_cli.main:main"
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.11.0"]
+build-backend = "uv_build"
