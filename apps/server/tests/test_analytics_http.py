@@ -264,3 +264,11 @@ async def test_dashboard_style_css_served(seeded_client):
     r = await seeded_client.get("/dashboard/style.css")
     assert r.status_code == 200
     assert "text/css" in r.headers["content-type"]
+
+
+async def test_dashboard_assets_set_no_cache(seeded_client):
+    """SPA assets must revalidate on every load — otherwise edits look invisible."""
+    for path in ("/dashboard/", "/dashboard/app.js", "/dashboard/style.css"):
+        r = await seeded_client.get(path)
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-cache", path

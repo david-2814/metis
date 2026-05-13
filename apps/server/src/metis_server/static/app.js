@@ -155,8 +155,9 @@ async function renderCostView(win) {
   // Hero — savings.
   renderSavings(savings.data);
 
-  // Spend over time.
-  renderTimeSeries(byDay.data);
+  // Spend over time — pad missing days with zeros so the x-axis spans the
+  // full selected window, not just the days that happened to have calls.
+  renderTimeSeries(fillDailySeries(byDay.data, win));
 
   // Cost by model.
   renderCostByModel(byModel.data);
@@ -164,6 +165,48 @@ async function renderCostView(win) {
   // Cache effectiveness.
   renderCacheChart(cache.data);
 }
+
+// Fill the day-bucket series so the x-axis covers the whole selected window.
+// The /cost?group_by=day endpoint only emits buckets that had at least one
+// call; rendering raw produces a chart that ends on whatever day data happens
+// to exist, which misleads about the selected range.
+//
+// Bucket keys are UTC dates (the API uses `date(..., 'unixepoch')`); we
+// generate the same key shape between win.from and win.to inclusive. The
+// "all" window has no win.from — fall back to the earliest bucket in the
+// data so we don't fabricate empty months before the user's first call.
+function fillDailySeries(rows, win) {
+  const dataByBucket = new Map(rows.map((r) => [r.bucket, r]));
+  if (!win.from && rows.length === 0) return rows;
+
+  const fromKey = win.from
+    ? utcDayKey(win.from)
+    : rows[0].bucket;
+  const toKey = win.to ? utcDayKey(win.to) : rows[rows.length - 1].bucket;
+
+  const out = [];
+  let cursor = new Date(`${fromKey}T00:00:00Z`);
+  const end = new Date(`${toKey}T00:00:00Z`);
+  while (cursor <= end) {
+    const key = utcDayKey(cursor);
+    out.push(
+      dataByBucket.get(key) || {
+        bucket: key,
+        cost_usd: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        avg_latency_ms: null,
+        call_count: 0,
+      },
+    );
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return out;
+}
+
+const utcDayKey = (d) => d.toISOString().slice(0, 10);
 
 function renderSavings(d) {
   const baseline = d.baseline_model;

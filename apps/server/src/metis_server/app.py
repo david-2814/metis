@@ -583,12 +583,29 @@ def _static_dir() -> Path:
     return Path(__file__).parent / "static"
 
 
+class _NoCacheStaticFiles(StaticFiles):
+    """StaticFiles wrapper that sets `Cache-Control: no-cache` on every response.
+
+    Without this, browsers cache app.js/style.css aggressively (they ship with
+    ETag + Last-Modified but no cache directive). During development this
+    surfaces as "I edited the SPA but the browser shows the old version" — a
+    real bug we hit once. `no-cache` forces revalidation on every load (still
+    cheap: 304s when content is unchanged). When the SPA gets hashed asset
+    pipelines, this can be swapped for long-cache headers on hashed files.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def _static_files_app() -> StaticFiles:
     """ASGI app serving the SPA (index.html, app.js, style.css).
 
     `html=True` lets bare `/dashboard/` serve `index.html` automatically.
     """
-    return StaticFiles(directory=_static_dir(), html=True)
+    return _NoCacheStaticFiles(directory=_static_dir(), html=True)
 
 
 async def _redirect_to_dashboard(_request: Request) -> Response:
