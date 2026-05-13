@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import inspect
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -91,6 +92,22 @@ class UnknownAliasError(ValueError):
         self.alias = alias
 
 
+class AmbiguousModelError(ValueError):
+    """The user's model input matches multiple registered canonical ids.
+
+    Raised by `/model` resolution when a suffix match returns 2+ candidates.
+    Carries the candidate list so the CLI/TUI can prompt for clarification.
+    """
+
+    def __init__(self, input: str, candidates: list[str]) -> None:
+        super().__init__(
+            f"ambiguous model {input!r}; matches {len(candidates)} ids: "
+            f"{', '.join(candidates)}"
+        )
+        self.input = input
+        self.candidates = list(candidates)
+
+
 @dataclass(frozen=True)
 class TurnResult:
     turn_id: str
@@ -103,6 +120,45 @@ class TurnResult:
     llm_call_count: int
     tool_call_count: int
     wall_time_seconds: float
+
+
+class UserExplicitModelRejectedError(Exception):
+    """Raised when the user's explicit model choice — a per-message
+    ``@model`` override or the session sticky model set via ``/model`` —
+    fails routing capability validation.
+
+    Without this check, routing silently falls through to the next chain
+    slot (typically the global default), so the user is billed for a model
+    they didn't pick. The clear UX is to refuse the turn and tell the user
+    why so they can switch model, clear the sticky, or change the turn so
+    the missing capability isn't needed.
+
+    The ``route.decided`` event still records the rejection in the trace.
+    """
+
+    def __init__(
+        self,
+        *,
+        source: str,
+        model: str,
+        validation_failure: str,
+        would_fall_back_to: str | None,
+    ) -> None:
+        self.source = source
+        self.model = model
+        self.validation_failure = validation_failure
+        self.would_fall_back_to = would_fall_back_to
+        fallback_phrase = (
+            f" (would have fallen back to {would_fall_back_to})"
+            if would_fall_back_to
+            else ""
+        )
+        super().__init__(
+            f"{source} {model} can't handle this turn: {validation_failure}"
+            f"{fallback_phrase}. "
+            f"Pick a different model, clear the sticky with `/model -`, or "
+            f"adjust the turn (e.g. drop tools/images)."
+        )
 
 
 # Callback signature for live streaming events. May be sync or async.
@@ -148,6 +204,11 @@ class SessionManager:
         # skill tools refuse to run.
         self._skill_store_factory = skill_store_factory
         self._skill_stores: dict[str, Any] = {}
+        # /share state — captures the most recent slash-command output per
+        # session so the next user message can include it. See `/share` in
+        # the CLI/TUI. One-shot: cleared on consumption.
+        self._slash_buffers: dict[str, str] = {}
+        self._share_pending: set[str] = set()
 
     # ---- Session lifecycle --------------------------------------------
 
@@ -170,6 +231,16 @@ class SessionManager:
             self._skill_stores[session.id] = None
         return session
 
+    def get_session(self, session_id: str) -> Session:
+        """Return the current Session record from the store.
+
+        Always re-reads from `SessionStore` — never returns a cached copy.
+        Callers that hold a long-lived Session reference (REPL, TUI) should
+        call this after any mutation (`set_active_model`, post-turn updates)
+        to avoid showing stale fields like `active_model` or `cost_so_far_usd`.
+        """
+        return self._store.get_session(session_id)
+
     def memory_for(self, session_id: str) -> MemoryStore | None:
         """Return the per-session memory store, if memory is configured."""
         return self._memory_stores.get(session_id)
@@ -178,17 +249,80 @@ class SessionManager:
         """Return the per-session skill store, if skills are configured."""
         return self._skill_stores.get(session_id)
 
-    def set_active_model(self, session_id: str, model: str | None) -> None:
-        """Apply a /model command. `None` clears the sticky."""
+    # ---- /share bridge ------------------------------------------------
+
+    def buffer_slash_output(self, session_id: str, text: str) -> None:
+        """Capture the rendered output of a slash command so the user can
+        later run `/share` to inject it into the next turn's context.
+
+        Buffers per-session; each call overwrites any prior buffer. The
+        agent doesn't see the buffer until the user explicitly opts in via
+        `/share` — slash commands are otherwise local to the client.
+        """
+        if text:
+            self._slash_buffers[session_id] = text
+
+    def mark_share_pending(self, session_id: str) -> str | None:
+        """Flag the buffered slash output for inclusion in the next turn.
+
+        Returns the buffered text (for the caller to render a preview /
+        confirmation), or None if nothing has been buffered yet.
+        """
+        text = self._slash_buffers.get(session_id)
+        if text is None:
+            return None
+        self._share_pending.add(session_id)
+        return text
+
+    def consume_pending_share(self, session_id: str) -> str | None:
+        """Return the buffered slash output if `/share` was pending, then
+        clear the flag. Internal: called by `submit_turn` at turn start.
+
+        Does NOT clear the buffer itself — subsequent slash commands
+        overwrite it normally. Only the one-shot pending flag clears.
+        """
+        if session_id not in self._share_pending:
+            return None
+        self._share_pending.discard(session_id)
+        return self._slash_buffers.get(session_id)
+
+    def set_active_model(self, session_id: str, model: str | None) -> str | None:
+        """Apply a /model command. `None` clears the Active model.
+
+        Returns the resolved canonical id (or None when cleared) so callers
+        can display the resolution result without re-reading their stale
+        local Session reference.
+
+        Resolution policy for non-None inputs:
+
+        1. Exact alias / canonical-id match → use it.
+        2. Boundary-respecting suffix match (`ModelRegistry.find_by_suffix`):
+           - Exactly one match: auto-resolve. Common case for users typing
+             `openai/gpt-oss-20b` instead of `openrouter:openai/gpt-oss-20b`.
+           - Two or more matches: raise `AmbiguousModelError` carrying the
+             candidate list so the caller can prompt for clarification.
+        3. No match anywhere: raise `UnknownAliasError`.
+        """
         session = self._store.get_session(session_id)
         if model is not None:
-            resolved = self._registry.resolve_alias(model) or model
-            if not self._registry.is_configured(resolved):
-                raise UnknownAliasError(model)
+            resolved = self._resolve_model_input(model)
             session.active_model = resolved
         else:
             session.active_model = None
         self._store.update_session(session)
+        return session.active_model
+
+    def _resolve_model_input(self, input: str) -> str:
+        """Lookup policy for `/model <input>`. See `set_active_model` docs."""
+        direct = self._registry.resolve_alias(input)
+        if direct is not None:
+            return direct
+        candidates = self._registry.find_by_suffix(input)
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            raise AmbiguousModelError(input, candidates)
+        raise UnknownAliasError(input)
 
     # ---- Turn loop ----------------------------------------------------
 
@@ -208,12 +342,21 @@ class SessionManager:
         if override.is_unknown_alias:
             raise UnknownAliasError(override.raw_alias or "")
 
-        # 2. Add user message to the session.
+        # 2. If `/share` was pending, prepend the buffered slash-command
+        #    output to the user message. One-shot: the flag clears here.
+        #    The composed text is what gets persisted as the user Message
+        #    so the agent's behavior is reconstructible from history.
+        message_text = override.cleaned_text
+        shared = self.consume_pending_share(session_id)
+        if shared:
+            message_text = _compose_message_with_shared(shared, message_text)
+
+        # 3. Add user message to the session.
         user_message = Message(
             id=new_message_id(),
             session_id=session_id,
             role=Role.USER,
-            content=[TextBlock(text=override.cleaned_text)],
+            content=[TextBlock(text=message_text)],
             created_at=_now(),
         )
         self._store.add_message(session_id, user_message)
@@ -249,6 +392,14 @@ class SessionManager:
                 partial_tool_calls=0,
             )
             raise
+
+        # Refuse to silently fall through when the user picked a model
+        # explicitly (@override or sticky) and it failed validation. The
+        # `route.decided` event already carries the rejection in the trace;
+        # we just don't proceed to call a different model behind their back.
+        explicit_rejection = _user_explicit_rejection(decision)
+        if explicit_rejection is not None:
+            raise explicit_rejection
 
         chosen_model = decision.chosen_model
         provider = self._registry.provider_of(chosen_model)
@@ -883,6 +1034,39 @@ async def _consume_stream(
     return final
 
 
+_USER_EXPLICIT_POLICIES = ("per_message_override", "manual_sticky")
+
+
+def _user_explicit_rejection(decision: RoutingDecision) -> UserExplicitModelRejectedError | None:
+    """If the user's explicit model choice (per-message override or session
+    sticky) was rejected by routing validation, build the error to raise.
+
+    Routing's default behavior is to fall through to the next candidate
+    when validation fails. For user-explicit choices that's the wrong UX:
+    the user picked a specific model, so we'd rather refuse the turn than
+    bill them for something else. Returns None when neither user-explicit
+    slot was rejected (either the user's choice won, or no explicit choice
+    was set in the first place).
+    """
+    for evaluation in decision.chain:
+        if evaluation.policy not in _USER_EXPLICIT_POLICIES:
+            continue
+        if evaluation.verdict != "rejected":
+            continue
+        source = (
+            "@model override"
+            if evaluation.policy == "per_message_override"
+            else "active model"
+        )
+        return UserExplicitModelRejectedError(
+            source=source,
+            model=evaluation.candidate_model or "",
+            validation_failure=evaluation.validation_failure or "rejected",
+            would_fall_back_to=decision.chosen_model or None,
+        )
+    return None
+
+
 def _mode_for_chain_index(index: int) -> RoutingMode:
     """Map a routing-chain index to the RoutingDecisionRecord.mode summary
     enum (canonical-format §4.3 mapping table)."""
@@ -909,6 +1093,69 @@ def _heuristic_token_estimate(history: list[Message], system_prompt: str | None)
     return max(1, chars // 4)
 
 
+_INTERNAL_WHITESPACE_RUN = re.compile(r" {2,}")
+_LEADING_SPACE_RUN = re.compile(r"^( *)")
+
+
+def _normalize_shared_text(text: str) -> str:
+    """Strip alignment whitespace before the shared output crosses into the
+    LLM context.
+
+    `/models` and similar slash output use column padding (often 4+ spaces
+    between fields) and trailing whitespace from right-padding — useful for
+    visual alignment on the human's screen, pure noise to the LLM. Tokenizers
+    don't compress mid-line whitespace runs well, so a 30-row /models dump
+    can carry 100+ tokens of pure padding.
+
+    Transforms applied per line:
+
+    - Tabs are expanded to 4 spaces (so they don't bias whitespace handling).
+    - Trailing whitespace is dropped.
+    - Empty lines are dropped.
+    - Leading indent is preserved (it carries the tree hierarchy of nested
+      provider / namespace headers in `/models` output).
+    - Internal runs of 2+ spaces in the line body collapse to a single space.
+
+    The original buffer (what the user saw on screen) is unaffected — only
+    the LLM-bound version goes through this. Trace history records the
+    normalized text, which is what the agent actually saw.
+    """
+    out: list[str] = []
+    for raw in text.splitlines():
+        line = raw.expandtabs(4).rstrip()
+        if not line:
+            continue
+        match = _LEADING_SPACE_RUN.match(line)
+        lead = match.group(1) if match else ""
+        body = line[len(lead):]
+        normalized_body = _INTERNAL_WHITESPACE_RUN.sub(" ", body)
+        out.append(lead + normalized_body)
+    return "\n".join(out)
+
+
+def _compose_message_with_shared(shared: str, user_text: str) -> str:
+    """Format the user message when `/share` injected slash output.
+
+    Wraps the (normalized) shared block in clear delimiters so the agent
+    can see the boundary between "context the user shared from their
+    terminal" and "what the user is actually asking." The normalized text
+    is what's persisted in history.
+    """
+    normalized = _normalize_shared_text(shared)
+    return (
+        "[Shared from my terminal — output of a slash command I ran:]\n"
+        f"{normalized}\n"
+        "[End of shared output]\n"
+        "\n"
+        f"{user_text}"
+    )
+
+
 # Re-export RoutingDecision for callers that want the typed result.
-__all__ = ["SessionManager", "TurnResult", "UnknownAliasError"]
+__all__ = [
+    "SessionManager",
+    "TurnResult",
+    "UnknownAliasError",
+    "UserExplicitModelRejectedError",
+]
 _ = RoutingDecision  # exported via metis.routing

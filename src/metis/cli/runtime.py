@@ -29,6 +29,7 @@ from metis.routing import (
     RoutingEngine,
     RoutingPolicy,
     load_policy_file,
+    standard_profile_for,
 )
 from metis.sessions import (
     SessionManager,
@@ -92,6 +93,8 @@ async def setup_runtime(
     Raises SetupError on workspace / API-key problems so callers can render a
     friendly error in their UI of choice.
     """
+    _configure_file_logging()
+
     workspace = Path(workspace_path).expanduser().resolve()
     if not workspace.is_dir():
         raise SetupError(f"workspace {workspace} is not a directory")
@@ -120,12 +123,22 @@ async def setup_runtime(
         anth = AnthropicAdapter(api_key=anthropic_key)
         adapters.append(anth)
         for model_id, aliases in ANTHROPIC_MODELS.items():
-            registry.register(model_id=model_id, adapter=anth, aliases=aliases)
+            registry.register(
+                model_id=model_id,
+                adapter=anth,
+                aliases=aliases,
+                task_profile=standard_profile_for(model_id),
+            )
     if openai_key:
         oai = OpenAIAdapter(api_key=openai_key)
         adapters.append(oai)
         for model_id, aliases in OPENAI_MODELS.items():
-            registry.register(model_id=model_id, adapter=oai, aliases=aliases)
+            registry.register(
+                model_id=model_id,
+                adapter=oai,
+                aliases=aliases,
+                task_profile=standard_profile_for(model_id),
+            )
     if openrouter_key:
         or_adapter = OpenRouterAdapter(
             api_key=openrouter_key, app_name="metis", http_referer="https://metis.local"
@@ -141,7 +154,18 @@ async def setup_runtime(
             )
         else:
             for model_id in sorted(catalog.capabilities.keys()):
-                registry.register(model_id=model_id, adapter=or_adapter, aliases=[])
+                aliases = _pick_auto_alias(model_id, registry)
+                # OpenRouter models start with no curated profile — customers
+                # tag them via routing rules. Known mirrors of native models
+                # (e.g. openrouter:anthropic/claude-opus-*) intentionally do
+                # NOT inherit the native profile here; the curated list is
+                # explicit, not pattern-matched.
+                registry.register(
+                    model_id=model_id,
+                    adapter=or_adapter,
+                    aliases=aliases,
+                    task_profile=standard_profile_for(model_id),
+                )
             if catalog.pricing:
                 pricing_table = pricing_table.with_overlay(
                     overlay_version=catalog.version,
@@ -243,6 +267,98 @@ def default_routing_policy_path() -> Path:
 def default_skills_dir() -> Path:
     """Global user-library skills directory (server-api.md §7.3)."""
     return Path.home() / ".metis" / "skills"
+
+
+def _auto_alias_candidates(model_id: str) -> list[str]:
+    """Generate short alias candidates derived from a canonical model id.
+
+    `openrouter:upstage/solar-pro-3` → ['solar-pro-3', 'upstage-solar-pro-3']
+    `anthropic:claude-sonnet-4-6`   → ['claude-sonnet-4-6']
+    `local-only-id`                 → []  (no `provider:` prefix → no candidates)
+
+    The trailing path is the most-ergonomic alias; the `provider-tail` form is
+    the fallback for collisions across providers that ship the same model name
+    (e.g. `openrouter:anthropic/claude-...` collides with the directly-registered
+    `anthropic:claude-...`). Forward slashes are flattened to hyphens so the
+    alias works as a single shell token.
+    """
+    if ":" not in model_id:
+        return []
+    _, tail = model_id.split(":", 1)
+    if "/" in tail:
+        provider, name = tail.split("/", 1)
+        short = name.replace("/", "-")
+        return [short, f"{provider}-{short}"]
+    return [tail]
+
+
+def _pick_auto_alias(model_id: str, registry: ModelRegistry) -> list[str]:
+    """Return the first non-colliding alias candidate, or `[]` if all are taken.
+
+    Collision check uses the registry's own alias index (which considers model
+    ids as their own aliases), so a candidate that matches an existing model id
+    is correctly rejected.
+    """
+    for candidate in _auto_alias_candidates(model_id):
+        if registry.resolve_alias(candidate) is None:
+            return [candidate]
+    return []
+
+
+_FILE_LOGGING_CONFIGURED = False
+
+
+def _configure_file_logging() -> None:
+    """Attach a file handler to the `metis` logger.
+
+    Adapter errors, dispatch warnings, and other diagnostics flow through
+    Python's stdlib logging — but without a handler the records get dropped.
+    This attaches a FileHandler so users have a place to grep when things
+    go wrong (especially upstream provider rejections that compose into a
+    one-line user error but carry a full body in the log).
+
+    Configuration:
+
+    - `METIS_LOG_FILE=` (empty) → disable file logging entirely.
+    - `METIS_LOG_FILE=/path/to/file` → log there.
+    - unset → default to `/tmp/metis.log` on Unix-like systems.
+
+    Idempotent — calling multiple times only adds one handler.
+    """
+    global _FILE_LOGGING_CONFIGURED
+    if _FILE_LOGGING_CONFIGURED:
+        return
+
+    raw = os.environ.get("METIS_LOG_FILE")
+    if raw is None:
+        path: Path | None = Path("/tmp/metis.log")
+    elif raw == "":
+        path = None
+    else:
+        path = Path(raw).expanduser()
+
+    if path is None:
+        _FILE_LOGGING_CONFIGURED = True
+        return
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(path, mode="a", encoding="utf-8")
+    except OSError as exc:
+        # If the configured path isn't writable, fall through silently
+        # rather than blow up startup. The error itself goes to stderr.
+        print(f"warning: could not open log file {path}: {exc}", file=sys.stderr)
+        _FILE_LOGGING_CONFIGURED = True
+        return
+
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    metis_logger = logging.getLogger("metis")
+    metis_logger.addHandler(handler)
+    if metis_logger.level == logging.NOTSET or metis_logger.level > logging.INFO:
+        metis_logger.setLevel(logging.INFO)
+    _FILE_LOGGING_CONFIGURED = True
 
 
 def _load_routing_policy(

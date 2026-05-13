@@ -19,10 +19,22 @@ from metis.adapters.streaming import (
     TextDelta,
     ToolUseStart,
 )
+from metis.cli.models_display import (
+    format_models_lines,
+    parse_models_command,
+    resolve_models,
+    truncation_hint,
+)
 from metis.cli.runtime import ChatRuntime, SetupError, setup_runtime, shutdown_runtime
+from metis.pricing.table import PriceTable
 from metis.routing import ModelRegistry
 from metis.routing.engine import RoutingError
-from metis.sessions import SessionManager, UnknownAliasError
+from metis.sessions import (
+    AmbiguousModelError,
+    SessionManager,
+    UnknownAliasError,
+    UserExplicitModelRejectedError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +105,9 @@ async def run_chat(
             if text in ("exit", "quit"):
                 break
             if text.startswith("/"):
-                handled = await _handle_slash(text, manager, session, registry)
+                handled = await _handle_slash(
+                    text, manager, session, registry, runtime.pricing
+                )
                 if handled == "quit":
                     break
                 continue
@@ -104,6 +118,9 @@ async def run_chat(
                 )
             except UnknownAliasError as exc:
                 print(f"unknown alias: @{exc.alias}", file=sys.stderr)
+                continue
+            except UserExplicitModelRejectedError as exc:
+                print(str(exc), file=sys.stderr)
                 continue
             except RoutingError as exc:
                 print(f"routing failed: {exc}", file=sys.stderr)
@@ -167,6 +184,7 @@ async def _handle_slash(
     manager: SessionManager,
     session,
     registry: ModelRegistry,
+    pricing: PriceTable,
 ) -> str | None:
     parts = text.split(maxsplit=1)
     cmd = parts[0].lower()
@@ -175,34 +193,80 @@ async def _handle_slash(
     if cmd in ("/help", "/?"):
         print(
             "Commands:\n"
-            "  /model <alias|id>   set sticky model\n"
-            "  /model -            clear sticky (use defaults)\n"
-            "  /model show         print current sticky\n"
-            "  /cost               session cost so far\n"
-            "  /models             list configured models\n"
-            "  /help, /?           this list\n"
-            "  exit, quit, ^D      leave"
+            "  /model <alias|id>     set the Active model for this session\n"
+            "  /model -              clear the Active model (use defaults)\n"
+            "  /model show           print the current Active model\n"
+            "  /models               list primary (latest) models\n"
+            "  /models all           list every registered model\n"
+            "  /models <pattern>     filter by substring (e.g. /models opus)\n"
+            "  /share                include the last slash output in the next message\n"
+            "  /cost                 session cost so far\n"
+            "  /help, /?             this list\n"
+            "  exit, quit, ^D        leave"
         )
         return None
     if cmd == "/model":
         if not arg or arg == "show":
-            print(f"sticky: {session.active_model or '(none — using defaults)'}")
+            # Re-fetch so the display matches what `submit_turn` will see.
+            current = manager.get_session(session.id).active_model
+            print(f"Active model: {current or '(none — using defaults)'}")
             return None
         if arg == "-":
             manager.set_active_model(session.id, None)
-            print("sticky cleared")
+            print("Active model cleared")
             return None
         try:
-            manager.set_active_model(session.id, arg)
-            print(f"sticky: {session.active_model}")
+            resolved = manager.set_active_model(session.id, arg)
+            if resolved != arg:
+                # Suggest matched a longer canonical id; show the user what
+                # we settled on so the resolution is transparent.
+                print(f"Active model: {resolved}   (matched from {arg!r})")
+            else:
+                print(f"Active model: {resolved}")
+        except AmbiguousModelError as exc:
+            print(f"ambiguous model: {exc.input}", file=sys.stderr)
+            print("  did you mean one of:", file=sys.stderr)
+            for candidate in exc.candidates:
+                print(f"    {candidate}", file=sys.stderr)
         except UnknownAliasError as exc:
             print(f"unknown model: {exc.alias}", file=sys.stderr)
         return None
     if cmd == "/models":
-        for model_id in registry.list_models():
-            entry = registry.get(model_id)
-            aliases = ", ".join(entry.aliases) or "—"
-            print(f"  {model_id}  (aliases: {aliases})")
+        mode, pattern = parse_models_command(arg)
+        displayed, total = resolve_models(
+            registry=registry,
+            mode=mode,
+            pattern=pattern,
+            always_include=session.active_model,
+        )
+        rendered = format_models_lines(
+            displayed,
+            registry=registry,
+            pricing=pricing,
+            sticky_model=session.active_model,
+        )
+        for line in rendered:
+            print(line)
+        hint = truncation_hint(displayed, total, mode=mode, pattern=pattern)
+        if hint:
+            print(hint)
+            rendered.append(hint)
+        # Capture for /share so the agent can see this if the user asks.
+        manager.buffer_slash_output(session.id, "\n".join(rendered))
+        return None
+    if cmd == "/share":
+        buffered = manager.mark_share_pending(session.id)
+        if buffered is None:
+            print(
+                "Nothing to share yet — run /models (or another slash command) first.",
+                file=sys.stderr,
+            )
+        else:
+            line_count = buffered.count("\n") + 1
+            print(
+                f"Will share {line_count} line(s) of recent slash output "
+                f"with the agent on your next message."
+            )
         return None
     if cmd == "/cost":
         print(f"session cost so far: ${session.cost_so_far_usd:.4f} ({session.turn_count} turns)")

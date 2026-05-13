@@ -383,3 +383,318 @@ async def test_capabilities_available_after_catalog_fetch():
         await adapter.fetch_catalog(http_client=http_client)
         caps = adapter.capabilities_for("openrouter:x/y")
         assert caps.supports_tools is True
+
+
+# ---- Error metadata surfacing ----------------------------------------
+#
+# OpenRouter is an aggregator: when an upstream inference provider rejects
+# a request, OpenRouter returns a generic 400 ("Provider returned error")
+# and stashes the real reason in `error.metadata`. The adapter's
+# `_provider_message` helper composes a richer string from those fields so
+# the surfaced error tells the user *what* failed and *who* rejected it.
+
+
+def _composed_message(body: dict) -> str:
+    from metis.adapters.openrouter import _provider_message
+
+    return _provider_message(body)
+
+
+def test_provider_message_plain_no_metadata():
+    """No metadata → behaves identically to the original implementation
+    (just the top-level message)."""
+    body = {"error": {"message": "Bad Request"}}
+    assert _composed_message(body) == "Bad Request"
+
+
+def test_provider_message_appends_provider_name_only():
+    """`provider_name` without a raw upstream body → still says who rejected."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {"provider_name": "Fireworks"},
+        }
+    }
+    assert _composed_message(body) == "Provider returned error (via Fireworks)"
+
+
+def test_provider_message_extracts_raw_json_string():
+    """`metadata.raw` is a JSON-encoded string; we parse it and pull the
+    inner upstream message."""
+    raw_inner = (
+        '{"error":{"message":"Function calling not supported",'
+        '"type":"invalid_request_error"}}'
+    )
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {"raw": raw_inner, "provider_name": "Fireworks"},
+        }
+    }
+    msg = _composed_message(body)
+    assert msg == (
+        "Provider returned error (Fireworks: Function calling not supported)"
+    )
+
+
+def test_provider_message_handles_raw_as_dict():
+    """Some upstream providers pass `raw` through as a dict, not a string."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": {"error": {"message": "Context length exceeded"}},
+                "provider_name": "Together",
+            },
+        }
+    }
+    assert _composed_message(body) == (
+        "Provider returned error (Together: Context length exceeded)"
+    )
+
+
+def test_provider_message_raw_unparseable_string_used_verbatim():
+    """If `raw` isn't valid JSON, surface it as the upstream blurb anyway —
+    better than dropping it on the floor."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": "rate limit: please slow down",
+                "provider_name": "DeepInfra",
+            },
+        }
+    }
+    assert _composed_message(body) == (
+        "Provider returned error (DeepInfra: rate limit: please slow down)"
+    )
+
+
+def test_provider_message_raw_only_no_provider_name():
+    """Upstream message but no provider name attribution."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": '{"error":{"message":"Tokens limit exceeded"}}',
+            },
+        }
+    }
+    assert _composed_message(body) == (
+        "Provider returned error (upstream: Tokens limit exceeded)"
+    )
+
+
+def test_provider_message_metadata_present_but_empty():
+    """An empty metadata dict shouldn't add a malformed suffix."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {},
+        }
+    }
+    assert _composed_message(body) == "Provider returned error"
+
+
+def test_provider_message_flat_top_level_message_in_raw():
+    """Some upstream providers don't nest under `error`; they put `message`
+    at the top level. Handle both shapes."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": '{"message":"Service unavailable"}',
+                "provider_name": "ProviderX",
+            },
+        }
+    }
+    assert _composed_message(body) == (
+        "Provider returned error (ProviderX: Service unavailable)"
+    )
+
+
+def test_provider_message_none_body():
+    from metis.adapters.openrouter import _provider_message
+
+    assert _provider_message(None) == ""
+    assert _provider_message({}) == ""
+    assert _provider_message({"error": "not a dict"}) == ""
+
+
+def test_provider_message_atlas_cloud_msg_field():
+    """AtlasCloud (and similar Asian providers) use top-level `msg`, not
+    `message` and not nested under `error`. The request_id is also surfaced
+    so users can quote it in support tickets."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": (
+                    '{"code":400,"msg":"bad request",'
+                    '"request_id":"5f083b10-a412-48b2-9ba1-171c6f13727d"}'
+                ),
+                "provider_name": "AtlasCloud",
+            },
+        }
+    }
+    assert _composed_message(body) == (
+        "Provider returned error "
+        "(AtlasCloud: bad request [req: 5f083b10-a412-48b2-9ba1-171c6f13727d])"
+    )
+
+
+def test_provider_message_nested_error_msg_field():
+    """Same `msg` convention but nested under `error`."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": '{"error":{"code":500,"msg":"internal failure"}}',
+                "provider_name": "SomeProvider",
+            },
+        }
+    }
+    assert _composed_message(body) == (
+        "Provider returned error (SomeProvider: internal failure)"
+    )
+
+
+def test_provider_message_fastapi_detail_field():
+    """FastAPI / Starlette services often use `detail` instead of `message`."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": '{"detail":"validation failed: field x missing"}',
+                "provider_name": "CustomProvider",
+            },
+        }
+    }
+    assert _composed_message(body) == (
+        "Provider returned error (CustomProvider: validation failed: field x missing)"
+    )
+
+
+def test_provider_message_priority_message_wins_over_msg():
+    """When BOTH `message` and `msg` are present, `message` (the canonical
+    field) wins — it's the OpenAI-shape convention most providers follow."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": (
+                    '{"error":{"message":"canonical message","msg":"asian-style msg"}}'
+                ),
+                "provider_name": "MixedConventions",
+            },
+        }
+    }
+    assert _composed_message(body) == (
+        "Provider returned error (MixedConventions: canonical message)"
+    )
+
+
+def test_provider_message_no_recognized_field_falls_back_to_raw():
+    """When none of the known fields exist, surface the raw body verbatim
+    rather than dropping it — at least the user has SOMETHING to debug."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": '{"weird_field":"some weird value","status":418}',
+                "provider_name": "Weird",
+            },
+        }
+    }
+    msg = _composed_message(body)
+    # Falls back to the full raw blurb since nothing was extractable.
+    assert "Weird" in msg
+    assert "weird_field" in msg
+
+
+# ---- request_id surfacing --------------------------------------------
+
+
+def test_provider_message_includes_request_id_when_present():
+    """The AtlasCloud-style body carries a request_id we want surfaced for
+    support tickets — appears in brackets after the message."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": (
+                    '{"code":400,"msg":"bad request",'
+                    '"request_id":"5f083b10-a412-48b2-9ba1-171c6f13727d"}'
+                ),
+                "provider_name": "AtlasCloud",
+            },
+        }
+    }
+    msg = _composed_message(body)
+    assert "AtlasCloud: bad request [req: 5f083b10-a412-48b2-9ba1-171c6f13727d]" in msg
+
+
+def test_provider_message_request_id_no_message_still_surfaces():
+    """If the upstream has no message but does have a request_id, surface
+    the request_id alone — useful for opaque rejections."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": '{"request_id":"abc-123"}',
+                "provider_name": "Provider",
+            },
+        }
+    }
+    msg = _composed_message(body)
+    assert "[req: abc-123]" in msg
+    assert "Provider" in msg
+
+
+def test_provider_message_camel_case_request_id():
+    """Some providers use `requestId` instead of `request_id`."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": '{"msg":"forbidden","requestId":"camel-case-id"}',
+                "provider_name": "P",
+            },
+        }
+    }
+    msg = _composed_message(body)
+    assert "[req: camel-case-id]" in msg
+
+
+def test_provider_message_no_request_id_no_brackets():
+    """No request_id in the body → no `[req: ...]` appended."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": '{"error":{"message":"context too long"}}',
+                "provider_name": "Together",
+            },
+        }
+    }
+    msg = _composed_message(body)
+    assert "[req:" not in msg
+    assert msg == "Provider returned error (Together: context too long)"
+
+
+def test_provider_message_request_id_in_nested_error():
+    """request_id nested under `error.request_id` rather than top-level."""
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {
+                "raw": (
+                    '{"error":{"message":"validation failed","request_id":"nested-id"}}'
+                ),
+                "provider_name": "P",
+            },
+        }
+    }
+    msg = _composed_message(body)
+    assert "[req: nested-id]" in msg
+    assert "validation failed" in msg

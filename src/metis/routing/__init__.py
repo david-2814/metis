@@ -28,6 +28,10 @@ from metis.routing.policy_loader import (
     parse_policy,
     parse_policy_text,
 )
+from metis.routing.profiles import (
+    STANDARD_TASK_PROFILES,
+    standard_profile_for,
+)
 from metis.routing.registry import (
     ModelEntry,
     ModelRegistry,
@@ -36,6 +40,7 @@ from metis.routing.registry import (
 
 __all__ = [
     "EMPTY_POLICY",
+    "STANDARD_TASK_PROFILES",
     "AvailabilityState",
     "ModelEntry",
     "ModelRegistry",
@@ -56,4 +61,5 @@ __all__ = [
     "parse_per_message_override",
     "parse_policy",
     "parse_policy_text",
+    "standard_profile_for",
 ]

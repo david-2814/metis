@@ -36,3 +36,5 @@ def test_chat_default_global_default_model():
     parser = build_parser()
     args = parser.parse_args(["chat", "/some/dir"])
     assert args.global_default == "anthropic:claude-sonnet-4-6"
+
+

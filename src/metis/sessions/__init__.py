@@ -5,14 +5,17 @@ Two store implementations: `InMemorySessionStore` for ephemeral / test use, and
 """
 
 from metis.sessions.manager import (
+    AmbiguousModelError,
     SessionManager,
     TurnResult,
     UnknownAliasError,
+    UserExplicitModelRejectedError,
 )
 from metis.sessions.sqlite_store import SqliteSessionStore
 from metis.sessions.store import InMemorySessionStore, Session, SessionStore
 
 __all__ = [
+    "AmbiguousModelError",
     "InMemorySessionStore",
     "Session",
     "SessionManager",
@@ -20,4 +23,5 @@ __all__ = [
     "SqliteSessionStore",
     "TurnResult",
     "UnknownAliasError",
+    "UserExplicitModelRejectedError",
 ]

@@ -224,6 +224,59 @@ async def test_list_models(client):
     assert "anthropic:claude-haiku-4-5" in ids
 
 
+async def test_list_models_includes_pricing(client):
+    r = await client.get("/models")
+    body = r.json()
+    sonnet = next(m for m in body["models"] if m["id"] == "anthropic:claude-sonnet-4-6")
+    assert sonnet["pricing"] is not None
+    assert sonnet["pricing"]["input_per_mtok"] == "3.00"
+    assert sonnet["pricing"]["output_per_mtok"] == "15.00"
+    assert sonnet["pricing"]["currency"] == "USD"
+    assert sonnet["pricing"]["pricing_version"]
+
+
+async def test_list_models_includes_task_profile(client):
+    """Every model carries the curated `task_profile` list (possibly empty)."""
+    r = await client.get("/models")
+    body = r.json()
+    for m in body["models"]:
+        assert "task_profile" in m
+        assert isinstance(m["task_profile"], list)
+
+
+async def test_list_models_primary_only(client):
+    """`?primary_only=true` collapses OpenRouter version siblings.
+
+    With only Anthropic + OpenAI configured in the test fixture, primary_only
+    is a no-op (each native id is its own family), so the response should
+    contain the same set of ids as the unfiltered list.
+    """
+    full = (await client.get("/models")).json()
+    primary = (await client.get("/models?primary_only=true")).json()
+    full_ids = {m["id"] for m in full["models"]}
+    primary_ids = {m["id"] for m in primary["models"]}
+    # Native ids are their own family — primary_only doesn't remove any.
+    assert primary_ids == full_ids
+
+
+async def test_list_models_pattern_filter(client):
+    """`?pattern=...` returns only models whose id contains the substring."""
+    # The server fixture registers sonnet and haiku — search for the substring
+    # we know is present.
+    r = await client.get("/models?pattern=sonnet")
+    body = r.json()
+    assert body["models"], "pattern filter returned empty for a known substring"
+    for m in body["models"]:
+        assert "sonnet" in m["id"].lower()
+
+
+async def test_list_models_pattern_filter_no_match(client):
+    """An unmatched pattern returns an empty list, not an error."""
+    r = await client.get("/models?pattern=zzz-does-not-exist")
+    assert r.status_code == 200
+    assert r.json()["models"] == []
+
+
 # ---- Attach token flow --------------------------------------------------
 
 

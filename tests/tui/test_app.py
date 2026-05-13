@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from textual.widgets import Input, RichLog
+from textual.widgets import Input, Log
 
 from metis.adapters.protocol import StopReason
 from metis.canonical.content import TextBlock, ToolUseBlock
@@ -85,7 +85,7 @@ async def test_app_mounts_and_shows_banner(workspace: Path):
     app, _ = _make_app(adapter, workspace)
     async with app.run_test() as pilot:
         await pilot.pause()
-        log = app.query_one(RichLog)
+        log = app.query_one(Log)
         # The banner mentions Metis chat and the providers line.
         text = _log_text(log)
         assert "Metis chat" in text
@@ -98,7 +98,7 @@ async def test_help_command_lists_commands(workspace: Path):
     app, _ = _make_app(adapter, workspace)
     async with app.run_test() as pilot:
         await _type_and_submit(pilot, "/help")
-        log = app.query_one(RichLog)
+        log = app.query_one(Log)
         text = _log_text(log)
         assert "/model" in text
         assert "/cost" in text
@@ -106,14 +106,18 @@ async def test_help_command_lists_commands(workspace: Path):
 
 
 async def test_models_command_lists_registry(workspace: Path):
+    """/models renders provider/namespace nesting: an `anthropic:` header
+    plus indented leaves for each model. The full canonical id is the
+    header+leaf combined; check for the parts."""
     adapter = _ScriptedAnthropicAdapter([])
     app, _ = _make_app(adapter, workspace)
     async with app.run_test() as pilot:
         await _type_and_submit(pilot, "/models")
-        log = app.query_one(RichLog)
+        log = app.query_one(Log)
         text = _log_text(log)
-        assert "anthropic:claude-sonnet-4-6" in text
-        assert "anthropic:claude-haiku-4-5" in text
+        assert "anthropic:" in text  # provider header
+        assert "claude-sonnet-4-6" in text  # leaf
+        assert "claude-haiku-4-5" in text  # leaf
 
 
 async def test_model_switch_via_slash_command(workspace: Path):
@@ -132,7 +136,7 @@ async def test_unknown_command_shows_error(workspace: Path):
     app, _ = _make_app(adapter, workspace)
     async with app.run_test() as pilot:
         await _type_and_submit(pilot, "/nonsense")
-        log = app.query_one(RichLog)
+        log = app.query_one(Log)
         text = _log_text(log)
         assert "unknown command" in text.lower()
 
@@ -156,7 +160,7 @@ async def test_submit_turn_renders_text_response(workspace: Path):
         await pilot.pause()
         await app.workers.wait_for_complete()
         await pilot.pause()
-        log = app.query_one(RichLog)
+        log = app.query_one(Log)
         text = _log_text(log)
         assert "hello back" in text
         # The cost tag is also rendered after the assistant text.
@@ -185,7 +189,7 @@ async def test_submit_turn_with_tool_use_renders_marker_and_response(workspace: 
         await pilot.pause()
         await app.workers.wait_for_complete()
         await pilot.pause()
-        log = app.query_one(RichLog)
+        log = app.query_one(Log)
         text = _log_text(log)
         assert "I'll check." in text
         assert "→ read_file" in text  # tool marker (arrow style avoids Rich markup conflict)
@@ -215,6 +219,98 @@ async def test_exit_keyword_quits(workspace: Path):
         assert app.return_value is None or app.return_value == 0
 
 
+# ---- /copy command --------------------------------------------------
+
+
+async def test_copy_with_no_messages_reports_empty(workspace: Path):
+    adapter = _ScriptedAnthropicAdapter([])
+    app, _ = _make_app(adapter, workspace)
+    async with app.run_test() as pilot:
+        await _type_and_submit(pilot, "/copy")
+        log = app.query_one(Log)
+        assert "no assistant messages yet" in _log_text(log)
+
+
+async def test_copy_copies_last_assistant_reply(workspace: Path):
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="first answer")],
+                stop_reason=StopReason.END_TURN,
+            ),
+            _ScriptedResponse(
+                content=[TextBlock(text="second answer")],
+                stop_reason=StopReason.END_TURN,
+            ),
+        ]
+    )
+    app, _ = _make_app(adapter, workspace)
+    copied: list[str] = []
+    # Stub the clipboard so we don't actually shell out to pbcopy in tests.
+    app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await _type_and_submit(pilot, "q1")
+        await app.workers.wait_for_complete()
+        await _type_and_submit(pilot, "q2")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        await _type_and_submit(pilot, "/copy")
+        assert copied == ["second answer"]
+
+
+async def test_copy_with_index_picks_nth_most_recent(workspace: Path):
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="first answer")],
+                stop_reason=StopReason.END_TURN,
+            ),
+            _ScriptedResponse(
+                content=[TextBlock(text="second answer")],
+                stop_reason=StopReason.END_TURN,
+            ),
+        ]
+    )
+    app, _ = _make_app(adapter, workspace)
+    copied: list[str] = []
+    app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        await _type_and_submit(pilot, "q1")
+        await app.workers.wait_for_complete()
+        await _type_and_submit(pilot, "q2")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        await _type_and_submit(pilot, "/copy 2")
+        assert copied == ["first answer"]
+
+
+async def test_copy_with_bad_arg_shows_usage(workspace: Path):
+    adapter = _ScriptedAnthropicAdapter([])
+    app, _ = _make_app(adapter, workspace)
+    async with app.run_test() as pilot:
+        await _type_and_submit(pilot, "/copy abc")
+        log = app.query_one(Log)
+        assert "usage: /copy" in _log_text(log)
+
+
+async def test_copy_out_of_range_reports_count(workspace: Path):
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="only one")],
+                stop_reason=StopReason.END_TURN,
+            ),
+        ]
+    )
+    app, _ = _make_app(adapter, workspace)
+    async with app.run_test() as pilot:
+        await _type_and_submit(pilot, "q1")
+        await app.workers.wait_for_complete()
+        await _type_and_submit(pilot, "/copy 5")
+        log = app.query_one(Log)
+        assert "only 1 assistant" in _log_text(log)
+
+
 # ---- Helpers ---------------------------------------------------------
 
 
@@ -227,13 +323,6 @@ async def _type_and_submit(pilot, text: str) -> None:
     await pilot.pause()
 
 
-def _log_text(log: RichLog) -> str:
-    """Best-effort plain-text extraction from a RichLog for assertions."""
-    parts: list[str] = []
-    for line in log.lines:
-        # Each line is a Rich Strip; render its plain text.
-        if hasattr(line, "text"):
-            parts.append(line.text)
-        else:
-            parts.append(str(line))
-    return "\n".join(parts)
+def _log_text(log: Log) -> str:
+    """Plain-text extraction from a Log for assertions."""
+    return "\n".join(log.lines)
