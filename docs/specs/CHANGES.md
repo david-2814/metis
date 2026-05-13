@@ -26,7 +26,8 @@ When working on a spec PR, scan this file for `pending review` entries against s
 - *(planned)* `provider-adapter-contract.md` — adapter interface, wire-format translation.
 - *(planned)* `tool-dispatcher.md` — tool registry, side-effect handling, validation.
 - *(planned)* `server-api.md` — REST endpoints, attach handshake, session lifecycle.
-- *(planned, later phases)* `skill-format.md`, `memory-store.md`, `pattern-store.md`, `evaluator.md`.
+- `analytics-api.md` — read-only `/analytics/*` namespace backing the dashboard.
+- *(planned, later phases)* `skill-format.md`, `pattern-store.md`, `evaluator.md`.
 
 ## Cross-reference map
 
@@ -41,6 +42,7 @@ A snapshot of which specs reference which (refresh when adding a spec):
 | `provider-adapter-contract.md` *(planned)* | canonical-message-format, event-bus-and-trace-catalog, streaming-protocol |
 | `tool-dispatcher.md` *(planned)* | canonical-message-format, event-bus-and-trace-catalog |
 | `server-api.md` *(planned)* | canonical-message-format, event-bus-and-trace-catalog, streaming-protocol |
+| `analytics-api.md` | canonical-message-format, event-bus-and-trace-catalog, server-api |
 
 When changing a spec, the dependent specs (right column whose left column is the changed spec) must be checked.
 
@@ -125,6 +127,19 @@ Followup to the cross-spec sweep — five small but real defects caught in revie
 - **References to verify:**
   - `skill-format.md` *(planned)* — when that spec lands, document `source` alongside the other fields. Note pending below.
 - **Status:** verified (event-bus spec updated in this change; implementation in `packages/metis-core/src/metis_core/events/payloads.py::SkillLoaded` + emitter in `packages/metis-core/src/metis_core/skills/tools.py::SkillLoadTool`).
+
+---
+
+### 2026-05-12 — analytics-api.md v1 drafted
+
+- **Spec:** new `analytics-api.md` v1.
+- **Change:** Adds a read-only `/analytics/*` HTTP namespace extending `server-api.md`. Endpoints derive metrics from the existing `events`, `messages`, and `sessions` tables — no new persistent state, no new bus events, no new write paths. Endpoints: `/cost`, `/cache_effectiveness`, `/routing`, `/reliability`, `/sessions`, `/turns/{id}`, `/savings`. Pricing semantics are hybrid: actuals honor stamped `pricing_version`; the savings counterfactual re-prices both numerator and denominator under the current `PriceTable`.
+- **Type:** additive (new endpoints; no contract change to existing specs).
+- **References to verify:**
+  - `server-api.md` — analytics namespace lives on the same Starlette app and inherits the loopback-only / no-auth posture. No edit required; cross-reference only.
+  - `event-bus-and-trace-catalog.md` — analytics queries depend on the `llm.call_completed`, `llm.call_failed`, `route.decided`, and `turn.completed` payload shapes. Any future change to those payloads must update the relevant analytics endpoint and its SQL. No edit required now.
+  - `routing-engine.md §5.3.1` — known asymmetry between `cost_today_exceeds_usd` (UTC midnight) and the dashboard's "today" (local TZ). Documented in analytics-api §3.1; not aligning until evidence of confusion.
+- **Status:** verified (no dependent specs need edits in this change).
 
 ---
 
