@@ -243,7 +243,7 @@ class RoutingEngine:
         if not self._registry.is_configured(model):
             return "not_configured"
         provider = self._registry.provider_of(model)
-        if not self._availability.is_available(provider):
+        if not self._availability.is_available(provider, model):
             return "provider_unavailable"
         caps = self._registry.capabilities_for(model)
         if ctx.has_images and not caps.supports_images:

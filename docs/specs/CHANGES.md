@@ -27,6 +27,9 @@ When working on a spec PR, scan this file for `pending review` entries against s
 - *(planned)* `tool-dispatcher.md` — tool registry, side-effect handling, validation.
 - *(planned)* `server-api.md` — REST endpoints, attach handshake, session lifecycle.
 - `analytics-api.md` — read-only `/analytics/*` namespace backing the dashboard.
+- `benchmark.md` — reproducible workload suite + measurement methodology backing the savings counterfactual.
+- `deployment-shape.md` — recommendation for the replacement-agent / gateway / hybrid fork. Resolves [`STRATEGY.md §6.1`](../STRATEGY.md) when signed off.
+- `gateway.md` — skeleton for the transparent HTTP gateway surface (paired with `deployment-shape.md`).
 - *(planned, later phases)* `skill-format.md`, `pattern-store.md`, `evaluator.md`.
 
 ## Cross-reference map
@@ -43,6 +46,9 @@ A snapshot of which specs reference which (refresh when adding a spec):
 | `tool-dispatcher.md` *(planned)* | canonical-message-format, event-bus-and-trace-catalog |
 | `server-api.md` *(planned)* | canonical-message-format, event-bus-and-trace-catalog, streaming-protocol |
 | `analytics-api.md` | canonical-message-format, event-bus-and-trace-catalog, server-api |
+| `benchmark.md` | analytics-api, event-bus-and-trace-catalog, canonical-message-format, provider-adapter-contract |
+| `deployment-shape.md` | STRATEGY.md, market-research/synthesis.md (rationale only — no contract dependency) |
+| `gateway.md` | canonical-message-format, provider-adapter-contract, routing-engine, event-bus-and-trace-catalog, server-api, analytics-api |
 
 When changing a spec, the dependent specs (right column whose left column is the changed spec) must be checked.
 
@@ -143,6 +149,35 @@ Followup to the cross-spec sweep — five small but real defects caught in revie
 
 ---
 
+### 2026-05-13 — benchmark.md v1 drafted
+
+- **Spec:** new `benchmark.md` v1.
+- **Change:** Defines a reproducible workload suite + measurement methodology that turns `/analytics/savings.actual_repriced_usd` / `baseline_repriced_usd` into a credible "saved X%" number — the artifact `STRATEGY.md §6.4` named as the biggest gap between architecture and proof. Specifies the workload model (per-workload YAML script + bundled fixture workspace under `benchmarks/workloads/`), the v1 suite (three workloads: fix-a-bug-small, write-a-doc-from-notes, multi-turn-refactor), reproducibility rules (pinned commit SHA, `PriceTable.version`, resolved model ids, `temperature=0`), and report shape. Adds `scripts/benchmark.py` (drives the loop) and bundled workload fixtures. Plumbs a `temperature: float | None = None` kwarg through `SessionManager.submit_turn` → `CanonicalRequest.temperature` so the determinism rule is enforceable.
+- **Type:** additive (new spec; new optional kwarg on `submit_turn` defaulting to None preserves existing behavior).
+- **References to verify:**
+  - `analytics-api.md §4.7` — the savings response shape this spec consumes. No edit required.
+  - `provider-adapter-contract.md` (planned) — when drafted, document that adapters honor `CanonicalRequest.temperature` when set. Native Anthropic/OpenAI/OpenRouter adapters already do.
+  - `event-bus-and-trace-catalog.md` — the `llm.call_completed` / `turn.completed` payloads are the source rows for the benchmark's projection. No edit required.
+  - `STRATEGY.md` — §6.4 resolved (pointer to this spec); §5 dated entry added.
+- **Status:** verified (no dependent spec edits required in this change; STRATEGY.md updated in the same change).
+
+---
+
+### 2026-05-13 — deployment-shape.md v1 + gateway.md v0 drafted
+
+- **Specs:** new `deployment-shape.md` v1 (recommendation), new `gateway.md` v0 (skeleton, paired).
+- **Change:** `deployment-shape.md` recommends the hybrid deployment (gateway first → agent upgrade) to resolve the architectural fork in [`STRATEGY.md §3`](../STRATEGY.md) and the open question in [`STRATEGY.md §6.1`](../STRATEGY.md). `gateway.md` is the v0 skeleton of the HTTP gateway surface it implies: OpenAI-shape (and Anthropic-shape) inbound endpoints, request-translation contracts that explicitly contract against the LiteLLM tool_use / cache_control / thinking-block hazards listed in [`docs/market-research/03-routing-layers.md`](../market-research/03-routing-layers.md), per-request stateless routing via the existing engine, and an enumerated non-feature list (no context shaping, no skill loading, no memory composition) that preserves the agent's upgrade-tier value proposition.
+- **Type:** additive (two new specs; no contract changes to existing specs). `gateway.md §6` describes additive payload fields (`gateway_key_id`, `inbound_shape`) on existing `llm.call_completed` and `turn.completed` events — those land only when the gateway implementation does.
+- **References to verify:**
+  - `STRATEGY.md` §3 (resolution note added at top), §5 (new dated entry), §6.1 (retired with resolution pointer), §6.3 (narrowed: gateway-first implies deployed-instance posture). ✓ landed in this change.
+  - `provider-adapter-contract.md` — `AdapterCapabilities` already carries the fields the gateway needs (`supports_tools`, `supports_prompt_caching`, etc.). No edit required.
+  - `routing-engine.md` — 7-slot chain semantics in stateless gateway path documented in `gateway.md §5.1`. No edit required; cross-reference only.
+  - `event-bus-and-trace-catalog.md` — additive payload fields (`gateway_key_id`, `inbound_shape`) documented in `gateway.md §6` will need to land in the payload registry when the gateway implementation does. Flagged as pending below.
+  - `analytics-api.md` — adding `gateway_key` as a `group_by` dimension on `/analytics/cost` is a future additive change; not part of this entry.
+- **Status:** verified (owner sign-off 2026-05-13; STRATEGY.md edits landed in the same change). Implementation-time payload-field additions to `event-bus-and-trace-catalog.md` remain pending below.
+
+---
+
 ### 2026-05-12 — Implementation milestone + doc refresh
 
 Not a spec change; an alignment pass between the docs and what's actually been built.
@@ -162,3 +197,4 @@ When you land a spec change, move it from "pending review" up here for visibilit
 
 - `skill-format.md` (planned) — `skill.loaded.source` field added 2026-05-12 should be documented when this spec lands.
 - `pattern-store.md` (planned) — `routing-engine.md §5.5` references the pattern store's K-nearest aggregation and `cost_weight`; when the pattern-store spec lands, cross-check that the math and config knobs match.
+- `gateway.md` v0 (2026-05-13) — STRATEGY.md edits landed on owner sign-off; the additive `gateway_key_id` / `inbound_shape` payload fields in `event-bus-and-trace-catalog.md` §6.3 / §6.6 land when the gateway implementation does.

@@ -20,7 +20,12 @@ import jsonschema
 import msgspec
 
 from metis_core.canonical.content import TextBlock, ToolResultBlock, ToolUseBlock
-from metis_core.canonical.tools import SideEffects, ToolDefinition
+from metis_core.canonical.tools import (
+    SideEffects,
+    ToolDefinition,
+    ToolSchemaError,
+    validate_tool_input_schema,
+)
 from metis_core.events.bus import EventBus
 from metis_core.events.envelope import Actor
 from metis_core.events.payloads import (
@@ -111,6 +116,12 @@ class ToolDispatcher:
         definition = sample.definition
         if definition.name in self._registry:
             raise ToolRegistrationError(definition.name, "tool name already registered")
+        try:
+            validate_tool_input_schema(definition.input_schema)
+        except ToolSchemaError as exc:
+            raise ToolRegistrationError(
+                definition.name, f"input_schema violates canonical subset: {exc}"
+            ) from exc
         try:
             jsonschema.Draft7Validator.check_schema(definition.input_schema)
         except jsonschema.SchemaError as exc:

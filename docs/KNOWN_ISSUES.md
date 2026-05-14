@@ -20,21 +20,6 @@ When you fix one, **delete the entry**. This file is not a changelog; it's a wat
 
 ## Canonical types
 
-### 🔴 `provider_raw` is not excluded from equality / hashing
-
-[`canonical-message-format.md §6.5`](specs/canonical-message-format.md) says: *"`provider_raw` is not part of equality comparisons or hashing."* [`packages/metis-core/src/metis_core/canonical/messages.py`](../packages/metis-core/src/metis_core/canonical/messages.py) uses `msgspec.Struct(frozen=True)`, which includes every field in `__eq__` and `__hash__`.
-
-```text
->>> a = MessageMetadata(model='m', provider='p', provider_raw={'x': 1})
->>> b = MessageMetadata(model='m', provider='p', provider_raw={'x': 2})
->>> a == b
-False
->>> hash(a)
-TypeError: unhashable type: 'dict'
-```
-
-Fix options: store `provider_raw` outside `MessageMetadata` (side table keyed by message id), or replace the field with a JSON-string and override `__eq__`/`__hash__` to skip it.
-
 ### 🟡 No tolerance path for unknown content block types
 
 `canonical-message-format.md §10.3` requires *"skip with warning rather than crash"* for unknown `type` discriminators. msgspec's tagged union decoding raises on unknown types. Currently no test exercises this; no impact while the catalog is closed.
@@ -63,12 +48,6 @@ Spec §3.3 returns `CanonicalResponse.message: Message`. Impl returns `content: 
 
 ## Tool dispatcher
 
-### 🔴 Canonical JSON Schema subset is not enforced at registration
-
-`tool-dispatcher.md §7.1` says tools registering with `oneOf` / `$ref` / `allOf` / `not` / etc. must fail loudly. [`packages/metis-core/src/metis_core/tools/dispatcher.py`](../packages/metis-core/src/metis_core/tools/dispatcher.py) calls only `jsonschema.Draft7Validator.check_schema()` — that validates *valid JSON Schema*, not the canonical *subset*. The canonical module exposes [`validate_tool_input_schema`](../packages/metis-core/src/metis_core/canonical/tools.py) for this exact check; it isn't called.
-
-Fix is one line: add `validate_tool_input_schema(definition.input_schema)` before the existing `check_schema` call.
-
 ### 🟡 No per-session concurrency cap
 
 Spec §4.1 mandates a default cap of 4 concurrent dispatches per session. Impl runs every dispatch immediately. Risk: a model emitting 12 parallel tool_use blocks all run at once.
@@ -92,22 +71,6 @@ Auto-approves *everything* including WRITE/EXECUTE/NETWORK. Fine for single-user
 ---
 
 ## Routing engine
-
-### 🔴 Per-(provider, model) availability collapsed to per-provider only
-
-`routing-engine.md §4.5` makes per-(provider, model) the *default* scope: a 401 on Opus should not blackout Sonnet. [`packages/metis-core/src/metis_core/routing/availability.py`](../packages/metis-core/src/metis_core/routing/availability.py) tracks per-provider only, with a comment acknowledging the deviation as deferred. Spec test §10.1.19 cannot pass.
-
-### 🔴 Consecutive-failure window is not enforced
-
-Spec §4.5.1: *"≥5 consecutive failures within 2 minutes."* Impl increments unbounded — a failure today plus four next week trips the breaker. The counter needs to reset (or use a sliding window) when `now - last_failure_at > 120s`.
-
-### 🔴 DNS / network error doesn't trigger immediate Unavailable
-
-Spec §4.5.1 says any DNS or network error reaching a provider's host marks the whole provider Unavailable. Impl only treats `AUTH` as immediate. `NETWORK` errors fall into the consecutive-failure counter, missing the explicit signal.
-
-### 🟡 Multi-model escalation to provider-wide not implemented
-
-Spec §4.5.1: *"≥3 distinct models from one provider hit Unavailable within 2 minutes → the whole provider."* Cannot be implemented while per-model is collapsed (above).
 
 ### 🟢 Bare `@haiku` (no trailing text) accepted as override
 

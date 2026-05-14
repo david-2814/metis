@@ -1,6 +1,6 @@
 # Strategy
 
-**Last updated:** 2026-05-12
+**Last updated:** 2026-05-13
 **Status:** Working document. Strategic decisions and open questions that aren't visible from the code or the technical specs. Update when a decision lands.
 
 This doc captures the **why** behind the project — the kind of context an AI agent walking into the codebase cold can't infer from `docs/project-overview.md` (which describes the *shape* of the system) or the per-component specs (which describe the *contracts*). Read this before recommending scope changes, priority shifts, or architectural pivots.
@@ -36,7 +36,9 @@ What doesn't change: local-first as a *deployment* property (their infra, their 
 
 ## 3. The open architectural fork
 
-**Replacement agent vs. transparent gateway.** This is unresolved. The current build is closer to the first; the market dynamics favor the second.
+**Replacement agent vs. transparent gateway.** **Resolved 2026-05-13 — hybrid (gateway first → agent upgrade).** See [`docs/specs/deployment-shape.md`](specs/deployment-shape.md) for the rationale and [`docs/specs/gateway.md`](specs/deployment-shape.md) for the surface skeleton. The analysis below is preserved as historical context; the answer is in the spec.
+
+The current build is closer to the first; the market dynamics favor the second.
 
 | Shape | What devs see | Where Metis sits | Adoption friction |
 |---|---|---|---|
@@ -77,15 +79,17 @@ Implication: the moat is execution speed + opinionated defaults + the FTS5/finge
 | 2026-05-09 | Letta is the reference for bounded memory | Series-A funded peer with the same "eviction is a feature" stance. Don't reinvent. |
 | 2026-05-11 | Pull OpenAI + OpenRouter forward from Phase 2/3 to Phase 1 | Substitutability story is unprovable with one adapter; OpenRouter brings the long-tail catalog cheaply. |
 | 2026-05-12 | Buyer ≠ user; B2B framing | Pricing and surface decisions follow from this. Multi-user from day one is non-negotiable. |
+| 2026-05-13 | Savings benchmark methodology defined | Specced in [`docs/specs/benchmark.md`](specs/benchmark.md). Three workloads (fix-a-bug, write-a-doc, multi-turn-refactor) under `benchmarks/workloads/`; `scripts/benchmark.py` drives them, writes to a benchmark-only trace DB, and reports `actual_repriced_usd` / `baseline_repriced_usd` via the same `AnalyticsStore.savings()` the dashboard uses. Closes §6.4. |
+| 2026-05-13 | Adopt hybrid deployment (gateway first → agent upgrade) | Specced in [`docs/specs/deployment-shape.md`](specs/deployment-shape.md); gateway surface skeleton in [`docs/specs/gateway.md`](specs/gateway.md). Gateway is ~5–8 engineer-weeks of new code on top of `metis-core` (canonical IR / adapters / routing / pricing / trace all reusable), gives the high-floor sale (env-var flip, savings within hours) and turns the canonical-IR moat into a real differentiator versus LiteLLM / Portkey / Helicone (all three intercept HTTP only and have documented or strongly-suspected fidelity gaps on Anthropic blocks). Replacement agent stays alive as "Metis Pro" — the upgrade path for buyers who already see savings and want the context + skills + memory levers. Closes §6.1; narrows §6.3. |
 
 ## 6. Open questions (decisions deferred)
 
 These are **live**. AI agents working in the repo should not unilaterally close them — surface to the owner.
 
-1. **Replacement agent vs. gateway** (or both). See §3.
+1. ~~**Replacement agent vs. gateway** (or both). See §3.~~ **Resolved 2026-05-13 — hybrid (gateway first → agent upgrade).** See [`docs/specs/deployment-shape.md`](specs/deployment-shape.md). The gateway lands as the Phase 2 wedge; the agent stays alive as the upgrade tier. Both deployments compose the same `metis-core` substrate so the engineering does not double-cost.
 2. **Buyer profile.** 20-dev startup CTO vs. 200-dev enterprise eng leader want very different products (the latter wants SOC2/governance/audit). Anchoring on one narrows the build. Current default lean: startup-CTO first.
-3. **Local-first vs. SaaS deployment.** Local-first is a feature for individuals; many B2B buyers actively prefer SaaS (one bill, one vendor relationship, no infra). The commitment costs the easiest GTM path. Worth deciding consciously.
-4. **Savings benchmark.** No defined workload + cost baseline + measurement methodology exists. Until one does, "30–50% savings" is a number we'd be guessing.
+3. **Local-first vs. SaaS deployment.** Local-first is a feature for individuals; many B2B buyers actively prefer SaaS (one bill, one vendor relationship, no infra). The commitment costs the easiest GTM path. Worth deciding consciously. **Narrowed by §6.1 (resolved 2026-05-13):** the hybrid's gateway-first GTM implies a deployed-instance posture (in-VPC or SaaS), not strict laptop-local. Local-first remains a *deployment* property (BYO keys, BYO infra) but the v1 gateway product is "a Metis instance the buyer can point clients at." The remaining choice — SaaS vs. self-host-in-VPC — stays open pending GTM evidence. See [`docs/specs/deployment-shape.md §6`](specs/deployment-shape.md).
+4. ~~**Savings benchmark.**~~ **Resolved 2026-05-13** — see [`docs/specs/benchmark.md`](specs/benchmark.md). Three-workload suite under `benchmarks/workloads/`; `scripts/benchmark.py` drives the loop end-to-end against real APIs, writes to a benchmark-only trace DB, and prints `actual_repriced_usd` / `baseline_repriced_usd` / `savings_pct` via the same `AnalyticsStore.savings()` method that backs the `/analytics/savings` HTTP handler. Determinism is approximate, not strict (LLM variance even at `temperature=0`); v1 documents the tolerance window. Open follow-ups (golden reports, per-provider suites) tracked in benchmark.md §11.
 5. **Context-assembler design.** The biggest cost lever (per §1) has no spec. What's the algorithm for: skill loading (description-match vs activation), history compression vs drop, prompt-cache breakpoint placement, behavior near the context window? Each has direct $$ consequences.
 6. **Pattern store mechanics.** Routing-engine §5.5 references it; no spec exists. Without it, the "learned routing" leg is interface-only.
 7. **Evaluator scope.** Architecture mentions it; no spec. This is the feedback loop that *proves* savings — without it, "is the system actually saving money vs naive sonnet-everywhere?" stays an open question forever.

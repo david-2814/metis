@@ -148,6 +148,102 @@ async def test_duplicate_registration_rejected(bus: EventBus):
         d.register(_EchoTool)
 
 
+# ---- Canonical JSON Schema subset enforcement --------------------------
+
+
+def _make_tool_class(name: str, schema: dict) -> type:
+    """Build a minimal Tool class with the given name + input_schema."""
+
+    class _Tool:
+        definition = ToolDefinition(
+            name=name,
+            description=f"{name} test tool",
+            input_schema=schema,
+            side_effects=SideEffects.NONE,
+            requires_workspace=False,
+        )
+
+        async def execute(self, input: dict, context: ToolContext) -> ToolOutput:
+            return ToolOutput(content=[TextBlock(text="ok")])
+
+        async def cancel(self) -> bool:
+            return True
+
+    return _Tool
+
+
+@pytest.mark.parametrize(
+    ("keyword", "schema"),
+    [
+        (
+            "oneOf",
+            {
+                "type": "object",
+                "properties": {
+                    "x": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+                },
+            },
+        ),
+        (
+            "$ref",
+            {
+                "type": "object",
+                "properties": {"x": {"$ref": "#/definitions/Foo"}},
+            },
+        ),
+        (
+            "allOf",
+            {
+                "type": "object",
+                "properties": {
+                    "x": {"allOf": [{"type": "string"}, {"minLength": 1}]},
+                },
+            },
+        ),
+        (
+            "anyOf",
+            {
+                "type": "object",
+                "properties": {
+                    "x": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                },
+            },
+        ),
+        (
+            "not",
+            {
+                "type": "object",
+                "properties": {"x": {"not": {"type": "string"}}},
+            },
+        ),
+    ],
+)
+async def test_register_rejects_disallowed_subset_keyword(
+    bus: EventBus, keyword: str, schema: dict
+):
+    """tool-dispatcher.md §7.1: disallowed JSON Schema constructs must fail loudly."""
+    d = ToolDispatcher(bus)
+    tool_cls = _make_tool_class(f"bad_{keyword.lstrip('$')}", schema)
+    with pytest.raises(ToolRegistrationError) as exc_info:
+        d.register(tool_cls)
+    assert "canonical subset" in str(exc_info.value)
+    assert keyword in str(exc_info.value)
+
+
+async def test_builtins_and_memory_tools_still_register(bus: EventBus):
+    """The 5 file/shell builtins + 3 memory tools must register cleanly under
+    the canonical-subset validator."""
+    from metis_core.memory.tools import register_memory_tools
+    from metis_core.tools.builtins import register_builtins
+
+    d = ToolDispatcher(bus)
+    register_builtins(d)
+    register_memory_tools(d)
+    names = {td.name for td in d.get_definitions()}
+    assert {"read_file", "write_file", "patch_file", "list_dir", "shell"} <= names
+    assert {"memory_add", "memory_replace", "memory_consolidate"} <= names
+
+
 # ---- Happy path ---------------------------------------------------------
 
 

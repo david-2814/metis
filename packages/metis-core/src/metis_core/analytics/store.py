@@ -503,11 +503,7 @@ def _init_aggregate() -> dict:
 
 def _finalize_cost_aggregate(agg: dict) -> dict:
     """Convert internal Decimal/sum state to the response dict shape."""
-    out = {
-        k: v
-        for k, v in agg.items()
-        if k not in ("_latency_sum", "_latency_count", "cost_usd")
-    }
+    out = {k: v for k, v in agg.items() if k not in ("_latency_sum", "_latency_count", "cost_usd")}
     out["cost_usd"] = _dec_to_json(agg["cost_usd"])
     out["avg_latency_ms"] = (
         agg["_latency_sum"] / agg["_latency_count"] if agg["_latency_count"] > 0 else None

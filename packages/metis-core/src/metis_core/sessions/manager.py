@@ -329,6 +329,7 @@ class SessionManager:
         user_text: str,
         *,
         on_streaming_event: StreamHandler | None = None,
+        temperature: float | None = None,
     ) -> TurnResult:
         session = self._store.get_session(session_id)
         turn_id = str(ULID())
@@ -436,6 +437,7 @@ class SessionManager:
                     system_prompt=system_prompt,
                     model=chosen_model,
                     max_output_tokens=self._max_output_tokens,
+                    temperature=temperature,
                     tool_id_map=self._tool_id_maps.get(session_id),
                 )
                 est_tokens = adapter.estimate_input_tokens(history, tool_definitions, system_prompt)
@@ -452,7 +454,7 @@ class SessionManager:
                 try:
                     final = await _consume_stream(adapter.stream(request), on_streaming_event)
                 except AdapterError as exc:
-                    self._routing.availability.mark_failure(provider, exc.error_class)
+                    self._routing.availability.mark_failure(provider, chosen_model, exc.error_class)
                     self._emit_llm_call_failed(
                         session_id=session_id,
                         turn_id=turn_id,
@@ -471,7 +473,7 @@ class SessionManager:
                         )
                     raise
                 else:
-                    self._routing.availability.mark_success(provider)
+                    self._routing.availability.mark_success(provider, chosen_model)
 
                 llm_calls += 1
                 total_input_tokens += final.usage.input_tokens

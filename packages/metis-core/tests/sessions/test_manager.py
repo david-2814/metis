@@ -426,6 +426,48 @@ async def test_set_active_model_returns_resolved_canonical_id(bus, workspace):
     assert cleared is None
 
 
+async def test_temperature_kwarg_threads_to_request(bus, event_log, workspace):
+    """`submit_turn(temperature=0)` reaches the adapter as `request.temperature == 0`.
+
+    The benchmark suite (docs/specs/benchmark.md) requires deterministic-ish
+    runs, which means temperature must be settable from the public API.
+    """
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="answer")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    await manager.submit_turn(session.id, "hello", temperature=0.0)
+    await bus.drain()
+    await bus.stop()
+    assert len(adapter.requests) == 1
+    assert adapter.requests[0].temperature == 0.0
+
+
+async def test_temperature_default_is_none(bus, event_log, workspace):
+    """When `submit_turn` is called without `temperature=`, the request leaves it
+    unset so adapters use their per-provider default (preserves prior behavior)."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="answer")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    await manager.submit_turn(session.id, "hello")
+    await bus.drain()
+    await bus.stop()
+    assert adapter.requests[0].temperature is None
+
+
 async def test_cost_accumulates_across_turns(bus, event_log, workspace):
     adapter = _ScriptedAnthropicAdapter(
         [

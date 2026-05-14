@@ -79,7 +79,7 @@ class Usage(msgspec.Struct, frozen=True):
     cache_creation_input_tokens: int = 0
 
 
-class MessageMetadata(msgspec.Struct, frozen=True):
+class MessageMetadata(msgspec.Struct, frozen=True, eq=False):
     # Provenance
     model: str | None = None
     provider: str | None = None
@@ -96,8 +96,27 @@ class MessageMetadata(msgspec.Struct, frozen=True):
     # Status
     status: MessageStatus = MessageStatus.COMPLETE
 
-    # Provider-specific opaque payload (round-trip aid; see §6.5)
+    # Provider-specific opaque payload (round-trip aid; see §6.5).
+    # Excluded from __eq__ / __hash__ per canonical-message-format.md §6.5.
     provider_raw: dict | None = None
+
+    def _identity(self) -> tuple:
+        return (
+            self.model,
+            self.provider,
+            self.routing,
+            self.usage,
+            self.parent_tool_use_id,
+            self.status,
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, MessageMetadata):
+            return NotImplemented
+        return self._identity() == other._identity()
+
+    def __hash__(self) -> int:
+        return hash(self._identity())
 
 
 class Message(msgspec.Struct, frozen=True):

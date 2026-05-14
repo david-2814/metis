@@ -1,0 +1,30 @@
+name: fix-a-bug-small
+description: >-
+  Find and fix a documented off-by-one bug in a small slugify utility.
+  Exercises read_file + edit_file in a 2-3 turn cycle representative of the
+  most common dev-loop interaction.
+suite_version: 1
+turns:
+  - prompt: >-
+      Read slug.py and test_slug.py in this workspace. The slug module has a
+      known bug documented in its docstring around leading/trailing hyphens.
+      Identify the bug in one or two sentences.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 6
+  - prompt: >-
+      Now fix the bug in slug.py so that all four tests in test_slug.py would
+      pass. Make the smallest change that fixes it. Don't add new tests or
+      change the docstring contract; just make the implementation match what
+      the tests expect.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 6
+  - prompt: >-
+      Briefly: what one-line change did you make, and why is it sufficient?
+    expect:
+      max_tool_calls: 2
+expect:
+  max_total_cost_usd: 0.50
+  min_llm_calls: 3
+  max_hard_failures: 0
