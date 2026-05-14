@@ -9,11 +9,13 @@ from metis_core.events.bus import (
     Subscription,
     SubscriptionHandle,
     ValidationMode,
+    slow,
 )
 from metis_core.events.envelope import Actor, Event, Sensitivity, new_event_id
 from metis_core.events.errors import (
     EventBusOverflowError,
     EventValidationError,
+    FastPathHandlerError,
     UnknownEventTypeError,
 )
 from metis_core.events.payloads import PAYLOAD_REGISTRY, make_event, payload_for_type
@@ -26,6 +28,7 @@ __all__ = [
     "EventBusOverflowError",
     "EventFilter",
     "EventValidationError",
+    "FastPathHandlerError",
     "Sensitivity",
     "Subscription",
     "SubscriptionHandle",
@@ -34,4 +37,5 @@ __all__ = [
     "make_event",
     "new_event_id",
     "payload_for_type",
+    "slow",
 ]

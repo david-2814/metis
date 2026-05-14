@@ -212,7 +212,10 @@ class OpenAIAdapter:
         # caller's mutations on the floor.
         tool_map = request.tool_id_map if request.tool_id_map is not None else ToolIdMap()
         wire_messages = _canonical_messages_to_openai(
-            request.messages, request.system_prompt, tool_map
+            request.messages,
+            request.system_prompt,
+            tool_map,
+            system_prompt_volatile=request.system_prompt_volatile,
         )
         wire_tools = [_tool_to_openai(t) for t in request.tools]
         wire_model = _wire_model_name(request.model)
@@ -316,11 +319,17 @@ def _canonical_messages_to_openai(
     messages: list[Message],
     system_prompt: str | None,
     tool_map: ToolIdMap,
+    system_prompt_volatile: str | None = None,
 ) -> list[dict]:
     """Translate the canonical message list to OpenAI wire format.
 
     - SYSTEM canonical messages and the optional `system_prompt` are
       concatenated into a single first message with role=system.
+    - `system_prompt_volatile` (if any) is appended at the *end* of the
+      system message text so the byte-stable stable prefix sits first —
+      OpenAI's automatic prefix-match cache (≥1024 tokens, see
+      `docs/specs/context-assembler.md` §3) keys on the prefix, not the
+      whole message.
     - ASSISTANT messages produce content text + a `tool_calls[]` array.
     - TOOL canonical messages produce role=tool messages with `tool_call_id`.
     """
@@ -344,6 +353,9 @@ def _canonical_messages_to_openai(
         if msg.role == Role.TOOL:
             out.extend(_tool_messages(msg, tool_map))
             continue
+
+    if system_prompt_volatile:
+        system_parts.append(system_prompt_volatile)
 
     system_text = "\n\n".join(s for s in system_parts if s)
     if system_text:
@@ -638,7 +650,12 @@ async def _stream_openai_compat(
     different base URLs and provider names.
     """
     tool_map = request.tool_id_map if request.tool_id_map is not None else ToolIdMap()
-    wire_messages = _canonical_messages_to_openai(request.messages, request.system_prompt, tool_map)
+    wire_messages = _canonical_messages_to_openai(
+        request.messages,
+        request.system_prompt,
+        tool_map,
+        system_prompt_volatile=request.system_prompt_volatile,
+    )
     wire_tools = [_tool_to_openai(t) for t in request.tools]
 
     kwargs: dict = {

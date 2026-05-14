@@ -17,10 +17,13 @@ from metis_core.adapters.anthropic import AnthropicAdapter
 from metis_core.adapters.openai import OpenAIAdapter
 from metis_core.adapters.openrouter import OpenRouterAdapter
 from metis_core.adapters.protocol import ProviderAdapter
+from metis_core.eval import Evaluator, register_evaluator
 from metis_core.events.bus import EventBus
 from metis_core.events.envelope import Actor
 from metis_core.events.payloads import RoutingPolicyInvalid, make_event
 from metis_core.memory import MemoryStore, register_memory_tools
+from metis_core.patterns import PatternEventSubscriber, PatternStore
+from metis_core.patterns.fingerprint import FingerprintInputs
 from metis_core.pricing import DEFAULT_PRICE_TABLE, PriceTable
 from metis_core.routing import (
     EMPTY_POLICY,
@@ -69,6 +72,9 @@ class ChatRuntime:
     db_file: Path
     pricing: PriceTable
     global_default_model: str
+    evaluator: Evaluator | None = None
+    pattern_subscriber: PatternEventSubscriber | None = None
+    pattern_stores: dict[str, PatternStore] | None = None
 
 
 class SetupError(Exception):
@@ -187,7 +193,42 @@ async def setup_runtime(
         registry=registry,
         bus=bus,
     )
-    routing = RoutingEngine(registry=registry, bus=bus, policy=policy)
+
+    pattern_stores: dict[str, PatternStore] = {}
+
+    def _pattern_store_resolver(workspace_path: str) -> PatternStore | None:
+        try:
+            existing = pattern_stores.get(workspace_path)
+            if existing is not None:
+                return existing
+            store = PatternStore(workspace_path)
+            pattern_stores[workspace_path] = store
+            return store
+        except Exception:
+            logger.exception("pattern store resolver failed for %s", workspace_path)
+            return None
+
+    def _routing_fingerprint_inputs(ctx) -> FingerprintInputs:
+        # Mirror the pattern subscriber's default_fingerprint_builder so the
+        # query-side fingerprint matches what record() persists. The raw user
+        # message text isn't on the bus (only its hash) so the recording side
+        # leaves user_message_text="" and intent_tags empty; we do the same
+        # at query time to keep structural signatures aligned end-to-end.
+        return FingerprintInputs(
+            user_message_text="",
+            workspace_path=ctx.workspace_path,
+            estimated_input_tokens=ctx.estimated_input_tokens,
+            has_images=ctx.has_images,
+            has_tool_calls_in_history=ctx.has_tool_calls_in_history,
+        )
+
+    routing = RoutingEngine(
+        registry=registry,
+        bus=bus,
+        policy=policy,
+        pattern_store_resolver=_pattern_store_resolver,
+        fingerprint_inputs_builder=_routing_fingerprint_inputs,
+    )
     dispatcher = ToolDispatcher(bus)
     register_builtins(dispatcher)
     register_memory_tools(dispatcher)
@@ -214,6 +255,21 @@ async def setup_runtime(
         skill_store_factory=_build_skill_store,
     )
 
+    evaluator, _ = register_evaluator(bus, trace)
+
+    def _workspace_resolver(session_id: str) -> str | None:
+        try:
+            return session_store.get_session(session_id).workspace_path
+        except Exception:
+            return None
+
+    pattern_subscriber = PatternEventSubscriber(
+        store_factory=lambda ws: pattern_stores.setdefault(ws, PatternStore(ws)),
+        workspace_resolver=_workspace_resolver,
+        bus=bus,
+    )
+    pattern_subscriber.attach()
+
     return ChatRuntime(
         bus=bus,
         trace=trace,
@@ -226,10 +282,23 @@ async def setup_runtime(
         db_file=db_file,
         pricing=pricing_table,
         global_default_model=global_default_model,
+        evaluator=evaluator,
+        pattern_subscriber=pattern_subscriber,
+        pattern_stores=pattern_stores,
     )
 
 
 async def shutdown_runtime(runtime: ChatRuntime) -> None:
+    if runtime.evaluator is not None:
+        try:
+            runtime.evaluator.unregister()
+        except Exception:
+            pass
+    if runtime.pattern_subscriber is not None:
+        try:
+            runtime.pattern_subscriber.detach()
+        except Exception:
+            pass
     try:
         await runtime.bus.drain()
     except Exception:
@@ -238,6 +307,12 @@ async def shutdown_runtime(runtime: ChatRuntime) -> None:
         await runtime.bus.stop()
     except Exception:
         pass
+    if runtime.pattern_stores is not None:
+        for store in runtime.pattern_stores.values():
+            try:
+                store.close()
+            except Exception:
+                pass
     for adapter in runtime.adapters:
         try:
             await adapter.close()

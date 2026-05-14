@@ -6,7 +6,10 @@ discriminator is the wire format, and decoding picks the right concrete class.
 
 from __future__ import annotations
 
+import logging
+
 import msgspec
+import pytest
 from metis_core.canonical.content import (
     ContentBlock,
     ImageBlock,
@@ -16,6 +19,7 @@ from metis_core.canonical.content import (
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
+    decode_content_blocks_tolerant,
 )
 
 # Use the tagged union for decoding so msgspec dispatches on `type`.
@@ -109,3 +113,78 @@ def test_tag_field_is_type():
     """The wire format uses `type` as the discriminator, matching the spec."""
     payload = msgspec.json.decode(_encoder.encode(ToolUseBlock(id="tu_x", name="t", input={})))
     assert payload["type"] == "tool_use"
+
+
+# ---- §10.3 tolerance: unknown content block types -----------------------
+
+
+def test_strict_decode_rejects_unknown_content_type():
+    """Sanity: the strict tagged-union decoder raises on unknown `type`.
+
+    This is the failure mode that decode_content_blocks_tolerant exists to
+    paper over (canonical-message-format.md §10.3).
+    """
+    raw = msgspec.json.encode([{"type": "future_block", "data": "x"}])
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(raw, type=list[ContentBlock])
+
+
+def test_tolerant_decode_skips_unknown_content_block(caplog: pytest.LogCaptureFixture):
+    """canonical-message-format.md §10.3: unknown content-block types are
+    skipped with a warning, not raised."""
+    payload = [
+        {"type": "text", "text": "hello"},
+        {"type": "future_block", "experimental_field": 42},
+        {"type": "tool_use", "id": "tu_x", "name": "t", "input": {}},
+    ]
+    with caplog.at_level(logging.WARNING, logger="metis_core.canonical.content"):
+        blocks = decode_content_blocks_tolerant(msgspec.json.encode(payload))
+    assert len(blocks) == 2
+    assert isinstance(blocks[0], TextBlock)
+    assert isinstance(blocks[1], ToolUseBlock)
+    assert any("future_block" in r.message for r in caplog.records)
+
+
+def test_tolerant_decode_accepts_list_of_dicts_directly():
+    blocks = decode_content_blocks_tolerant(
+        [
+            {"type": "text", "text": "a"},
+            {"type": "unknown", "x": 1},
+            {"type": "text", "text": "b"},
+        ]
+    )
+    assert [b.text for b in blocks if isinstance(b, TextBlock)] == ["a", "b"]
+
+
+def test_tolerant_decode_still_rejects_malformed_known_block():
+    """Tolerance is for unknown `type`, not for malformed payloads of known
+    types — those should still raise so bugs aren't silently swallowed."""
+    payload = [{"type": "text"}]  # missing required `text` field
+    with pytest.raises(msgspec.ValidationError):
+        decode_content_blocks_tolerant(msgspec.json.encode(payload))
+
+
+# ---- ImageSource.kind constraint ---------------------------------------
+
+
+def test_image_source_kind_rejects_unknown_value():
+    """canonical-message-format §4.2: ImageSource.kind ∈ {base64, url, file_ref}."""
+    payload = msgspec.json.encode(
+        ImageBlock(
+            source=ImageSource(kind="base64", data="ZmFrZQ=="),
+            media_type="image/png",
+        )
+    )
+    # Sanity: known kinds decode.
+    msgspec.json.decode(payload, type=ContentBlock)
+
+    # Garbage kinds raise instead of silently decoding.
+    garbage = msgspec.json.encode(
+        {
+            "type": "image",
+            "source": {"kind": "ftp", "data": "x"},
+            "media_type": "image/png",
+        }
+    )
+    with pytest.raises(msgspec.ValidationError):
+        msgspec.json.decode(garbage, type=ContentBlock)

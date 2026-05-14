@@ -400,8 +400,12 @@ Banner clears at UTC midnight reset.
 The pattern policy queries the pattern store for the K nearest fingerprints (default K=10) to the current turn's fingerprint. Among the K neighbors, it groups by `outcome.primary_model`. For each model M in the cluster, it computes:
 
 ```
-normalized_success_M       = mean(success_score) for neighbors with primary_model = M
-                              (already in 0..1)
+normalized_success_M       = sample-size-weighted mean(success_score) for neighbors
+                              with primary_model = M, computed as
+                                Σ(success_score_i × sample_size_i) / Σ(sample_size_i)
+                              (already in 0..1; a neighbor row with 50 contributing
+                              sessions weights 50× a single-shot row, so well-evidenced
+                              outcomes dominate noisy one-offs)
 
 if max_avg_cost_in_cluster == min_avg_cost_in_cluster:
     normalized_cost_efficiency_M = 0  for all models in the cluster

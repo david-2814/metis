@@ -30,6 +30,7 @@ from pathlib import Path
 import msgspec
 from metis_cli.models_display import model_dict, resolve_models
 from metis_cli.runtime import ChatRuntime
+from metis_core.analytics import AnalyticsStore
 from metis_core.canonical.ids import new_message_id
 from metis_core.canonical.messages import Message
 from metis_core.events.envelope import Actor
@@ -39,10 +40,12 @@ from metis_core.tools.confirmation import ConfirmationDecision
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import Response
-from starlette.routing import Route, WebSocketRoute
+from starlette.responses import RedirectResponse, Response
+from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket
 
+from metis_server import analytics as analytics_handlers
 from metis_server.confirmations import RemoteConfirmationHandler
 from metis_server.errors import (
     APIError,
@@ -80,6 +83,7 @@ class _AppState:
     hub: StreamingHub
     executor: TurnExecutor
     confirmation_handler: RemoteConfirmationHandler
+    analytics: AnalyticsStore
     started_at: datetime
 
 
@@ -100,6 +104,7 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         hub=hub,
         executor=TurnExecutor(runtime.manager, hub=hub),
         confirmation_handler=confirmation,
+        analytics=AnalyticsStore(runtime.db_file),
         started_at=datetime.now(UTC),
     )
 
@@ -140,7 +145,23 @@ def build_app(runtime: ChatRuntime) -> Starlette:
             methods=["GET"],
         ),
         Route("/models", _list_models, methods=["GET"]),
+        # /analytics/* — read-only dashboard surface (analytics-api.md)
+        Route("/analytics/cost", analytics_handlers.cost, methods=["GET"]),
+        Route(
+            "/analytics/cache_effectiveness",
+            analytics_handlers.cache_effectiveness,
+            methods=["GET"],
+        ),
+        Route("/analytics/routing", analytics_handlers.routing, methods=["GET"]),
+        Route("/analytics/reliability", analytics_handlers.reliability, methods=["GET"]),
+        Route("/analytics/sessions", analytics_handlers.sessions, methods=["GET"]),
+        Route("/analytics/turns/{turn_id}", analytics_handlers.turn, methods=["GET"]),
+        Route("/analytics/savings", analytics_handlers.savings, methods=["GET"]),
         WebSocketRoute("/sessions/{session_id}/stream", _stream),
+        # Dashboard SPA — vanilla HTML + JS, served as static files from
+        # `metis_server/static/`. Mounted last so API/WS routes take priority.
+        Route("/", _redirect_to_dashboard, methods=["GET"]),
+        Mount("/dashboard", _static_files_app(), name="dashboard"),
     ]
 
     app = Starlette(
@@ -555,6 +576,41 @@ async def run_server(runtime: ChatRuntime, config: ServerConfig | None = None) -
 # ---------------------------------------------------------------------------
 # Encoders
 # ---------------------------------------------------------------------------
+
+
+def _static_dir() -> Path:
+    """Filesystem path to the dashboard SPA assets shipped with this package."""
+    return Path(__file__).parent / "static"
+
+
+class _NoCacheStaticFiles(StaticFiles):
+    """StaticFiles wrapper that sets `Cache-Control: no-cache` on every response.
+
+    Without this, browsers cache app.js/style.css aggressively (they ship with
+    ETag + Last-Modified but no cache directive). During development this
+    surfaces as "I edited the SPA but the browser shows the old version" — a
+    real bug we hit once. `no-cache` forces revalidation on every load (still
+    cheap: 304s when content is unchanged). When the SPA gets hashed asset
+    pipelines, this can be swapped for long-cache headers on hashed files.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+def _static_files_app() -> StaticFiles:
+    """ASGI app serving the SPA (index.html, app.js, style.css).
+
+    `html=True` lets bare `/dashboard/` serve `index.html` automatically.
+    """
+    return _NoCacheStaticFiles(directory=_static_dir(), html=True)
+
+
+async def _redirect_to_dashboard(_request: Request) -> Response:
+    """Redirect bare `/` to `/dashboard/` so loopback users land on the SPA."""
+    return RedirectResponse(url="/dashboard/")
 
 
 def _json(body: dict, *, status: int = 200) -> Response:

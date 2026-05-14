@@ -106,3 +106,30 @@ def confirmation_already_resolved(request_id: str) -> APIError:
         409,
         f"confirmation {request_id} has already been resolved",
     )
+
+
+# ---- analytics-api.md §6 ---------------------------------------------------
+
+
+def invalid_time_window(message: str) -> APIError:
+    return APIError("invalid_time_window", 400, message)
+
+
+def invalid_group_by(message: str) -> APIError:
+    return APIError("invalid_group_by", 400, message)
+
+
+def invalid_order(message: str) -> APIError:
+    return APIError("invalid_order", 400, message)
+
+
+def invalid_limit(message: str) -> APIError:
+    return APIError("invalid_limit", 400, message)
+
+
+def unknown_baseline_model(model: str) -> APIError:
+    return APIError(
+        "unknown_baseline_model",
+        400,
+        f"baseline model {model!r} is not in the current price table",
+    )

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Metis · Dashboard</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="title">
+        <h1>Metis</h1>
+        <span class="subtitle">Local dashboard</span>
+      </div>
+      <div class="controls">
+        <div class="toggle" id="audience" role="tablist" aria-label="View">
+          <button data-view="cost" class="on" role="tab">Cost</button>
+          <button data-view="activity" role="tab">Activity</button>
+        </div>
+        <div class="toggle" id="window" role="tablist" aria-label="Time window">
+          <button data-window="today" role="tab">Today</button>
+          <button data-window="7d" class="on" role="tab">7d</button>
+          <button data-window="30d" role="tab">30d</button>
+          <button data-window="all" role="tab">All</button>
+        </div>
+      </div>
+    </header>
+
+    <main id="view-root" aria-busy="false">
+      <!-- Cost view -->
+      <section id="view-cost" class="view">
+        <div class="hero-row">
+          <div class="card hero">
+            <h2>Total spend</h2>
+            <div class="metric" id="total-spend">$0.00</div>
+            <div class="sub" id="total-spend-sub">across <span id="call-count">0</span> calls</div>
+          </div>
+          <div class="card hero">
+            <h2>vs <span id="baseline-label">baseline</span></h2>
+            <div class="metric" id="savings-amount">—</div>
+            <div class="sub" id="savings-sub">—</div>
+            <div class="warn hidden" id="savings-warn"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Spend over time</h2>
+          <div class="chart"><canvas id="chart-time"></canvas></div>
+          <div class="empty hidden" id="chart-time-empty">No LLM calls in this window.</div>
+        </div>
+
+        <div class="two-col">
+          <div class="card">
+            <h2>Cost by model</h2>
+            <div class="chart"><canvas id="chart-model"></canvas></div>
+            <div class="empty hidden" id="chart-model-empty">No data.</div>
+          </div>
+          <div class="card">
+            <h2>Cache effectiveness</h2>
+            <div class="chart"><canvas id="chart-cache"></canvas></div>
+            <div class="hint" id="cache-hint"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Activity view -->
+      <section id="view-activity" class="view hidden">
+        <div class="two-col">
+          <div class="card">
+            <h2>Routing</h2>
+            <div class="chart"><canvas id="chart-routing"></canvas></div>
+            <div class="sub" id="routing-sub"></div>
+          </div>
+          <div class="card">
+            <h2>Reliability</h2>
+            <div id="reliability-body" class="rel-body"></div>
+            <div class="empty hidden" id="reliability-empty">No failures in this window.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Recent sessions</h2>
+          <div id="sessions-table" class="sessions"></div>
+          <div class="empty hidden" id="sessions-empty">No sessions yet.</div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>pricing <code id="pricing-version">—</code></span>
+      <span>•</span>
+      <span>loopback-only · <span id="window-label">last 7 days</span></span>
+      <span>•</span>
+      <span id="last-refresh">—</span>
+    </footer>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

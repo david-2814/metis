@@ -68,6 +68,24 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1", help="Bind host (loopback-only in v1).")
     serve.add_argument("--port", type=int, default=8421, help="Bind port.")
 
+    evaluate = sub.add_parser(
+        "evaluate",
+        help="Re-evaluate trace-DB subjects with the heuristic judge (evaluator.md §6.2).",
+    )
+    evaluate.add_argument("--db-path", required=True, help="Trace DB path.")
+    evaluate.add_argument(
+        "--subject",
+        choices=("turn", "tool_cycle", "session"),
+        default="turn",
+        help="Subject kind to re-evaluate (default: turn).",
+    )
+    evaluate.add_argument("--since", help="ISO 8601 UTC start of window (inclusive).")
+    evaluate.add_argument("--until", help="ISO 8601 UTC end of window (inclusive).")
+    evaluate.add_argument(
+        "--session-id",
+        help="Restrict to a single session (default: all sessions in window).",
+    )
+
     return parser
 
 
@@ -117,6 +135,17 @@ def main(argv: list[str] | None = None) -> int:
                     port=args.port,
                 )
             )
+        if args.command == "evaluate":
+            from metis_core.eval import evaluate_main
+
+            evaluate_argv: list[str] = ["--db-path", args.db_path, "--subject", args.subject]
+            if args.since:
+                evaluate_argv.extend(["--since", args.since])
+            if args.until:
+                evaluate_argv.extend(["--until", args.until])
+            if args.session_id:
+                evaluate_argv.extend(["--session-id", args.session_id])
+            return evaluate_main(evaluate_argv)
     except KeyboardInterrupt:
         print()
         return 130

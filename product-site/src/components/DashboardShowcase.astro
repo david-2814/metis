@@ -1,0 +1,87 @@
+---
+// Renders a window-chrome frame around the two dashboard screenshots
+// (Cost / Activity) with a small client-side toggle that mirrors the
+// dashboard's own tab affordance.
+//
+// Screenshots are expected at:
+//   public/dashboard-cost.png
+//   public/dashboard-activity.png
+---
+
+<div class="overflow-hidden rounded-lg border border-border-strong bg-bg-elev shadow-2xl">
+  <!-- window chrome -->
+  <div class="flex items-center gap-2 border-b border-border bg-bg-card px-4 py-2.5">
+    <span class="h-3 w-3 rounded-full bg-[#ff5f57]"></span>
+    <span class="h-3 w-3 rounded-full bg-[#febc2e]"></span>
+    <span class="h-3 w-3 rounded-full bg-[#28c840]"></span>
+    <span class="ml-3 hidden text-xs text-fg-muted sm:inline">
+      metis dashboard &middot; localhost:8421
+    </span>
+    <!-- tab toggle -->
+    <div
+      class="ml-auto inline-flex items-center gap-0.5 rounded border border-border-strong bg-bg p-0.5 text-xs"
+      data-dash-tabs
+    >
+      <button
+        type="button"
+        data-dash-tab="cost"
+        class="rounded px-3 py-1 font-bold text-fg [&[aria-pressed=true]]:bg-accent [&[aria-pressed=true]]:text-bg"
+        aria-pressed="true"
+      >
+        Cost
+      </button>
+      <button
+        type="button"
+        data-dash-tab="activity"
+        class="rounded px-3 py-1 font-bold text-fg-muted [&[aria-pressed=true]]:bg-accent [&[aria-pressed=true]]:text-bg"
+        aria-pressed="false"
+      >
+        Activity
+      </button>
+    </div>
+  </div>
+
+  <!-- images -->
+  <div class="relative bg-bg">
+    <img
+      src="/dashboard-cost.png"
+      alt="Metis cost dashboard showing total spend, vs claude-sonnet-4-6 baseline, spend over time, cost by model, and cache effectiveness."
+      class="block h-auto w-full"
+      data-dash-panel="cost"
+      loading="lazy"
+      decoding="async"
+    />
+    <img
+      src="/dashboard-activity.png"
+      alt="Metis activity dashboard showing routing distribution, reliability per model, failures, and recent sessions."
+      class="hidden h-auto w-full"
+      data-dash-panel="activity"
+      loading="lazy"
+      decoding="async"
+    />
+  </div>
+</div>
+
+<script>
+  const root = document.querySelector("[data-dash-tabs]");
+  if (root) {
+    const buttons = root.querySelectorAll<HTMLButtonElement>("[data-dash-tab]");
+    const panels = document.querySelectorAll<HTMLImageElement>("[data-dash-panel]");
+
+    buttons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const target = btn.dataset.dashTab;
+        buttons.forEach((b) =>
+          b.setAttribute("aria-pressed", b === btn ? "true" : "false"),
+        );
+        panels.forEach((p) => {
+          if (p.dataset.dashPanel === target) {
+            p.classList.remove("hidden");
+          } else {
+            p.classList.add("hidden");
+          }
+        });
+      });
+    });
+  }
+</script>

@@ -1,0 +1,43 @@
+name: multi-turn-refactor
+description: >-
+  Rename `get_cached` -> `lookup` across a 4-file mini-project (cache.py,
+  two handler modules, one test file). Multi-turn so the agent has to plan,
+  execute, and verify across files. The longest workload in the v1 suite —
+  most sensitive to context discipline and tool-cycle cost.
+suite_version: 1
+turns:
+  - prompt: >-
+      I want to rename the function `get_cached` to `lookup` across this whole
+      workspace, including its docstring (the cache module's module-level
+      docstring also mentions the rename). Before doing anything, list every
+      file in this workspace that references `get_cached` (including its own
+      definition site) and the line number(s) for each. Don't make any edits
+      yet.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 10
+      contains_substring: cache.py
+  - prompt: >-
+      Now perform the rename. Edit cache.py first (the definition + the
+      module docstring), then update every call site you found. Don't change
+      anything other than the name itself.
+    expect:
+      min_tool_calls: 3
+      max_tool_calls: 20
+  - prompt: >-
+      List every file you edited in the previous turn. Then re-grep the
+      workspace for `get_cached` and tell me whether any references remain. If
+      any do, fix them now.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 10
+  - prompt: >-
+      Finally: run `python -m pytest test_cache.py` from the workspace root
+      and report the result. If it fails, fix the test file and re-run.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 8
+expect:
+  max_total_cost_usd: 1.50
+  min_llm_calls: 4
+  max_hard_failures: 0

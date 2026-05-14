@@ -8,12 +8,22 @@ Wire-format translation per provider-adapter-contract.md §4.2. The adapter:
   multiple `tool_result` blocks (Anthropic's wire format).
 - Uses canonical `tu_<ulid>` ids as wire ids (Anthropic accepts any string),
   recording the identity mapping in the per-session ToolIdMap.
+- Resolves `ImageBlock(kind="file_ref")` through `WorkspaceFileAPI` (path
+  security is load-bearing — `..` escape and out-of-root symlinks are
+  rejected), reads the bytes, base64-encodes them, and emits an
+  Anthropic-shape image block with the inferred media type.
+- Writes prompt-cache breakpoints per `docs/specs/context-assembler.md`:
+  `cache_control: {"type": "ephemeral"}` on the last tool definition and
+  on the last *stable* system block. The volatile system block (driven
+  by `CanonicalRequest.system_prompt_volatile`) trails the breakpoint
+  so per-turn memory mutations don't churn the cached prefix.
 - Reports raw token counts; cost is computed by the core.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import time
@@ -23,7 +33,6 @@ import anthropic
 import httpx
 from anthropic.types import (
     MessageParam,
-    TextBlockParam,
     ToolParam,
     ToolResultBlockParam,
     ToolUseBlockParam,
@@ -68,8 +77,20 @@ from metis_core.canonical.content import (
 from metis_core.canonical.ids import new_message_id
 from metis_core.canonical.messages import Message, Role
 from metis_core.canonical.tools import ToolDefinition
+from metis_core.tools.workspace import WorkspaceEscapeError, WorkspaceFileAPI
 
 logger = logging.getLogger(__name__)
+
+
+# Map common image extensions to Anthropic-accepted media types. Anything
+# unmapped falls back to image/png (the most permissive default).
+_IMAGE_EXTENSION_MEDIA_TYPES: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 # Per-model capability declarations.
@@ -196,10 +217,11 @@ class AnthropicAdapter:
 
     async def _stream_once(self, request: CanonicalRequest) -> AsyncIterator[StreamingEvent]:
         tool_map = request.tool_id_map if request.tool_id_map is not None else ToolIdMap()
-        anthropic_messages, system_text = _canonical_messages_to_anthropic(
-            request.messages, request.system_prompt, tool_map
+        workspace_files = _maybe_workspace_files(request.workspace_path)
+        anthropic_messages, stable_system_text = _canonical_messages_to_anthropic(
+            request.messages, request.system_prompt, tool_map, workspace_files
         )
-        wire_tools = [_tool_to_anthropic(t) for t in request.tools]
+        wire_tools = _tools_to_anthropic_with_cache(request.tools)
         wire_model = _wire_model_name(request.model)
 
         kwargs: dict = {
@@ -208,8 +230,9 @@ class AnthropicAdapter:
             "messages": anthropic_messages,
             "stream": True,
         }
-        if system_text:
-            kwargs["system"] = system_text
+        system_blocks = _system_blocks(stable_system_text, request.system_prompt_volatile)
+        if system_blocks:
+            kwargs["system"] = system_blocks
         if wire_tools:
             kwargs["tools"] = wire_tools
         if request.stop_sequences:
@@ -256,10 +279,11 @@ class AnthropicAdapter:
         # empty map falsy, so we'd silently allocate a new map and drop the
         # caller's mutations on the floor.
         tool_map = request.tool_id_map if request.tool_id_map is not None else ToolIdMap()
-        anthropic_messages, system_text = _canonical_messages_to_anthropic(
-            request.messages, request.system_prompt, tool_map
+        workspace_files = _maybe_workspace_files(request.workspace_path)
+        anthropic_messages, stable_system_text = _canonical_messages_to_anthropic(
+            request.messages, request.system_prompt, tool_map, workspace_files
         )
-        wire_tools = [_tool_to_anthropic(t) for t in request.tools]
+        wire_tools = _tools_to_anthropic_with_cache(request.tools)
         wire_model = _wire_model_name(request.model)
 
         kwargs: dict = {
@@ -267,8 +291,9 @@ class AnthropicAdapter:
             "max_tokens": request.max_output_tokens,
             "messages": anthropic_messages,
         }
-        if system_text:
-            kwargs["system"] = system_text
+        system_blocks = _system_blocks(stable_system_text, request.system_prompt_volatile)
+        if system_blocks:
+            kwargs["system"] = system_blocks
         if wire_tools:
             kwargs["tools"] = wire_tools
         if request.stop_sequences:
@@ -348,6 +373,64 @@ def _tool_to_anthropic(tool: ToolDefinition) -> ToolParam:
     }
 
 
+def _tools_to_anthropic_with_cache(tools: list[ToolDefinition]) -> list[ToolParam]:
+    """Translate canonical tools and place a cache breakpoint on the last
+    one. The breakpoint covers the entire `tools` section in Anthropic's
+    cache-prefix walk (see `docs/specs/context-assembler.md` §3).
+
+    Cast through `dict` so we can attach `cache_control` without the
+    TypedDict TS-style narrowing complaining about extra keys.
+    """
+    if not tools:
+        return []
+    out: list[dict] = [_tool_to_anthropic(t) for t in tools]  # type: ignore[misc]
+    out[-1] = {**out[-1], "cache_control": {"type": "ephemeral"}}
+    return out  # type: ignore[return-value]
+
+
+def _system_blocks(stable_text: str | None, volatile_text: str | None) -> list[dict] | None:
+    """Build the `system` request param as a typed-block list.
+
+    Returns:
+        - None when both segments are empty (caller omits the kwarg).
+        - One block (stable, with cache_control) when only stable is set.
+        - Two blocks (stable with cache_control, then volatile without)
+          when both are set. The cache breakpoint sits on the stable
+          block so per-turn mutations to the volatile content don't
+          churn the cached prefix.
+
+    Empty strings are treated as missing.
+    """
+    stable = (stable_text or "").strip() if stable_text else ""
+    volatile = (volatile_text or "").strip() if volatile_text else ""
+    blocks: list[dict] = []
+    if stable:
+        blocks.append(
+            {
+                "type": "text",
+                "text": stable_text,
+                "cache_control": {"type": "ephemeral"},
+            }
+        )
+    if volatile:
+        blocks.append({"type": "text", "text": volatile_text})
+    return blocks or None
+
+
+def _maybe_workspace_files(workspace_path: str | None) -> WorkspaceFileAPI | None:
+    """Build a WorkspaceFileAPI for `file_ref` image resolution, or None
+    if no workspace context is available. Failure here is non-fatal — the
+    file_ref blocks just get dropped with a WARN, matching the spec's
+    lossy-projection rule (canonical-format §7.3)."""
+    if not workspace_path:
+        return None
+    try:
+        return WorkspaceFileAPI(workspace_path)
+    except (ValueError, OSError) as exc:
+        logger.warning("anthropic adapter: workspace_path %r unusable: %s", workspace_path, exc)
+        return None
+
+
 def _content_block_text_chars(block: ContentBlock) -> int:
     if isinstance(block, TextBlock):
         return len(block.text)
@@ -367,12 +450,15 @@ def _canonical_messages_to_anthropic(
     messages: list[Message],
     system_prompt: str | None,
     tool_map: ToolIdMap,
+    workspace_files: WorkspaceFileAPI | None = None,
 ) -> tuple[list[MessageParam], str | None]:
     """Translate the canonical message list to Anthropic wire format.
 
     - SYSTEM messages are concatenated and hoisted out of the list.
     - Consecutive TOOL messages are merged into a single user message
       carrying multiple tool_result blocks.
+    - `workspace_files`, if provided, resolves `ImageBlock(kind="file_ref")`
+      payloads. Without it, file_ref images are dropped with a WARN.
     """
     system_parts: list[str] = []
     if system_prompt:
@@ -397,14 +483,17 @@ def _canonical_messages_to_anthropic(
         if msg.role == Role.TOOL:
             for block in msg.content:
                 if isinstance(block, ToolResultBlock):
-                    pending_tool_results.append(_tool_result_to_anthropic(block, tool_map))
+                    pending_tool_results.append(
+                        _tool_result_to_anthropic(block, tool_map, workspace_files)
+                    )
             continue
 
         # Non-system, non-tool message: flush pending tool_results first.
         flush_tool_results()
 
         wire_content = [
-            _block_to_anthropic(block, tool_map, role=msg.role) for block in msg.content
+            _block_to_anthropic(block, tool_map, role=msg.role, workspace_files=workspace_files)
+            for block in msg.content
         ]
         wire_content = [b for b in wire_content if b is not None]
         if not wire_content:
@@ -418,11 +507,17 @@ def _canonical_messages_to_anthropic(
     return out, system_text
 
 
-def _block_to_anthropic(block: ContentBlock, tool_map: ToolIdMap, *, role: Role):
+def _block_to_anthropic(
+    block: ContentBlock,
+    tool_map: ToolIdMap,
+    *,
+    role: Role,
+    workspace_files: WorkspaceFileAPI | None = None,
+):
     if isinstance(block, TextBlock):
-        return TextBlockParam(type="text", text=block.text)
+        return {"type": "text", "text": block.text}
     if isinstance(block, ImageBlock):
-        return _image_to_anthropic(block)
+        return _image_to_anthropic(block, workspace_files)
     if isinstance(block, ToolUseBlock):
         # Use canonical id as the wire id (Anthropic accepts any string).
         # Record identity mapping for later round-trips.
@@ -446,7 +541,7 @@ def _block_to_anthropic(block: ContentBlock, tool_map: ToolIdMap, *, role: Role)
     return None
 
 
-def _image_to_anthropic(block: ImageBlock):
+def _image_to_anthropic(block: ImageBlock, workspace_files: WorkspaceFileAPI | None = None):
     src = block.source
     if src.kind == "base64":
         return {
@@ -463,18 +558,67 @@ def _image_to_anthropic(block: ImageBlock):
             "source": {"type": "url", "url": src.data},
         }
     if src.kind == "file_ref":
-        return {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": block.media_type,
-                "data": src.data,
-            },
-        }
+        return _file_ref_image_to_anthropic(block, workspace_files)
+    logger.warning("dropping image with unknown source kind %r", src.kind)
     return None
 
 
-def _tool_result_to_anthropic(block: ToolResultBlock, tool_map: ToolIdMap) -> ToolResultBlockParam:
+def _file_ref_image_to_anthropic(
+    block: ImageBlock, workspace_files: WorkspaceFileAPI | None
+) -> dict | None:
+    """Resolve a workspace-relative path through `WorkspaceFileAPI`, base64
+    the bytes, and emit the Anthropic-shape base64 image block.
+
+    The path goes through `WorkspaceFileAPI._resolve` (workspace path
+    security is load-bearing per AGENTS.md — `..` escape and out-of-root
+    symlinks are rejected by construction). Failure modes (no workspace,
+    file missing, escape, read error) drop the block with a WARN per
+    canonical-format §7.3.
+    """
+    if workspace_files is None:
+        logger.warning(
+            "dropping file_ref image %r: adapter has no workspace context", block.source.data
+        )
+        return None
+    try:
+        data = workspace_files.read_bytes(block.source.data)
+    except WorkspaceEscapeError as exc:
+        logger.warning("dropping file_ref image: %s", exc)
+        return None
+    except (FileNotFoundError, IsADirectoryError, PermissionError, OSError) as exc:
+        logger.warning("dropping file_ref image %r: %s", block.source.data, exc)
+        return None
+    media_type = block.media_type or _media_type_from_path(block.source.data)
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": base64.standard_b64encode(data).decode("ascii"),
+        },
+    }
+
+
+def _media_type_from_path(path: str) -> str:
+    """Infer media type from the file extension.
+
+    Anthropic accepts image/{png,jpeg,gif,webp}. Unknown extensions fall
+    back to image/png — the most permissive default. Callers that care
+    about exact typing should set `ImageBlock.media_type` explicitly.
+    """
+    lower = path.rsplit(".", 1)
+    if len(lower) == 2:
+        ext = "." + lower[1].lower()
+        if ext in _IMAGE_EXTENSION_MEDIA_TYPES:
+            return _IMAGE_EXTENSION_MEDIA_TYPES[ext]
+    return "image/png"
+
+
+def _tool_result_to_anthropic(
+    block: ToolResultBlock,
+    tool_map: ToolIdMap,
+    workspace_files: WorkspaceFileAPI | None = None,
+) -> ToolResultBlockParam:
     provider_id = tool_map.to_provider(block.tool_use_id) or block.tool_use_id
     tool_map.remember(block.tool_use_id, provider_id)
     parts = []
@@ -482,7 +626,7 @@ def _tool_result_to_anthropic(block: ToolResultBlock, tool_map: ToolIdMap) -> To
         if isinstance(inner, TextBlock):
             parts.append({"type": "text", "text": inner.text})
         elif isinstance(inner, ImageBlock):
-            converted = _image_to_anthropic(inner)
+            converted = _image_to_anthropic(inner, workspace_files)
             if converted:
                 parts.append(converted)
     if not parts:

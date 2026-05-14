@@ -13,6 +13,7 @@ from metis_core.canonical.content import (
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
+    decode_content_blocks_tolerant,
 )
 from metis_core.canonical.ids import new_message_id, new_session_id, new_tool_use_id
 from metis_core.canonical.messages import (
@@ -52,6 +53,7 @@ __all__ = [
     "ToolSchemaError",
     "ToolUseBlock",
     "Usage",
+    "decode_content_blocks_tolerant",
     "new_message_id",
     "new_session_id",
     "new_tool_use_id",

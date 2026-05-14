@@ -168,7 +168,7 @@ async def test_unconfigured_model_is_rejected(engine, bus, event_log):
 
 
 async def test_unavailable_provider_skipped(engine, bus, event_log, registry):
-    engine.availability.mark_failure("anthropic", ErrorClass.AUTH)
+    engine.availability.mark_failure("anthropic", "anthropic:claude-sonnet-4-6", ErrorClass.AUTH)
     ctx = _ctx(global_default_model="anthropic:claude-sonnet-4-6")
     with pytest.raises(RoutingError):
         engine.decide(ctx)
@@ -177,7 +177,7 @@ async def test_unavailable_provider_skipped(engine, bus, event_log, registry):
 
 
 async def test_unavailable_provider_falls_through_to_another(engine, bus, event_log):
-    engine.availability.mark_failure("anthropic", ErrorClass.AUTH)
+    engine.availability.mark_failure("anthropic", "anthropic:claude-sonnet-4-6", ErrorClass.AUTH)
     ctx = _ctx(
         session_active_model="anthropic:claude-sonnet-4-6",
         global_default_model="openai:gpt-text-only",  # different provider

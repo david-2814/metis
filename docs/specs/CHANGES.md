@@ -26,7 +26,14 @@ When working on a spec PR, scan this file for `pending review` entries against s
 - *(planned)* `provider-adapter-contract.md` — adapter interface, wire-format translation.
 - *(planned)* `tool-dispatcher.md` — tool registry, side-effect handling, validation.
 - *(planned)* `server-api.md` — REST endpoints, attach handshake, session lifecycle.
-- *(planned, later phases)* `skill-format.md`, `memory-store.md`, `pattern-store.md`, `evaluator.md`.
+- `analytics-api.md` — read-only `/analytics/*` namespace backing the dashboard.
+- `benchmark.md` — reproducible workload suite + measurement methodology backing the savings counterfactual.
+- `deployment-shape.md` — recommendation for the replacement-agent / gateway / hybrid fork. Resolves [`STRATEGY.md §6.1`](../STRATEGY.md) when signed off.
+- `gateway.md` — skeleton for the transparent HTTP gateway surface (paired with `deployment-shape.md`).
+- `context-assembler.md` — v1 covers prompt-cache breakpoint placement; full assembler design (skill activation, history compression) is later.
+- `pattern-store.md` — per-workspace bounded SQLite store of task fingerprints + outcomes that powers routing slot 4 (`PATTERN_RECOMMENDATION`). Phase 2.5.
+- `skill-format.md` — retrospective v1 (2026-05-13) of the existing skills loader / store / tools; conforms to agentskills.io.
+- `evaluator.md` — heuristic + hybrid LLM-as-judge feedback loop; emits `eval.*` events; resolves [`STRATEGY.md §6.7`](../STRATEGY.md) when signed off. Phase 3.
 
 ## Cross-reference map
 
@@ -41,12 +48,51 @@ A snapshot of which specs reference which (refresh when adding a spec):
 | `provider-adapter-contract.md` *(planned)* | canonical-message-format, event-bus-and-trace-catalog, streaming-protocol |
 | `tool-dispatcher.md` *(planned)* | canonical-message-format, event-bus-and-trace-catalog |
 | `server-api.md` *(planned)* | canonical-message-format, event-bus-and-trace-catalog, streaming-protocol |
+| `analytics-api.md` | canonical-message-format, event-bus-and-trace-catalog, server-api |
+| `benchmark.md` | analytics-api, event-bus-and-trace-catalog, canonical-message-format, provider-adapter-contract |
+| `deployment-shape.md` | STRATEGY.md, market-research/synthesis.md (rationale only — no contract dependency) |
+| `gateway.md` | canonical-message-format, provider-adapter-contract, routing-engine, event-bus-and-trace-catalog, server-api, analytics-api |
+| `context-assembler.md` | canonical-message-format, provider-adapter-contract (planned), analytics-api |
+| `pattern-store.md` | canonical-message-format, event-bus-and-trace-catalog, routing-engine, memory-store, analytics-api, evaluator |
+| `skill-format.md` | canonical-message-format, event-bus-and-trace-catalog, tool-dispatcher, context-assembler |
+| `evaluator.md` | event-bus-and-trace-catalog, canonical-message-format, analytics-api, benchmark, routing-engine, pattern-store *(planned)* |
 
 When changing a spec, the dependent specs (right column whose left column is the changed spec) must be checked.
 
 ---
 
 ## Change log
+
+### 2026-05-14 — evaluator: opt-in content penalty (refusal / empty response)
+
+- **Spec:** `evaluator.md` §5.1 (turn rubric), §5.4 (workload rubric).
+- **Change:** Added two signals to the heuristic judge: `assistant_refusal_detected` (×0.5 multiplicative penalty) and `empty_assistant_response` (×0.4). Both fire only when the caller plumbs `final_response_text` via `SubjectContext.signals_extra` — the bus subscriber path is unchanged. The workload rubric applies the same penalty (`workload_assistant_refusal_detected`, `workload_empty_assistant_response`) using the benchmark harness's existing `final_response_text` plumbing. Motivation: the prior rubric was content-blind and would score a clean refusal 1.0 if no `expect_substring_in_final_response` was configured — Run 2's "1.00 @ 0.80 on every workload" exposed the gap.
+- **Type:** additive (new optional signals; existing tests unchanged; rubric version pinned at `1.0.0` because no caller in the live online path plumbs the new key yet, so re-runs of `metis evaluate --subject turn` against existing trace DBs produce identical scores).
+- **References to verify:**
+  - `pattern-store.md §10.4` — pattern store reads `score` only; new signals are in `signals` dict, not on the score contract. No change required. ✓
+  - `benchmark.md §3.1` — `evaluate:` block schema unchanged; new fixture `intentionally-failing-task` added under `benchmarks/workloads/` as a control case. ✓
+- **Status:** verified.
+
+### 2026-05-13 — evaluator v1 implementation (heuristic tier)
+
+- **Spec:** `evaluator.md`
+- **Change:** v1 heuristic implementation lands at `packages/metis-core/src/metis_core/eval/` (`HeuristicJudge` + `Evaluator` bus subscriber + `BudgetTracker` + `metis evaluate` CLI). Subscribes to `turn.completed` / `tool.completed` / `tool.failed` / `session.ended` and emits `eval.started` / `eval.completed` / `eval.failed`. `workload.yaml.evaluate` block parsed by `scripts/benchmark.py` and fed to `Evaluator.evaluate_workload()` after each workload run — the quality score lands in the benchmark report. LLM-as-judge and hybrid escalation are deferred to a later wave per evaluator.md §5.2-5.3.
+- **Type:** additive (new module, new optional `evaluate:` block on `workload.yaml`, new `metis evaluate` subcommand).
+- **References to verify:**
+  - `event-bus-and-trace-catalog.md §6.12` — three `eval.*` event payloads were added in Wave 4a (Task 4a-3). ✓
+  - `benchmark.md §3.1` — `evaluate:` block documented. ✓ (this change)
+  - `pattern-store.md §10.4` — pattern store's `update_score()` flow expects `eval.completed` carrying `subject_id` (turn_id), `score`, `confidence`. ✓ (payload matches; pattern store is the read-side, evaluator the write-side).
+- **Status:** verified.
+
+### 2026-05-13 — pattern-store v1 implementation
+
+- **Spec:** `pattern-store.md`
+- **Change:** v1 implementation lands at `packages/metis-core/src/metis_core/patterns/` (structural fingerprint + similarity + K-NN aggregation + SQLite store + bus subscriber). Routing engine slot 4 (`PATTERN_RECOMMENDATION`) consults the store when a `pattern_store_resolver` is injected; `pattern.recorded` / `pattern.matched` / `pattern.evicted` events flow through the bus. Spec body unchanged; the three event payloads were added to `events/payloads.py` in Wave 4a (Task 4a-3). `PatternConfig` gains `min_eval_confidence: float = 0.5` per pattern-store §15.4 reconciliation.
+- **Type:** additive (new module, new code-path on existing routing chain).
+- **References to verify:**
+  - `routing-engine.md §5.5` — K-NN formula matches `aggregation.py`. ✓
+  - `event-bus-and-trace-catalog.md §6.5b` — three new pattern events were added in Wave 4a. ✓
+- **Status:** verified.
 
 ### 2026-05-08 — routing-engine v3.1
 
@@ -128,6 +174,197 @@ Followup to the cross-spec sweep — five small but real defects caught in revie
 
 ---
 
+### 2026-05-12 — analytics-api.md v1 drafted
+
+- **Spec:** new `analytics-api.md` v1.
+- **Change:** Adds a read-only `/analytics/*` HTTP namespace extending `server-api.md`. Endpoints derive metrics from the existing `events`, `messages`, and `sessions` tables — no new persistent state, no new bus events, no new write paths. Endpoints: `/cost`, `/cache_effectiveness`, `/routing`, `/reliability`, `/sessions`, `/turns/{id}`, `/savings`. Pricing semantics are hybrid: actuals honor stamped `pricing_version`; the savings counterfactual re-prices both numerator and denominator under the current `PriceTable`.
+- **Type:** additive (new endpoints; no contract change to existing specs).
+- **References to verify:**
+  - `server-api.md` — analytics namespace lives on the same Starlette app and inherits the loopback-only / no-auth posture. No edit required; cross-reference only.
+  - `event-bus-and-trace-catalog.md` — analytics queries depend on the `llm.call_completed`, `llm.call_failed`, `route.decided`, and `turn.completed` payload shapes. Any future change to those payloads must update the relevant analytics endpoint and its SQL. No edit required now.
+  - `routing-engine.md §5.3.1` — known asymmetry between `cost_today_exceeds_usd` (UTC midnight) and the dashboard's "today" (local TZ). Documented in analytics-api §3.1; not aligning until evidence of confusion.
+- **Status:** verified (no dependent specs need edits in this change).
+
+---
+
+### 2026-05-13 — benchmark.md v1 drafted
+
+- **Spec:** new `benchmark.md` v1.
+- **Change:** Defines a reproducible workload suite + measurement methodology that turns `/analytics/savings.actual_repriced_usd` / `baseline_repriced_usd` into a credible "saved X%" number — the artifact `STRATEGY.md §6.4` named as the biggest gap between architecture and proof. Specifies the workload model (per-workload YAML script + bundled fixture workspace under `benchmarks/workloads/`), the v1 suite (three workloads: fix-a-bug-small, write-a-doc-from-notes, multi-turn-refactor), reproducibility rules (pinned commit SHA, `PriceTable.version`, resolved model ids, `temperature=0`), and report shape. Adds `scripts/benchmark.py` (drives the loop) and bundled workload fixtures. Plumbs a `temperature: float | None = None` kwarg through `SessionManager.submit_turn` → `CanonicalRequest.temperature` so the determinism rule is enforceable.
+- **Type:** additive (new spec; new optional kwarg on `submit_turn` defaulting to None preserves existing behavior).
+- **References to verify:**
+  - `analytics-api.md §4.7` — the savings response shape this spec consumes. No edit required.
+  - `provider-adapter-contract.md` (planned) — when drafted, document that adapters honor `CanonicalRequest.temperature` when set. Native Anthropic/OpenAI/OpenRouter adapters already do.
+  - `event-bus-and-trace-catalog.md` — the `llm.call_completed` / `turn.completed` payloads are the source rows for the benchmark's projection. No edit required.
+  - `STRATEGY.md` — §6.4 resolved (pointer to this spec); §5 dated entry added.
+- **Status:** verified (no dependent spec edits required in this change; STRATEGY.md updated in the same change).
+
+---
+
+### 2026-05-13 — context-assembler.md v1 drafted
+
+- **Spec:** new `context-assembler.md` v1 (scope: cache-breakpoint placement only).
+- **Change:** Specifies the two-segment system prompt on `CanonicalRequest` (`system_prompt` stable + new `system_prompt_volatile` for `MEMORY.md` / `USER.md`-shaped content), and where adapters place provider cache breakpoints. Anthropic adapter writes `cache_control: {"type": "ephemeral"}` on the last tool definition and on the last stable system block. OpenAI relies on automatic prefix-match caching; the adapter preserves prefix stability (`system → tools → messages` order, volatile content concatenated at the *end* of the system text). OpenRouter passes through markers but declares `supports_prompt_caching=False` because cache behavior depends on the upstream route. Validation surface is `/analytics/cache_effectiveness` ([analytics-api.md §4.2](analytics-api.md)) plus a `scripts/smoke_cache.py` 2-turn live-API test that asserts `cached_input_tokens > 0` on turn 2.
+- **Type:** additive. New optional `system_prompt_volatile` and `workspace_path` fields on `CanonicalRequest` default to `None` and preserve existing behavior. The cache_control markers don't change the request's semantic meaning for any provider that doesn't recognize them.
+- **References to verify:**
+  - `canonical-message-format.md §7.2` — `AdapterCapabilities.supports_prompt_caching` is the routing-engine substitutability gate this spec leans on. No edit required; the field already exists.
+  - `provider-adapter-contract.md` (planned) — when drafted, document that adapters supporting prompt caching write the breakpoints described in §3 of context-assembler.md.
+  - `analytics-api.md §4.2` — the cache-effectiveness view is the validation surface; `hit_rate > 0` after a multi-turn Anthropic session signals the lever has landed. No edit required.
+  - `KNOWN_ISSUES.md` — "No prompt-caching strategy" entry retired; replaced by this spec + implementation. ✓ in this change.
+- **Status:** verified (no dependent spec edits required; KNOWN_ISSUES.md updated in the same change).
+
+---
+
+### 2026-05-13 — deployment-shape.md v1 + gateway.md v0 drafted
+
+- **Specs:** new `deployment-shape.md` v1 (recommendation), new `gateway.md` v0 (skeleton, paired).
+- **Change:** `deployment-shape.md` recommends the hybrid deployment (gateway first → agent upgrade) to resolve the architectural fork in [`STRATEGY.md §3`](../STRATEGY.md) and the open question in [`STRATEGY.md §6.1`](../STRATEGY.md). `gateway.md` is the v0 skeleton of the HTTP gateway surface it implies: OpenAI-shape (and Anthropic-shape) inbound endpoints, request-translation contracts that explicitly contract against the LiteLLM tool_use / cache_control / thinking-block hazards listed in [`docs/market-research/03-routing-layers.md`](../market-research/03-routing-layers.md), per-request stateless routing via the existing engine, and an enumerated non-feature list (no context shaping, no skill loading, no memory composition) that preserves the agent's upgrade-tier value proposition.
+- **Type:** additive (two new specs; no contract changes to existing specs). `gateway.md §6` describes additive payload fields (`gateway_key_id`, `inbound_shape`) on existing `llm.call_completed` and `turn.completed` events — those land only when the gateway implementation does.
+- **References to verify:**
+  - `STRATEGY.md` §3 (resolution note added at top), §5 (new dated entry), §6.1 (retired with resolution pointer), §6.3 (narrowed: gateway-first implies deployed-instance posture). ✓ landed in this change.
+  - `provider-adapter-contract.md` — `AdapterCapabilities` already carries the fields the gateway needs (`supports_tools`, `supports_prompt_caching`, etc.). No edit required.
+  - `routing-engine.md` — 7-slot chain semantics in stateless gateway path documented in `gateway.md §5.1`. No edit required; cross-reference only.
+  - `event-bus-and-trace-catalog.md` — additive payload fields (`gateway_key_id`, `inbound_shape`) documented in `gateway.md §6` will need to land in the payload registry when the gateway implementation does. Flagged as pending below.
+  - `analytics-api.md` — adding `gateway_key` as a `group_by` dimension on `/analytics/cost` is a future additive change; not part of this entry.
+- **Status:** verified (owner sign-off 2026-05-13; STRATEGY.md edits landed in the same change). Implementation-time payload-field additions to `event-bus-and-trace-catalog.md` remain pending below.
+
+---
+
+### 2026-05-14 — event-bus catalog v3.1: pattern.* and eval.* payloads landed
+
+- **Spec:** `event-bus-and-trace-catalog.md` (v3 → v3.1).
+- **Change:** Six new typed payloads landed in [`packages/metis-core/src/metis_core/events/payloads.py`](../../packages/metis-core/src/metis_core/events/payloads.py) and `PAYLOAD_REGISTRY` ahead of the implementation in Batch 4b (Wave 4); the catalog spec is updated to match.
+  - **Pattern domain (§6.5b extended)** — `pattern.recorded`, `pattern.matched`, `pattern.evicted` per `pattern-store.md §10`. All `pseudonymous`. Phase 2.5.
+  - **New `eval` domain (§6.12; closed-list extension in §4.5)** — `eval.started`, `eval.completed`, `eval.failed` per `evaluator.md §8`. All `pseudonymous` floor; `eval.completed` admits opt-in uplift to `user_controlled` per §4.4.1 when `signals.rationale_redacted` is populated.
+  - **Decimal serialization.** `PatternRecorded.cost_usd_at_record` and `EvalCompleted.judge_cost_usd` use `Decimal`, serialized as strings via `msgspec.to_builtins`, matching the `Usage.cost_usd` convention from [`canonical-message-format.md §6.4`](canonical-message-format.md).
+  - **Field-name divergence from pattern-store.md §10.1.** The catalog and implementation use `cost_usd_at_record` rather than the spec's `cost_usd` to disambiguate from `llm.call_completed.cost_usd` and to follow the codebase's `Decimal` convention. Field names otherwise match `pattern-store.md §10` and `evaluator.md §8/§10` as currently drafted; the Task 4a-2 reconciliation sweep may adjust further.
+  - **Tests** added in [`packages/metis-core/tests/events/test_payloads.py`](../../packages/metis-core/tests/events/test_payloads.py) cover registry membership, round-trip (`to_builtins` → `convert`) for each new payload, `make_event` type↔payload binding, and the sensitivity-uplift path for `eval.completed`.
+- **Type:** additive. No existing payload shape changed; no existing event removed or renamed. New typed payloads do not fire from any subscriber yet (Batch 4b lands `PatternStore` and `Evaluator` implementations + bus wiring).
+- **References to verify:**
+  - `pattern-store.md §10.1` — landed payload uses `cost_usd_at_record` (Decimal) rather than the drafted `cost_usd` (float). Reconcile name + type in the Wave 4 sweep; either update the spec to match the catalog or back out of the rename.
+  - `evaluator.md §8` — payload fields and `Decimal` cost convention match the spec verbatim. `signals` is the opaque dict the spec specified; sensitivity uplift is wired via the existing `make_event(..., sensitivity=...)` override path. No edit required.
+  - `routing-engine.md §5.5` — pattern-domain events do not change the routing chain payload; `pattern.matched` is queryable separately from `route.decided`. No edit required.
+  - `analytics-api.md §4.6` — `/analytics/turns/{id}` and the planned `/analytics/quality` endpoint will join `eval.completed.subject_id` against `turn_id`. No edit required until the analytics endpoint lands.
+- **Status:** pending review (the catalog edits and typed payloads have landed for both `pattern-store.md` and `evaluator.md`; pattern-store.md §10.1 field rename + Wave 4 reconciliation per the two earlier entries below remain open).
+
+---
+
+### 2026-05-13 — pattern-store.md v1 drafted
+
+- **Spec:** new `pattern-store.md` v1 (specs-only; no implementation).
+- **Change:** Defines the per-workspace, bounded SQLite-backed store of task fingerprints + outcomes that powers routing slot 4 (`PATTERN_RECOMMENDATION`) per [`routing-engine.md §5.5`](routing-engine.md). Specifies: (a) per-turn fingerprinting unit with a v1 structural-only feature set (file extensions, tool names, side-effect classes, token-bucket, intent regex tags) and an embedding-provider-abstract v2 hybrid path that lands data-only; (b) `<workspace>/.metis/patterns.db` storage with WAL + `synchronous=NORMAL` mirroring the trace store; (c) bounded caps (5k soft / 10k hard / 180-day age) where hard-cap **auto-evicts** rather than rejects writes — asymmetric with `memory-store.md` because pattern writes are mechanical projections with no agent-curation step; (d) K-NN retrieval with weighted Jaccard similarity + sample-size-weighted cluster aggregation, implementing routing-engine.md §5.5 scoring verbatim; (e) three new event types (`pattern.recorded`, `pattern.matched`, `pattern.evicted`) added to `event-bus-and-trace-catalog.md §6.5b`; (f) decimal cost preservation with `pricing_version_last` for future reprice; (g) workspace isolation (multi-user / cross-workspace explicitly out of scope per `STRATEGY.md §2`, §6.6). Closes `STRATEGY.md §6.6`'s "pattern store mechanics" deferral; one [`routing-engine.md §5.5`](routing-engine.md) ambiguity flagged in pattern-store §13.7 (sample-size weighting).
+- **Type:** additive (new spec; three new event types to be added to event-bus catalog at Phase 2.5 implementation time; no contract changes to existing specs).
+- **References to verify:**
+  - `routing-engine.md §5.5` — sample-size weighting in K-cluster aggregation is unspecified there; pattern-store §8.4 picks weighted means as v1 interpretation. Needs a one-line clarification in routing-engine.md to either pin or back out. **Flagged in pattern-store §15.6.**
+  - `event-bus-and-trace-catalog.md §6.5b` — three new event types (`pattern.recorded`, `pattern.matched`, `pattern.evicted`) to be added when the Phase 2.5 implementation lands. Sensitivity is `pseudonymous` for all three; parent linkages documented in pattern-store §10. **Catalog edit pending; flagged below.**
+  - `evaluator.md` *(parallel draft by Agent 3B)* — pattern-store §15 enumerates the touchpoints assumed: `EvaluationResult` shape consumed by the session-ended subscriber, sync vs async score timing decision, `update_score()` API for late-arriving scores if async. **Reconcile in Wave 4 sweep.**
+  - `memory-store.md` — used as the reference shape for goals/non-goals/caps/eviction structure; no edit required.
+  - `analytics-api.md §4.7` — re-pricing math precedent followed; no edit required.
+  - `STRATEGY.md §6.6` — "pattern store mechanics" open question resolved with pointer to this spec; §5 should record the decision in the same change. **Owner update pending.**
+- **Status:** pending review (catalog additions land with Phase 2.5 implementation; routing-engine §5.5 clarification and evaluator.md reconciliation tracked below).
+
+---
+
+### 2026-05-13 — evaluator.md v1 drafted
+
+- **Spec:** new `evaluator.md` v1 (specs-only; no implementation).
+- **Change:** Defines the heuristic-first / hybrid-LLM-as-judge feedback loop that resolves [`STRATEGY.md §6.7`](../STRATEGY.md) — "the feedback loop that *proves* savings — without it, 'is the system actually saving money vs naive sonnet-everywhere?' stays an open question forever." Specifies: (a) four subject kinds (`turn`, `tool_cycle`, `session`, `workload`) — the workload subject subsumes the v1 limitation flagged in [`benchmark.md §2.2.2`](benchmark.md); (b) verdict shape (`EvalVerdict` `msgspec.Struct(frozen=True)` — single `score` in `[0, 1]`, `confidence` as a gate, `Decimal judge_cost_usd`, versioned `rubric_id` + `rubric_version`, opaque `signals` dict for judge-specific evidence); (c) three judge tiers (heuristic ($0), LLM-as-judge (small model by default), hybrid escalation with a single `escalation_threshold` knob); (d) bus subscriber on `turn.completed` / `tool.completed` / `tool.failed` / `session.ended` / `feedback.explicit` as non-fast-path, plus a `metis evaluate` CLI for batch re-evaluation; (e) three new event types (`eval.started`, `eval.completed`, `eval.failed`) and a new `eval` domain to be added to `event-bus-and-trace-catalog.md §4.5` / §6 at implementation time; (f) per-session ($0.10 default) and per-day ($1.00 default) `judge_cost_usd` caps + workspace kill-switch; (g) one new analytics endpoint (`/analytics/quality`) and an additive `include_eval` parameter on `/analytics/cost`; (h) re-evaluation is append-only (every verdict is a new event), enabling the dashboard's "evaluator agreement rate over time" view as a query, not a side-table; (i) workload rubric integrates with `benchmark.md` via a new optional `evaluate:` block in `workload.yaml`; (j) workspace-scoped single-user per [`STRATEGY.md §2`](../STRATEGY.md), no labeled training data, no LLM-as-judge in the critical path. `evaluator.md §15` enumerates the coordination touchpoints with the parallel `pattern-store.md` draft for the Wave 4 reconciliation.
+- **Type:** additive (new spec; three new event types + new `eval` domain to be added to event-bus catalog at Phase 3 implementation time; one new analytics endpoint + additive `include_eval` param + additive `evaluations` array on `/analytics/turns/{id}`; no contract changes to existing specs).
+- **References to verify:**
+  - `event-bus-and-trace-catalog.md §4.5` (closed domain list) and §6 — new `eval` domain plus three event types (`eval.started`, `eval.completed`, `eval.failed`) to be added when the Phase 3 implementation lands. Sensitivity floor `pseudonymous`; `eval.completed` can uplift to `user_controlled` on opt-in `signals.rationale_redacted` per §4.4.1. **Catalog edit pending; flagged below.**
+  - `routing-engine.md §5.5` — pattern-store consumption of `eval.completed.score` as `success_score`; existing math reads one number, no edit required. The confidence-gate filter convention (`pattern.min_eval_confidence`) is documented in evaluator.md §4.3 and §11.1 as a pattern-store-side configuration; cross-check against pattern-store.md.
+  - `analytics-api.md §4.1` / §4.6 — additive `include_eval` query parameter on `/analytics/cost`; additive `evaluations` array on `/analytics/turns/{id}.data`. Existing consumers ignore unknown fields per the additive convention. No edit required now; document at implementation time. **Analytics spec edit pending.**
+  - `benchmark.md §2.2.2` — v1 "no quality scoring of outputs" limitation closed by this spec via the workload subject. New optional `workload.yaml.evaluate:` block (rubric, expect_substring_in_final_response, llm_judge_model, weight_per_turn) is additive to the schema in `benchmark.md §3.1` — when the evaluator implementation lands, `benchmark.md §3.1` should add the `evaluate:` block to the schema and `benchmark.md §8` should add the quality column to the report. **Benchmark spec edit pending.**
+  - `canonical-message-format.md §6.4` — `Decimal` cost-as-string serialization convention reused for `judge_cost_usd` in event payloads. No edit required; cross-reference only.
+  - `pattern-store.md` (parallel draft by Agent 3A) — evaluator.md §15 lists the touchpoints assumed (verdicts on bus, score as one number, confidence-gate filter, `MAX(eval_id)` per subject as "latest verdict," join `chosen_model` from `route.decided` rather than embedding in verdict). **Reconcile in Wave 4 sweep.**
+  - `STRATEGY.md §6.7` — "evaluator scope" open question resolved with pointer to this spec; §5 should record the decision in the same change. **Owner update pending.**
+- **Status:** pending review (catalog additions land with Phase 3 implementation; benchmark.md / analytics-api.md / STRATEGY.md edits and pattern-store.md reconciliation tracked below).
+
+---
+
+### 2026-05-14 — Pattern-store ↔ evaluator reconciliation sweep
+
+Wave 3 produced [`pattern-store.md`](pattern-store.md) and
+[`evaluator.md`](evaluator.md) in parallel. Each spec's §15 listed
+touchpoints assumed about the other surface. This sweep walks those
+touchpoints and pins the reconciled contract, following the
+2026-05-08 cross-spec reconciliation pattern.
+
+- **Specs:** `pattern-store.md`, `evaluator.md`, `routing-engine.md`.
+- **Changes:**
+  1. **Verdict shape ownership.** `EvalVerdict` ([`evaluator.md §4.1`](evaluator.md))
+     is the canonical shape; `pattern-store.md §15.1` references it
+     verbatim and stops re-specifying. The pattern store consumes
+     `subject_id` (the `turn_id`), `score`, `confidence`, and
+     `eval_id`; everything else (`signals`, `judge_kind`, `rubric_id`)
+     is opaque pass-through.
+  2. **Async score timing.** Pattern-store `record()` writes outcomes
+     immediately on `session.ended` with `success_score=None`; an
+     `eval.completed` subscriber later calls
+     `PatternStore.update_score(turn_id, score, confidence, eval_id,
+     pricing_version)` to fold the verdict into the outcome
+     accumulator. Idempotence is keyed by `eval_id`. Re-evaluation
+     produces a new `eval_id` and rolls back the prior contribution
+     before applying the new score. Documented in
+     `pattern-store.md §10.4` and `§15.3`; cross-referenced from
+     `evaluator.md §15`. Join key: `turn_id`.
+  3. **Confidence-gate filter home.** `pattern.min_eval_confidence`
+     lives in **pattern-store config** (`routing.yaml::pattern.*` block)
+     alongside `cost_weight` / `min_confidence` / `min_sample_size`.
+     Default `0.5` (matches the value declared in
+     [`evaluator.md §4.3`](evaluator.md)). The evaluator emits all
+     verdicts; the pattern store applies the gate at K-cluster
+     aggregation time. Verdicts below the gate stay queryable in the
+     trace store for the agreement-rate view. Documented in
+     `pattern-store.md §15.4`; cross-referenced from `evaluator.md §15`.
+  4. **Sample-size-weighted mean pinned in
+     [`routing-engine.md §5.5`](routing-engine.md).** One-line
+     clarification: `normalized_success_M = Σ(success_score_i ×
+     sample_size_i) / Σ(sample_size_i)`. A neighbor row with 50
+     contributing sessions weights 50× a single-shot row. This was
+     the v1 interpretation `pattern-store.md §8.4` already designed
+     to; pinning it in the routing spec removes the open ambiguity
+     called out in `pattern-store.md §13.7`.
+  5. **`MAX(eval_id)` as the latest-verdict rule.** Documented in
+     `pattern-store.md §10.4` alongside the `update_score()` flow.
+     Re-evaluation produces a new `eval.completed` with a fresh
+     `eval_id`; pattern-store consumers join on `MAX(eval_id) per
+     subject` to surface the latest verdict. Aligned with
+     [`evaluator.md §4.6`](evaluator.md) and §11.1.
+- **Type:** spec reconciliation (no contract breaks; clarifications +
+  consolidated ownership of shared shapes).
+- **References to verify:**
+  - `routing-engine.md §5.5` — sample-size-weighted clarification
+    landed in this change. ✓
+  - `pattern-store.md §10.4`, §15 — async flow + `update_score()` +
+    confidence-gate filter + `MAX(eval_id)` rule documented. ✓
+  - `evaluator.md §15` — reconciliation table reflects pinned
+    outcomes; open coordination items closed. ✓
+  - `STRATEGY.md §5`, §6.6, §6.7 — retired entries for "pattern
+    store mechanics" and "evaluator scope" with pointers to the
+    drafted specs. ✓
+- **Status:** verified. Phase 2.5 / Phase 3 implementation-time
+  catalog additions to `event-bus-and-trace-catalog.md §4.5` / §6
+  remain pending (tracked below under the original pattern-store and
+  evaluator entries).
+
+---
+
+### 2026-05-13 — skill-format.md v1 drafted (retrospective)
+
+- **Spec:** new `skill-format.md` v1 (specs-only; documents the existing implementation in [`packages/metis-core/src/metis_core/skills/`](../../packages/metis-core/src/metis_core/skills/)).
+- **Change:** Captures retrospectively what the skills loader / store / tools already do: agentskills.io-conformant six-field frontmatter (`name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools`); `SKILL.md` directory layout with `scripts/` / `references/` / `assets/` siblings; two on-disk roots (`~/.metis/skills/` global, `<workspace>/.metis/skills/` workspace) merged workspace-overrides-global; three-stage progressive disclosure (discovery index in stable system prompt → `skill_load` activation → execution); two tools (`skill_search` / `skill_load`) both `SideEffects.READ`; `skill.loaded` event emission semantics including the `source` field added 2026-05-12. Surfaces seven implementation observations (name-validation error message wording; metadata scalar coercion; unbounded discovery index; no reload-on-change; hidden dirs not excluded; symlinks followed; `allowed-tools` parsed-not-enforced) in §11 for triage, not fixed in this change. Follows the `memory-store.md` retro-spec pattern.
+- **Type:** additive (new spec; no code or contract changes). Resolves the pending cross-reference for `skill.loaded.source` (added 2026-05-12) by documenting the field alongside the rest of the payload.
+- **References to verify:**
+  - `event-bus-and-trace-catalog.md §6.6` — `skill.loaded` payload (including `source`) documented in skill-format.md §9.1. No edit required; cross-reference only. ✓
+  - `tool-dispatcher.md` *(planned)* — `ToolContext.skills` field carries the per-session `SkillStore`; skill-format.md §8 documents the two tools' registration / dispatch semantics. No edit required.
+  - `context-assembler.md §2-§5` — discovery index injected into the *stable* system prompt segment ahead of the cache breakpoint; skill-format.md §7.1 cross-references. No edit required.
+  - `project-overview.md` — spec list refresh: `skill-format.md` line at §"Specs and documents" should move from "Planned" to "Drafted (v1, 2026-05-13)". Defer to next doc-refresh pass.
+  - `STRATEGY.md` — "skills" cost lever (one of three in §2) is now spec-backed; no narrative change required.
+- **Status:** verified. The "Pending cross-references" entry for `skill-format.md` (`skill.loaded.source` field, 2026-05-12) is resolved by skill-format.md §9.1 and §10.6 and removed below.
+
+---
+
 ### 2026-05-12 — Implementation milestone + doc refresh
 
 Not a spec change; an alignment pass between the docs and what's actually been built.
@@ -145,5 +382,6 @@ Not a spec change; an alignment pass between the docs and what's actually been b
 
 When you land a spec change, move it from "pending review" up here for visibility, then back to "verified" when the dependent spec is updated.
 
-- `skill-format.md` (planned) — `skill.loaded.source` field added 2026-05-12 should be documented when this spec lands.
-- `pattern-store.md` (planned) — `routing-engine.md §5.5` references the pattern store's K-nearest aggregation and `cost_weight`; when the pattern-store spec lands, cross-check that the math and config knobs match.
+- `pattern-store.md` v1 (2026-05-13) — three new event types (`pattern.recorded`, `pattern.matched`, `pattern.evicted`) to land in `event-bus-and-trace-catalog.md §6.5b` when Phase 2.5 implementation does. Routing-engine §5.5 sample-size-weighting clarification and evaluator.md reconciliation **verified 2026-05-14** (see "Pattern-store ↔ evaluator reconciliation sweep" above).
+- `evaluator.md` v1 (2026-05-13) — new `eval` domain + three event types (`eval.started`, `eval.completed`, `eval.failed`) to land in `event-bus-and-trace-catalog.md §4.5` / §6 when Phase 3 implementation does. New `/analytics/quality` endpoint + additive `include_eval` param on `/analytics/cost` + additive `evaluations` array on `/analytics/turns/{id}` to land in `analytics-api.md` at implementation time. Optional `evaluate:` block in `workload.yaml` schema to land in `benchmark.md §3.1` plus quality column in `§8` report. STRATEGY.md §6.7 resolution + §5 dated decision entry and pattern-store reconciliation **verified 2026-05-14**.
+- `gateway.md` v0 (2026-05-13) — STRATEGY.md edits landed on owner sign-off; the additive `gateway_key_id` / `inbound_shape` payload fields in `event-bus-and-trace-catalog.md` §6.3 / §6.6 land when the gateway implementation does.

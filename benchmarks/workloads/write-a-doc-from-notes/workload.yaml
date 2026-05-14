@@ -1,0 +1,31 @@
+name: write-a-doc-from-notes
+description: >-
+  Read raw meeting notes (notes.md) and produce a structured postmortem doc.
+  Exercises read_file + write_file in a 2-turn cycle. Representative of the
+  "I dumped my brain into a markdown file, turn it into a doc" pattern.
+suite_version: 1
+turns:
+  - prompt: >-
+      Read notes.md in this workspace. It contains raw notes from a postmortem
+      meeting about a payment retry incident. Then write postmortem.md to this
+      workspace as a one-page postmortem with these sections, in this order:
+      Summary, Timeline, Root Cause, Action Items. Keep it to roughly one page
+      (don't pad). Honor the constraints in the notes (don't include customer
+      $$ impact; don't include blame). Use the action-item ownership and dates
+      from the notes verbatim.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 6
+      contains_substring: postmortem
+  - prompt: >-
+      Re-read your postmortem.md and tell me in one short paragraph whether it
+      meets the brief from the notes (one page, sections in the right order,
+      no customer $$ or blame, action items match). If anything is off, say
+      what.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 3
+expect:
+  max_total_cost_usd: 0.50
+  min_llm_calls: 2
+  max_hard_failures: 0

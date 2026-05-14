@@ -90,6 +90,36 @@ def test_no_system_message_when_neither_set():
     assert all(m["role"] != "system" for m in wire)
 
 
+def test_volatile_system_appended_after_stable():
+    """Stable text precedes volatile in the system message — OpenAI's
+    automatic prefix-match cache (≥1024 tokens) keys on the byte-stable
+    leading portion (context-assembler.md §3 last para)."""
+    tm = ToolIdMap()
+    wire = _canonical_messages_to_openai(
+        [_msg(Role.USER, [TextBlock(text="hi")])],
+        system_prompt="stable instructions",
+        tool_map=tm,
+        system_prompt_volatile="MEMORY: user prefers Rust",
+    )
+    assert wire[0]["role"] == "system"
+    text = wire[0]["content"]
+    assert text == "stable instructions\n\nMEMORY: user prefers Rust"
+    # Stable prefix is at the start; volatile follows.
+    assert text.startswith("stable instructions")
+    assert text.endswith("user prefers Rust")
+
+
+def test_only_volatile_system_still_emits_system_message():
+    tm = ToolIdMap()
+    wire = _canonical_messages_to_openai(
+        [_msg(Role.USER, [TextBlock(text="hi")])],
+        system_prompt=None,
+        tool_map=tm,
+        system_prompt_volatile="memory only",
+    )
+    assert wire[0] == {"role": "system", "content": "memory only"}
+
+
 # ---- USER messages -----------------------------------------------------
 
 
