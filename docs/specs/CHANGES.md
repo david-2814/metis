@@ -63,6 +63,16 @@ When changing a spec, the dependent specs (right column whose left column is the
 
 ## Change log
 
+### 2026-05-14 — evaluator: opt-in content penalty (refusal / empty response)
+
+- **Spec:** `evaluator.md` §5.1 (turn rubric), §5.4 (workload rubric).
+- **Change:** Added two signals to the heuristic judge: `assistant_refusal_detected` (×0.5 multiplicative penalty) and `empty_assistant_response` (×0.4). Both fire only when the caller plumbs `final_response_text` via `SubjectContext.signals_extra` — the bus subscriber path is unchanged. The workload rubric applies the same penalty (`workload_assistant_refusal_detected`, `workload_empty_assistant_response`) using the benchmark harness's existing `final_response_text` plumbing. Motivation: the prior rubric was content-blind and would score a clean refusal 1.0 if no `expect_substring_in_final_response` was configured — Run 2's "1.00 @ 0.80 on every workload" exposed the gap.
+- **Type:** additive (new optional signals; existing tests unchanged; rubric version pinned at `1.0.0` because no caller in the live online path plumbs the new key yet, so re-runs of `metis evaluate --subject turn` against existing trace DBs produce identical scores).
+- **References to verify:**
+  - `pattern-store.md §10.4` — pattern store reads `score` only; new signals are in `signals` dict, not on the score contract. No change required. ✓
+  - `benchmark.md §3.1` — `evaluate:` block schema unchanged; new fixture `intentionally-failing-task` added under `benchmarks/workloads/` as a control case. ✓
+- **Status:** verified.
+
 ### 2026-05-13 — evaluator v1 implementation (heuristic tier)
 
 - **Spec:** `evaluator.md`

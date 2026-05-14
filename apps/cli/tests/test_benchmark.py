@@ -23,7 +23,12 @@ def test_shipped_workloads_load_clean():
     """
     workloads = benchmark.discover_workloads()
     names = {w.name for w in workloads}
-    assert names == {"fix-a-bug-small", "write-a-doc-from-notes", "multi-turn-refactor"}
+    assert names == {
+        "fix-a-bug-small",
+        "intentionally-failing-task",
+        "multi-turn-refactor",
+        "write-a-doc-from-notes",
+    }
     for w in workloads:
         assert w.suite_version == 1
         assert w.turns, f"{w.name}: must have at least one turn"

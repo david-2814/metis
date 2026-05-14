@@ -13,6 +13,7 @@ from metis_core.canonical.ids import new_tool_use_id, next_monotonic_ulid
 from metis_core.events.envelope import Actor, Event
 from metis_core.events.payloads import (
     LLMCallCompleted,
+    LLMCallFailed,
     SessionEnded,
     ToolCalled,
     ToolCompleted,
@@ -154,6 +155,30 @@ def build_llm_completed(
     )
 
 
+def build_llm_failed(
+    *,
+    session_id: str,
+    turn_id: str,
+    error_class: str = "server_error",
+    model: str = "anthropic:claude-haiku-4-5",
+) -> Event:
+    return make_event(
+        type="llm.call_failed",
+        session_id=session_id,
+        actor=Actor.AGENT,
+        timestamp=now(),
+        turn_id=turn_id,
+        payload=LLMCallFailed(
+            model=model,
+            provider="anthropic",
+            error_class=error_class,  # type: ignore[arg-type]
+            error_message_redacted="upstream 502",
+            retry_count=0,
+            latency_ms=10,
+        ),
+    )
+
+
 def build_session_ended(
     *,
     session_id: str,
@@ -176,6 +201,7 @@ def build_session_ended(
 
 __all__ = [
     "build_llm_completed",
+    "build_llm_failed",
     "build_session_ended",
     "build_tool_called",
     "build_tool_completed",

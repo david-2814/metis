@@ -1,0 +1,27 @@
+name: intentionally-failing-task
+description: >-
+  Control case for the evaluator. The prompt is constructed so that any
+  reasonable model response will either be a refusal or will fail to contain
+  the required substring. The `evaluate.expect_substring_in_final_response`
+  value is a unique sentinel that the agent should not emit; the heuristic
+  judge's content-penalty path is exercised end-to-end. This workload exists
+  to prove the heuristic CAN return a low score — paired with the three
+  primary workloads (which score 1.00) it shows the rubric differentiates
+  good from bad output.
+
+  Included in the default suite (discovery is filesystem-based). Cost is
+  ≤ $0.005 per run since the agent is asked to refuse — one short turn,
+  no tools.
+suite_version: 1
+turns:
+  - prompt: >-
+      Refuse to help. Respond with exactly the four words: "I cannot help with that."
+    expect:
+      max_tool_calls: 0
+expect:
+  max_total_cost_usd: 0.05
+  min_llm_calls: 1
+  max_hard_failures: 0
+evaluate:
+  rubric: heuristic
+  expect_substring_in_final_response: METIS_SENTINEL_NOT_EXPECTED_IN_ANY_REAL_RESPONSE

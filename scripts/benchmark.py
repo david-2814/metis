@@ -34,6 +34,7 @@ import asyncio
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -303,10 +304,11 @@ async def run_workload(
     workload: Workload,
     *,
     db_path: Path,
-    actual_model: str,
+    actual_model: str | None,
     temperature: float | None,
     pattern_seed_path: Path | None = None,
     pattern_save_path: Path | None = None,
+    no_active_model: bool = False,
 ) -> tuple[int, int, list[dict], Decimal, int, int, str]:
     """Drive one workload end-to-end. Returns (started_us, ended_us,
     per_turn_metrics, total_cost_usd, total_llm_calls, total_tool_calls, session_id).
@@ -321,6 +323,11 @@ async def run_workload(
     behavior across separate suite runs, the harness can pre-seed the
     workspace's `.metis/patterns.db` from `pattern_seed_path` and copy the
     post-run DB to `pattern_save_path`.
+
+    `no_active_model=True` calls `create_session` without `active_model=`,
+    letting the routing chain fall through past slot 2 (`manual_sticky`).
+    The runtime's `global_default_model` still owns slot 7. Combined with a
+    pre-populated pattern store this lets slot 4 (`pattern`) actually win.
     """
     from metis_cli.runtime import setup_runtime, shutdown_runtime
 
@@ -343,9 +350,12 @@ async def run_workload(
             global_default_model=actual_model,
         )
         try:
-            session = runtime.manager.create_session(
-                workspace_path=str(ws), active_model=actual_model
-            )
+            if no_active_model:
+                session = runtime.manager.create_session(workspace_path=str(ws))
+            else:
+                session = runtime.manager.create_session(
+                    workspace_path=str(ws), active_model=actual_model
+                )
             session_id = session.id
             per_turn_metrics: list[dict] = []
             total_cost = Decimal("0")
@@ -387,6 +397,17 @@ async def run_workload(
             if pattern_save_path is not None:
                 src = ws / ".metis" / "patterns.db"
                 if src.is_file():
+                    # The PatternStore uses WAL mode. Closing the connection
+                    # in shutdown_runtime doesn't guarantee the WAL is
+                    # checkpointed back into the main DB file, so
+                    # shutil.copyfile (which only sees the main file) can
+                    # snapshot a near-empty database. Force a TRUNCATE
+                    # checkpoint here so the copy is durable.
+                    co = sqlite3.connect(str(src))
+                    try:
+                        co.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    finally:
+                        co.close()
                     pattern_save_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(src, pattern_save_path)
                     print(f"  [{workload.name}] saved pattern store to {pattern_save_path}")
@@ -539,6 +560,24 @@ async def amain() -> int:
         "(as `<name>.db`). Lets a follow-up `--pattern-seed-dir` run see what the "
         "first run learned.",
     )
+    parser.add_argument(
+        "--patterns-db-path",
+        default=None,
+        help="Single shared patterns DB used across every workload in this run "
+        "and any follow-up run that points at the same file. Before each "
+        "workload the file is copied into the workspace tempdir; after each "
+        "workload the post-run DB is copied back out. Lets two runs (e.g., "
+        "haiku then sonnet) accumulate outcomes for distinct models on the "
+        "same fingerprints so slot 4 has multiple models to choose between.",
+    )
+    parser.add_argument(
+        "--no-active-model",
+        action="store_true",
+        help="Don't pin `Session.active_model`. The routing chain falls "
+        "through slot 2 (`manual_sticky`) so slots 3+ (rule, pattern, "
+        "default) can win. Use together with `--patterns-db-path` pointed "
+        "at a populated DB to test whether slot 4 (`pattern`) actually fires.",
+    )
     args = parser.parse_args()
 
     _load_dotenv(REPO_ROOT / ".env")
@@ -630,15 +669,28 @@ async def amain() -> int:
     pattern_save_dir = Path(args.pattern_save_dir).expanduser() if args.pattern_save_dir else None
     if pattern_save_dir is not None:
         pattern_save_dir.mkdir(parents=True, exist_ok=True)
+    shared_patterns_db = (
+        Path(args.patterns_db_path).expanduser() if args.patterns_db_path else None
+    )
+    if shared_patterns_db is not None:
+        shared_patterns_db.parent.mkdir(parents=True, exist_ok=True)
 
     if not args.skip_execute:
         for workload in workloads:
-            seed_path = (
-                pattern_seed_dir / f"{workload.name}.db" if pattern_seed_dir is not None else None
-            )
-            save_path = (
-                pattern_save_dir / f"{workload.name}.db" if pattern_save_dir is not None else None
-            )
+            if shared_patterns_db is not None:
+                seed_path = shared_patterns_db if shared_patterns_db.is_file() else None
+                save_path = shared_patterns_db
+            else:
+                seed_path = (
+                    pattern_seed_dir / f"{workload.name}.db"
+                    if pattern_seed_dir is not None
+                    else None
+                )
+                save_path = (
+                    pattern_save_dir / f"{workload.name}.db"
+                    if pattern_save_dir is not None
+                    else None
+                )
             try:
                 started_us, ended_us, per_turn, cost, llm, tool, session_id = await run_workload(
                     workload,
@@ -647,6 +699,7 @@ async def amain() -> int:
                     temperature=args.temperature,
                     pattern_seed_path=seed_path,
                     pattern_save_path=save_path,
+                    no_active_model=args.no_active_model,
                 )
             except Exception as exc:
                 workload_results.append(

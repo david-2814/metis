@@ -173,7 +173,18 @@ class HeuristicJudge:
         else:
             flags_negative.append("tool_cycle_count_excessive")
 
-        score = weighted / cfg.total_weight() if cfg.total_weight() > 0 else 0.0
+        base_score = weighted / cfg.total_weight() if cfg.total_weight() > 0 else 0.0
+
+        # Opt-in content check: when the caller plumbs assistant text via
+        # signals_extra, detect empty / refusal patterns that the event-based
+        # lifecycle signals can't see. A turn with stop_reason=end_turn and
+        # no failures otherwise scores 1.0 even on a clean refusal. Spec §5.1
+        # describes inputs as event-derived; this fires only when callers
+        # explicitly opt in (workload harness today; future message-store-
+        # aware subscriber).
+        content_penalty, content_flags = _content_penalty(ctx.signals_extra or {}, prefix="")
+        flags_negative.extend(content_flags)
+        score = base_score * content_penalty
 
         # Confidence: high when no contradictions, lower when negative flags
         # fire alongside positive ones. The spec's §4.3 "low confidence when
@@ -379,6 +390,12 @@ class HeuristicJudge:
         elif substring_present is False:
             score = score * 0.5
 
+        # Same opt-in content check as the turn rubric. Workloads without a
+        # substring expectation would otherwise score 1.0 even on a refusal.
+        content_penalty, content_flags = _content_penalty(extra, prefix="workload_")
+        flags_negative.extend(content_flags)
+        score = score * content_penalty
+
         # Workload-level confidence: high when we have per-turn signal AND
         # at least one explicit assertion (substring or assertion-set).
         has_explicit = substring_present is not None or bool(extra.get("assertions_checked"))
@@ -414,3 +431,44 @@ def _payload_get(event: Event | None, key: str) -> Any:
     if event is None:
         return None
     return event.payload.get(key)
+
+
+# Refusal patterns anchored to the response head (first ~160 chars) so
+# substantive answers that incidentally quote these phrases don't false-
+# positive. Real refusals almost always lead with one of these.
+_REFUSAL_PATTERNS: tuple[str, ...] = (
+    "i cannot help",
+    "i can't help",
+    "i cannot assist",
+    "i can't assist",
+    "i cannot do that",
+    "i can't do that",
+    "i'm unable to",
+    "i am unable to",
+    "i'm not able to",
+    "i am not able to",
+    "i won't help",
+    "i refuse to",
+    "sorry, i can't",
+    "sorry, i cannot",
+)
+_REFUSAL_HEAD_CHARS = 160
+
+
+def _content_penalty(extra: dict, *, prefix: str) -> tuple[float, list[str]]:
+    """Detect refusal / empty response when text is plumbed via signals_extra.
+
+    Returns (penalty_multiplier, negative_flags). Penalty is 1.0 (no-op) when
+    the caller didn't plumb `final_response_text` — keeps the bus-subscriber
+    path unchanged until a future task wires assistant text through it.
+    """
+    if "final_response_text" not in extra:
+        return 1.0, []
+    text = str(extra.get("final_response_text") or "")
+    stripped = text.strip()
+    if not stripped:
+        return 0.4, [f"{prefix}empty_assistant_response"]
+    head = stripped[:_REFUSAL_HEAD_CHARS].lower()
+    if any(pat in head for pat in _REFUSAL_PATTERNS):
+        return 0.5, [f"{prefix}assistant_refusal_detected"]
+    return 1.0, []

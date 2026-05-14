@@ -23,6 +23,7 @@ from metis_core.events.envelope import Actor
 from metis_core.events.payloads import RoutingPolicyInvalid, make_event
 from metis_core.memory import MemoryStore, register_memory_tools
 from metis_core.patterns import PatternEventSubscriber, PatternStore
+from metis_core.patterns.fingerprint import FingerprintInputs
 from metis_core.pricing import DEFAULT_PRICE_TABLE, PriceTable
 from metis_core.routing import (
     EMPTY_POLICY,
@@ -207,11 +208,26 @@ async def setup_runtime(
             logger.exception("pattern store resolver failed for %s", workspace_path)
             return None
 
+    def _routing_fingerprint_inputs(ctx) -> FingerprintInputs:
+        # Mirror the pattern subscriber's default_fingerprint_builder so the
+        # query-side fingerprint matches what record() persists. The raw user
+        # message text isn't on the bus (only its hash) so the recording side
+        # leaves user_message_text="" and intent_tags empty; we do the same
+        # at query time to keep structural signatures aligned end-to-end.
+        return FingerprintInputs(
+            user_message_text="",
+            workspace_path=ctx.workspace_path,
+            estimated_input_tokens=ctx.estimated_input_tokens,
+            has_images=ctx.has_images,
+            has_tool_calls_in_history=ctx.has_tool_calls_in_history,
+        )
+
     routing = RoutingEngine(
         registry=registry,
         bus=bus,
         policy=policy,
         pattern_store_resolver=_pattern_store_resolver,
+        fingerprint_inputs_builder=_routing_fingerprint_inputs,
     )
     dispatcher = ToolDispatcher(bus)
     register_builtins(dispatcher)

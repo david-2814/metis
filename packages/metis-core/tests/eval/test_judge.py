@@ -13,6 +13,7 @@ from metis_core.eval import (
 
 from .helpers import (
     build_llm_completed,
+    build_llm_failed,
     build_session_ended,
     build_tool_called,
     build_tool_completed,
@@ -239,6 +240,267 @@ async def test_workload_heuristic_substring_present():
     assert verdict.score > 0.8
     assert verdict.signals["substring_present"] is True
     assert "expected_substring_present" in verdict.signals["flags"]
+
+
+async def test_turn_heuristic_llm_failure_lowers_score():
+    """A failed upstream LLM call must not score as a clean turn."""
+    session_id = "sess_test"
+    turn_id = new_turn_id()
+    events = [
+        build_turn_completed(session_id=session_id, turn_id=turn_id),
+        build_llm_failed(session_id=session_id, turn_id=turn_id),
+        build_llm_completed(session_id=session_id, turn_id=turn_id),
+    ]
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(subject_kind="turn", subject_id=turn_id, events=events)
+    )
+    assert verdict.score < 1.0
+    assert "llm_call_failed" in verdict.signals["flags_negative"]
+
+
+async def test_turn_heuristic_excessive_tool_calls_lowers_score():
+    """tool_call_count above the threshold (default 20) fires negative."""
+    session_id = "sess_test"
+    turn_id = new_turn_id()
+    events = [
+        build_turn_completed(session_id=session_id, turn_id=turn_id, tool_call_count=50),
+        build_llm_completed(session_id=session_id, turn_id=turn_id),
+    ]
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(subject_kind="turn", subject_id=turn_id, events=events)
+    )
+    assert verdict.score < 1.0
+    assert "tool_cycle_count_excessive" in verdict.signals["flags_negative"]
+
+
+async def test_turn_heuristic_empty_final_response_lowers_score():
+    """When the caller plumbs an empty final_response_text, score must drop.
+
+    The lifecycle signals (stop_reason=end_turn, no failures) would otherwise
+    score this 1.0. This is the gap hypothesis (b) — content-blind heuristic
+    can't distinguish a successful answer from an empty response.
+    """
+    session_id = "sess_test"
+    turn_id = new_turn_id()
+    events = [
+        build_turn_completed(session_id=session_id, turn_id=turn_id),
+        build_llm_completed(session_id=session_id, turn_id=turn_id),
+    ]
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(
+            subject_kind="turn",
+            subject_id=turn_id,
+            events=events,
+            signals_extra={"final_response_text": "   "},
+        )
+    )
+    assert verdict.score < 0.9
+    assert "empty_assistant_response" in verdict.signals["flags_negative"]
+
+
+async def test_turn_heuristic_refusal_text_lowers_score():
+    """Assistant refusal at the start of the response triggers the penalty."""
+    session_id = "sess_test"
+    turn_id = new_turn_id()
+    events = [
+        build_turn_completed(session_id=session_id, turn_id=turn_id),
+        build_llm_completed(session_id=session_id, turn_id=turn_id),
+    ]
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(
+            subject_kind="turn",
+            subject_id=turn_id,
+            events=events,
+            signals_extra={
+                "final_response_text": "I cannot help with that request. Please ask something else.",
+            },
+        )
+    )
+    assert verdict.score < 0.9
+    assert "assistant_refusal_detected" in verdict.signals["flags_negative"]
+
+
+async def test_turn_heuristic_refusal_pattern_in_body_does_not_false_positive():
+    """A substantive response that quotes 'I cannot' deep in the body is NOT a refusal."""
+    session_id = "sess_test"
+    turn_id = new_turn_id()
+    events = [
+        build_turn_completed(session_id=session_id, turn_id=turn_id),
+        build_llm_completed(session_id=session_id, turn_id=turn_id),
+    ]
+    judge = HeuristicJudge()
+    # 200+ chars of substantive text before the quoted refusal phrase.
+    long_text = (
+        "Here is the analysis you asked for. The function processes input in three stages, "
+        "validates the schema, then writes the result. The docstring claims it 'cannot' handle "
+        "empty inputs but the code actually does. I cannot find any other issues."
+    )
+    verdict = await judge.evaluate(
+        SubjectContext(
+            subject_kind="turn",
+            subject_id=turn_id,
+            events=events,
+            signals_extra={"final_response_text": long_text},
+        )
+    )
+    assert verdict.score == 1.0
+    assert "assistant_refusal_detected" not in verdict.signals["flags_negative"]
+
+
+async def test_tool_cycle_heuristic_immediate_re_call_same_input_lowers_score():
+    """A second tool.called with identical (name, input_hash) right after fires negative."""
+    session_id = "sess_test"
+    turn_id = new_turn_id()
+    a = new_tool_use_id()
+    b = new_tool_use_id()
+    events = [
+        build_tool_called(
+            session_id=session_id,
+            turn_id=turn_id,
+            tool_use_id=a,
+            tool_name="read_file",
+            input_hash="h1",
+        ),
+        build_tool_completed(session_id=session_id, turn_id=turn_id, tool_use_id=a, success=True),
+        build_tool_called(
+            session_id=session_id,
+            turn_id=turn_id,
+            tool_use_id=b,
+            tool_name="read_file",
+            input_hash="h1",
+        ),
+    ]
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(subject_kind="tool_cycle", subject_id=a, events=events)
+    )
+    assert verdict.score < 1.0
+    assert "immediate_re_call_same_input" in verdict.signals["flags_negative"]
+
+
+async def test_session_heuristic_error_disposition_negative_flag():
+    """session.ended with disposition=error fires the error negative flag."""
+    session_id = "sess_err"
+    events = [build_session_ended(session_id=session_id, disposition="error")]
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(
+            subject_kind="session",
+            subject_id=session_id,
+            events=events,
+            signals_extra={"child_turn_scores": [0.3], "child_eval_ids": ["e1"]},
+        )
+    )
+    assert verdict.score < 0.5
+    assert "disposition_error" in verdict.signals["flags_negative"]
+
+
+async def test_session_heuristic_low_child_scores_drag_aggregate_low():
+    """A session whose turns all scored poorly aggregates to a low session score."""
+    session_id = "sess_bad"
+    events = [build_session_ended(session_id=session_id, disposition="completed")]
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(
+            subject_kind="session",
+            subject_id=session_id,
+            events=events,
+            signals_extra={
+                "child_turn_scores": [0.1, 0.2, 0.15],
+                "child_eval_ids": ["e1", "e2", "e3"],
+            },
+        )
+    )
+    assert verdict.score < 0.5
+
+
+async def test_workload_heuristic_combined_failure_scores_below_0_8():
+    """Per-turn 0.3 + assertion fail + substring missing + empty text → clearly failing."""
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(
+            subject_kind="workload",
+            subject_id="wl_intentional",
+            events=[],
+            workload_rubric=WorkloadRubric(
+                rubric="heuristic",
+                expect_substring_in_final_response="completed-fix",
+            ),
+            signals_extra={
+                "per_turn_scores": [0.3, 0.3],
+                "final_response_text": "",
+                "assertion_failures": ["turn 0: tool_calls=0 < min_tool_calls=1"],
+                "assertions_checked": True,
+                "workload_name": "intentionally-failing-task",
+            },
+        )
+    )
+    assert verdict.score < 0.8
+    assert "workload_assertions_failed" in verdict.signals["flags_negative"]
+    assert "expected_substring_missing" in verdict.signals["flags_negative"]
+    assert "workload_empty_assistant_response" in verdict.signals["flags_negative"]
+
+
+async def test_workload_heuristic_refusal_text_lowers_score():
+    """Refusal in final_response_text drops score even without substring assertion."""
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(
+            subject_kind="workload",
+            subject_id="wl_refusal",
+            events=[],
+            workload_rubric=WorkloadRubric(rubric="heuristic"),
+            signals_extra={
+                "per_turn_scores": [1.0],
+                "final_response_text": "I'm unable to do that.",
+                "assertion_failures": [],
+                "assertions_checked": True,
+            },
+        )
+    )
+    assert verdict.score < 0.9
+    assert "workload_assistant_refusal_detected" in verdict.signals["flags_negative"]
+
+
+async def test_intentionally_failing_workload_fixture_scores_below_0_8():
+    """Load the benchmarks/workloads/intentionally-failing-task fixture and
+    simulate the most plausible failure shapes — refusal or empty response,
+    sentinel substring missing — and verify the workload heuristic returns
+    score < 0.8. This is the 'testing the test' check.
+    """
+    import pathlib
+
+    import yaml
+    from metis_core.eval.rubric import parse_workload_rubric
+
+    repo_root = pathlib.Path(__file__).resolve().parents[4]
+    workload_path = repo_root / "benchmarks/workloads/intentionally-failing-task/workload.yaml"
+    raw = yaml.safe_load(workload_path.read_text())
+    rubric = parse_workload_rubric(raw.get("evaluate"))
+
+    judge = HeuristicJudge()
+    for failure_text in ("I cannot help with that.", "   ", ""):
+        verdict = await judge.evaluate(
+            SubjectContext(
+                subject_kind="workload",
+                subject_id="wl_intentional",
+                events=[],
+                workload_rubric=rubric,
+                signals_extra={
+                    "per_turn_scores": [0.5],
+                    "final_response_text": failure_text,
+                    "assertion_failures": [],
+                    "assertions_checked": True,
+                    "workload_name": "intentionally-failing-task",
+                },
+            )
+        )
+        assert verdict.score < 0.8, f"text={failure_text!r} → score={verdict.score}"
+        assert "expected_substring_missing" in verdict.signals["flags_negative"]
 
 
 async def test_workload_heuristic_assertion_failure_penalty():

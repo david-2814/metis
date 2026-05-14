@@ -294,6 +294,8 @@ Inputs (all derived from events already in the trace store for `turn_id`):
 | `no_tool_failure`        | No `tool.failed` in turn                                              | positive  |
 | `no_max_tokens_hit`      | No `llm.call_completed.stop_reason == "max_tokens"` in turn           | positive  |
 | `tool_cycle_count_reasonable` | `turn.completed.tool_call_count` ≤ a configured threshold (default 20) | positive  |
+| `assistant_refusal_detected` | `signals_extra.final_response_text` begins with a refusal phrase (e.g. "I cannot help", "I'm unable to") within the first 160 chars | negative (×0.5) |
+| `empty_assistant_response` | `signals_extra.final_response_text` is whitespace-only | negative (×0.4) |
 | `no_retry_implicit`      | No `feedback.implicit.type == "retry"` whose `subject_turn_id == turn_id` within next 5 user messages | positive |
 | `no_manual_swap_after`   | No `feedback.implicit.type == "manual_swap"` whose `subject_turn_id == turn_id` | positive |
 | `no_edit_followup`       | No `feedback.implicit.type == "edit_followup"` whose `subject_turn_id == turn_id` | positive |
@@ -305,6 +307,17 @@ The score is the rubric-weighted sum of fired signals normalized to
 file (`rubrics/turn-heuristic-v1.yaml`, not specified here); the *contract*
 is that the score is bounded and that explicit feedback dominates implicit
 signals dominates lifecycle signals.
+
+**Content penalty (opt-in).** `assistant_refusal_detected` and
+`empty_assistant_response` apply as multiplicative penalties on the
+normalized score (×0.5 and ×0.4 respectively), not as weighted lifecycle
+signals. They fire only when the caller plumbs `final_response_text` via
+`SubjectContext.signals_extra` — the bus subscriber path doesn't carry
+assistant text today, so this is a no-op on the online path. The
+benchmark harness *does* plumb the text (see [§5.4](#54-workload-rubric))
+so workload-level evaluation exercises it. The refusal regex is anchored
+to the first 160 chars of the stripped response so substantive answers
+that incidentally quote a refusal phrase don't false-positive.
 
 **Confidence** is high when ≥ N signals fire in the same direction with no
 conflict; low when signals contradict (e.g. clean stop reason but implicit
@@ -410,6 +423,16 @@ is the special-case heuristic for the workload rubric: a present substring
 contributes positively to the score; an absent one negatively. New workload
 rubric primitives are added as `evaluate.*` fields, not as new schema
 versions.
+
+The workload rubric also applies the same content penalty as the turn
+rubric — `workload_assistant_refusal_detected` (×0.5) and
+`workload_empty_assistant_response` (×0.4) — using the harness-supplied
+`final_response_text`. Without this, a workload whose `evaluate:` block
+has no `expect_substring_in_final_response` would score 1.0 on a clean
+refusal (lifecycle is fine; substring isn't asserted). The
+`intentionally-failing-task` workload under `benchmarks/workloads/` is
+the control case that exercises this — it scores < 0.8 when the agent
+refuses or returns nothing.
 
 ### 5.5 Tool-cycle rubric
 
