@@ -221,7 +221,10 @@ class OpenRouterAdapter:
     async def _call_once(self, request: CanonicalRequest) -> CanonicalResponse:
         tool_map = request.tool_id_map if request.tool_id_map is not None else ToolIdMap()
         wire_messages = _canonical_messages_to_openai(
-            request.messages, request.system_prompt, tool_map
+            request.messages,
+            request.system_prompt,
+            tool_map,
+            system_prompt_volatile=request.system_prompt_volatile,
         )
         wire_tools = [_tool_to_openai(t) for t in request.tools]
         wire_model = _wire_model_name(request.model)

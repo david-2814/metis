@@ -30,6 +30,7 @@ When working on a spec PR, scan this file for `pending review` entries against s
 - `benchmark.md` — reproducible workload suite + measurement methodology backing the savings counterfactual.
 - `deployment-shape.md` — recommendation for the replacement-agent / gateway / hybrid fork. Resolves [`STRATEGY.md §6.1`](../STRATEGY.md) when signed off.
 - `gateway.md` — skeleton for the transparent HTTP gateway surface (paired with `deployment-shape.md`).
+- `context-assembler.md` — v1 covers prompt-cache breakpoint placement; full assembler design (skill activation, history compression) is later.
 - *(planned, later phases)* `skill-format.md`, `pattern-store.md`, `evaluator.md`.
 
 ## Cross-reference map
@@ -49,6 +50,7 @@ A snapshot of which specs reference which (refresh when adding a spec):
 | `benchmark.md` | analytics-api, event-bus-and-trace-catalog, canonical-message-format, provider-adapter-contract |
 | `deployment-shape.md` | STRATEGY.md, market-research/synthesis.md (rationale only — no contract dependency) |
 | `gateway.md` | canonical-message-format, provider-adapter-contract, routing-engine, event-bus-and-trace-catalog, server-api, analytics-api |
+| `context-assembler.md` | canonical-message-format, provider-adapter-contract (planned), analytics-api |
 
 When changing a spec, the dependent specs (right column whose left column is the changed spec) must be checked.
 
@@ -160,6 +162,20 @@ Followup to the cross-spec sweep — five small but real defects caught in revie
   - `event-bus-and-trace-catalog.md` — the `llm.call_completed` / `turn.completed` payloads are the source rows for the benchmark's projection. No edit required.
   - `STRATEGY.md` — §6.4 resolved (pointer to this spec); §5 dated entry added.
 - **Status:** verified (no dependent spec edits required in this change; STRATEGY.md updated in the same change).
+
+---
+
+### 2026-05-13 — context-assembler.md v1 drafted
+
+- **Spec:** new `context-assembler.md` v1 (scope: cache-breakpoint placement only).
+- **Change:** Specifies the two-segment system prompt on `CanonicalRequest` (`system_prompt` stable + new `system_prompt_volatile` for `MEMORY.md` / `USER.md`-shaped content), and where adapters place provider cache breakpoints. Anthropic adapter writes `cache_control: {"type": "ephemeral"}` on the last tool definition and on the last stable system block. OpenAI relies on automatic prefix-match caching; the adapter preserves prefix stability (`system → tools → messages` order, volatile content concatenated at the *end* of the system text). OpenRouter passes through markers but declares `supports_prompt_caching=False` because cache behavior depends on the upstream route. Validation surface is `/analytics/cache_effectiveness` ([analytics-api.md §4.2](analytics-api.md)) plus a `scripts/smoke_cache.py` 2-turn live-API test that asserts `cached_input_tokens > 0` on turn 2.
+- **Type:** additive. New optional `system_prompt_volatile` and `workspace_path` fields on `CanonicalRequest` default to `None` and preserve existing behavior. The cache_control markers don't change the request's semantic meaning for any provider that doesn't recognize them.
+- **References to verify:**
+  - `canonical-message-format.md §7.2` — `AdapterCapabilities.supports_prompt_caching` is the routing-engine substitutability gate this spec leans on. No edit required; the field already exists.
+  - `provider-adapter-contract.md` (planned) — when drafted, document that adapters supporting prompt caching write the breakpoints described in §3 of context-assembler.md.
+  - `analytics-api.md §4.2` — the cache-effectiveness view is the validation surface; `hit_rate > 0` after a multi-turn Anthropic session signals the lever has landed. No edit required.
+  - `KNOWN_ISSUES.md` — "No prompt-caching strategy" entry retired; replaced by this spec + implementation. ✓ in this change.
+- **Status:** verified (no dependent spec edits required; KNOWN_ISSUES.md updated in the same change).
 
 ---
 

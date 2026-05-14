@@ -156,7 +156,16 @@ async def test_complete_includes_system_when_set():
     request = _user_request()
     request.system_prompt = "you are helpful"
     await adapter.complete(request)
-    assert fake.calls[0]["system"] == "you are helpful"
+    # System is sent as a typed-block list (so the cache breakpoint can
+    # ride on the last stable block, see context-assembler.md §3).
+    system_blocks = fake.calls[0]["system"]
+    assert system_blocks == [
+        {
+            "type": "text",
+            "text": "you are helpful",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
 
 
 # ---- Token usage mapping -----------------------------------------------
@@ -317,3 +326,315 @@ def test_estimate_input_tokens_is_positive():
     assert est > 0
     # 11 chars + 11 chars system + small constant; ~5-10 tokens
     assert est < 100
+
+
+# ---- Prompt-cache breakpoint placement (context-assembler.md §3) -------
+
+
+async def test_volatile_system_appended_after_stable_breakpoint():
+    """Two-segment system prompt → stable block carries cache_control,
+    volatile block trails it. The cache prefix covers tools + stable system.
+    """
+    fake = _FakeMessagesClient(responses=[_fake_text_response()])
+    adapter = AnthropicAdapter(client=_FakeClient(messages=fake))
+    request = _user_request()
+    request.system_prompt = "stable instructions"
+    request.system_prompt_volatile = "## MEMORY.md\nuser likes elixir"
+    await adapter.complete(request)
+
+    system_blocks = fake.calls[0]["system"]
+    assert system_blocks == [
+        {
+            "type": "text",
+            "text": "stable instructions",
+            "cache_control": {"type": "ephemeral"},
+        },
+        {"type": "text", "text": "## MEMORY.md\nuser likes elixir"},
+    ]
+
+
+async def test_only_volatile_system_still_emits_just_the_volatile_block():
+    """When stable text is empty, only the volatile block is sent — no
+    cache_control marker on a volatile block (the spec forbids it)."""
+    fake = _FakeMessagesClient(responses=[_fake_text_response()])
+    adapter = AnthropicAdapter(client=_FakeClient(messages=fake))
+    request = _user_request()
+    request.system_prompt = None
+    request.system_prompt_volatile = "memory only"
+    await adapter.complete(request)
+
+    system_blocks = fake.calls[0]["system"]
+    assert system_blocks == [{"type": "text", "text": "memory only"}]
+
+
+async def test_no_system_segments_omits_kwarg_entirely():
+    fake = _FakeMessagesClient(responses=[_fake_text_response()])
+    adapter = AnthropicAdapter(client=_FakeClient(messages=fake))
+    request = _user_request()
+    request.system_prompt = None
+    request.system_prompt_volatile = None
+    await adapter.complete(request)
+    assert "system" not in fake.calls[0]
+
+
+async def test_last_tool_carries_cache_control():
+    """Cache_control on the last tool def caches the entire tools section
+    in Anthropic's cache-prefix walk (context-assembler.md §3)."""
+    from metis_core.canonical.tools import SideEffects, ToolDefinition
+
+    fake = _FakeMessagesClient(responses=[_fake_text_response()])
+    adapter = AnthropicAdapter(client=_FakeClient(messages=fake))
+    request = _user_request()
+    request.tools = [
+        ToolDefinition(
+            name="read_file",
+            description="reads",
+            input_schema={"type": "object"},
+            side_effects=SideEffects.READ,
+        ),
+        ToolDefinition(
+            name="write_file",
+            description="writes",
+            input_schema={"type": "object"},
+            side_effects=SideEffects.WRITE,
+        ),
+    ]
+    await adapter.complete(request)
+    wire_tools = fake.calls[0]["tools"]
+    # Earlier tools have no cache_control, last one does.
+    assert "cache_control" not in wire_tools[0]
+    assert wire_tools[-1]["cache_control"] == {"type": "ephemeral"}
+
+
+async def test_single_tool_carries_cache_control():
+    from metis_core.canonical.tools import SideEffects, ToolDefinition
+
+    fake = _FakeMessagesClient(responses=[_fake_text_response()])
+    adapter = AnthropicAdapter(client=_FakeClient(messages=fake))
+    request = _user_request()
+    request.tools = [
+        ToolDefinition(
+            name="read_file",
+            description="reads",
+            input_schema={"type": "object"},
+            side_effects=SideEffects.READ,
+        )
+    ]
+    await adapter.complete(request)
+    assert fake.calls[0]["tools"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+# ---- file_ref ImageBlock resolution (KNOWN_ISSUES carryover) -----------
+
+
+async def test_file_ref_image_resolved_through_workspace_file_api(tmp_path):
+    """Previously the adapter stuffed the workspace-relative path string
+    into the base64 `data` field, sending garbled bytes to Anthropic. The
+    fix reads via WorkspaceFileAPI, base64-encodes, and infers media type
+    from the extension."""
+    import base64
+    from datetime import UTC, datetime
+
+    from metis_core.canonical.content import ImageBlock, ImageSource
+
+    image_bytes = b"\x89PNG\r\n\x1a\nfake-png-bytes"
+    (tmp_path / "shot.png").write_bytes(image_bytes)
+
+    fake = _FakeMessagesClient(responses=[_fake_text_response()])
+    adapter = AnthropicAdapter(client=_FakeClient(messages=fake))
+    request = CanonicalRequest(
+        request_id="req_img",
+        messages=[
+            Message(
+                id="01HZ",
+                session_id="s",
+                role=Role.USER,
+                content=[
+                    TextBlock(text="here"),
+                    ImageBlock(
+                        source=ImageSource(kind="file_ref", data="shot.png"),
+                        media_type="",  # adapter must infer
+                    ),
+                ],
+                created_at=datetime.now(UTC),
+            )
+        ],
+        tools=[],
+        system_prompt=None,
+        model="anthropic:claude-sonnet-4-6",
+        max_output_tokens=128,
+        workspace_path=str(tmp_path),
+    )
+    await adapter.complete(request)
+
+    wire_messages = fake.calls[0]["messages"]
+    image_block = wire_messages[0]["content"][1]
+    assert image_block["type"] == "image"
+    assert image_block["source"]["type"] == "base64"
+    assert image_block["source"]["media_type"] == "image/png"  # inferred from .png
+    decoded = base64.b64decode(image_block["source"]["data"])
+    assert decoded == image_bytes
+
+
+async def test_file_ref_image_uses_explicit_media_type_when_set(tmp_path):
+    """When ImageBlock.media_type is set, it overrides the extension-based
+    inference."""
+    from datetime import UTC, datetime
+
+    from metis_core.canonical.content import ImageBlock, ImageSource
+
+    (tmp_path / "shot.bin").write_bytes(b"\xff\xd8\xff\xe0jpegdata")
+
+    fake = _FakeMessagesClient(responses=[_fake_text_response()])
+    adapter = AnthropicAdapter(client=_FakeClient(messages=fake))
+    request = CanonicalRequest(
+        request_id="req_img2",
+        messages=[
+            Message(
+                id="01HZ",
+                session_id="s",
+                role=Role.USER,
+                content=[
+                    ImageBlock(
+                        source=ImageSource(kind="file_ref", data="shot.bin"),
+                        media_type="image/jpeg",
+                    ),
+                ],
+                created_at=datetime.now(UTC),
+            )
+        ],
+        tools=[],
+        system_prompt=None,
+        model="anthropic:claude-sonnet-4-6",
+        max_output_tokens=128,
+        workspace_path=str(tmp_path),
+    )
+    await adapter.complete(request)
+    image_block = fake.calls[0]["messages"][0]["content"][0]
+    assert image_block["source"]["media_type"] == "image/jpeg"
+
+
+async def test_file_ref_image_dropped_when_no_workspace_path(tmp_path):
+    """Without workspace context, file_ref images are dropped with a WARN
+    rather than sent as garbled payload (canonical-format §7.3)."""
+    from datetime import UTC, datetime
+
+    from metis_core.canonical.content import ImageBlock, ImageSource
+
+    fake = _FakeMessagesClient(responses=[_fake_text_response()])
+    adapter = AnthropicAdapter(client=_FakeClient(messages=fake))
+    request = CanonicalRequest(
+        request_id="req_img3",
+        messages=[
+            Message(
+                id="01HZ",
+                session_id="s",
+                role=Role.USER,
+                content=[
+                    TextBlock(text="surrounding text"),
+                    ImageBlock(
+                        source=ImageSource(kind="file_ref", data="missing.png"),
+                        media_type="image/png",
+                    ),
+                ],
+                created_at=datetime.now(UTC),
+            )
+        ],
+        tools=[],
+        system_prompt=None,
+        model="anthropic:claude-sonnet-4-6",
+        max_output_tokens=128,
+        # workspace_path intentionally omitted
+    )
+    await adapter.complete(request)
+    # Image dropped; only the surrounding text survives.
+    contents = fake.calls[0]["messages"][0]["content"]
+    assert all(c["type"] != "image" for c in contents)
+    assert any(c["type"] == "text" and c["text"] == "surrounding text" for c in contents)
+
+
+async def test_file_ref_image_dropped_on_workspace_escape(tmp_path):
+    """`..` path escape is rejected by WorkspaceFileAPI; image is dropped
+    rather than reaching the wire (workspace path security is load-bearing,
+    AGENTS.md "Implementation conventions")."""
+    from datetime import UTC, datetime
+
+    from metis_core.canonical.content import ImageBlock, ImageSource
+
+    fake = _FakeMessagesClient(responses=[_fake_text_response()])
+    adapter = AnthropicAdapter(client=_FakeClient(messages=fake))
+    request = CanonicalRequest(
+        request_id="req_img4",
+        messages=[
+            Message(
+                id="01HZ",
+                session_id="s",
+                role=Role.USER,
+                content=[
+                    TextBlock(text="text"),
+                    ImageBlock(
+                        source=ImageSource(kind="file_ref", data="../../etc/passwd"),
+                        media_type="image/png",
+                    ),
+                ],
+                created_at=datetime.now(UTC),
+            )
+        ],
+        tools=[],
+        system_prompt=None,
+        model="anthropic:claude-sonnet-4-6",
+        max_output_tokens=128,
+        workspace_path=str(tmp_path),
+    )
+    await adapter.complete(request)
+    contents = fake.calls[0]["messages"][0]["content"]
+    assert all(c["type"] != "image" for c in contents)
+
+
+async def test_file_ref_image_dropped_when_file_missing(tmp_path):
+    from datetime import UTC, datetime
+
+    from metis_core.canonical.content import ImageBlock, ImageSource
+
+    fake = _FakeMessagesClient(responses=[_fake_text_response()])
+    adapter = AnthropicAdapter(client=_FakeClient(messages=fake))
+    request = CanonicalRequest(
+        request_id="req_img5",
+        messages=[
+            Message(
+                id="01HZ",
+                session_id="s",
+                role=Role.USER,
+                content=[
+                    TextBlock(text="text"),
+                    ImageBlock(
+                        source=ImageSource(kind="file_ref", data="does-not-exist.png"),
+                        media_type="image/png",
+                    ),
+                ],
+                created_at=datetime.now(UTC),
+            )
+        ],
+        tools=[],
+        system_prompt=None,
+        model="anthropic:claude-sonnet-4-6",
+        max_output_tokens=128,
+        workspace_path=str(tmp_path),
+    )
+    await adapter.complete(request)
+    contents = fake.calls[0]["messages"][0]["content"]
+    assert all(c["type"] != "image" for c in contents)
+
+
+def test_media_type_inference_from_extension():
+    from metis_core.adapters.anthropic import _media_type_from_path
+
+    assert _media_type_from_path("foo.png") == "image/png"
+    assert _media_type_from_path("foo.PNG") == "image/png"
+    assert _media_type_from_path("dir/sub/foo.jpg") == "image/jpeg"
+    assert _media_type_from_path("foo.jpeg") == "image/jpeg"
+    assert _media_type_from_path("foo.gif") == "image/gif"
+    assert _media_type_from_path("foo.webp") == "image/webp"
+    # Unknown extension defaults to image/png.
+    assert _media_type_from_path("foo.bmp") == "image/png"
+    assert _media_type_from_path("foo") == "image/png"

@@ -419,28 +419,41 @@ class SessionManager:
         try:
             while True:
                 history = self._store.get_messages(session_id)
-                # Compose system prompt fresh each LLM call so mid-turn
-                # memory writes (from a tool) are reflected in the next call.
-                turn_memory = self._memory_stores.get(session_id)
-                system_prompt = (
-                    turn_memory.assemble_system_prompt(self._system_prompt)
-                    if turn_memory is not None
-                    else self._system_prompt
-                )
-                # Inject the skill discovery index (agentskills.io stage 1).
+                # Split the system prompt into the two segments the cache
+                # breakpoint sits between (see context-assembler.md §2-§5):
+                #   stable: base persona + skill discovery index
+                #   volatile: USER.md + MEMORY.md (mutates per turn)
+                # Composing fresh each LLM call so mid-turn memory writes
+                # (from a tool) are reflected in the next call.
+                stable_system_prompt = self._system_prompt
                 if skill_store is not None and len(skill_store) > 0:
-                    system_prompt = _append_skill_index(system_prompt, skill_store)
+                    stable_system_prompt = _append_skill_index(stable_system_prompt, skill_store)
+                turn_memory = self._memory_stores.get(session_id)
+                volatile_system_prompt = (
+                    _assemble_volatile_memory(turn_memory) if turn_memory is not None else None
+                )
+                # Estimate uses the combined text for budget purposes; the
+                # adapter only sees the two segments separately.
+                combined_for_estimate = (
+                    f"{stable_system_prompt}\n\n{volatile_system_prompt}"
+                    if volatile_system_prompt
+                    else stable_system_prompt
+                )
                 request = CanonicalRequest(
                     request_id=new_message_id(),
                     messages=history,
                     tools=tool_definitions,
-                    system_prompt=system_prompt,
+                    system_prompt=stable_system_prompt,
                     model=chosen_model,
                     max_output_tokens=self._max_output_tokens,
                     temperature=temperature,
                     tool_id_map=self._tool_id_maps.get(session_id),
+                    system_prompt_volatile=volatile_system_prompt,
+                    workspace_path=session.workspace_path,
                 )
-                est_tokens = adapter.estimate_input_tokens(history, tool_definitions, system_prompt)
+                est_tokens = adapter.estimate_input_tokens(
+                    history, tool_definitions, combined_for_estimate
+                )
 
                 llm_started_event = self._emit_llm_call_started(
                     session_id=session_id,
@@ -970,6 +983,20 @@ def _now() -> datetime:
 def _assistant_text(content: list[ContentBlock]) -> str:
     """Concatenate text blocks for CLI display. Ignores tool_use/thinking."""
     return "\n".join(b.text for b in content if isinstance(b, TextBlock))
+
+
+def _assemble_volatile_memory(memory: MemoryStore) -> str | None:
+    """Compose the *volatile* portion of the system prompt — USER.md and
+    MEMORY.md, the per-session memory the agent mutates.
+
+    Returned text trails the cache-control breakpoint on Anthropic and
+    sits at the end of the system message on OpenAI / OpenRouter (see
+    `docs/specs/context-assembler.md` §2-§5). Returns None when both
+    files are empty so the adapter can omit the trailing block entirely
+    and a memory-less session pays no cache penalty.
+    """
+    composed = memory.assemble_system_prompt("").strip()
+    return composed or None
 
 
 def _append_skill_index(system_prompt: str, skill_store: Any) -> str:

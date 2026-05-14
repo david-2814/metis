@@ -50,6 +50,21 @@ class CanonicalRequest:
     `tool_id_map` carries the per-session bidirectional id map (§6.2). The
     adapter reads and writes to it; callers (typically the session manager)
     own the lifecycle.
+
+    `system_prompt` carries the *stable* portion of the system prompt
+    (base persona, skill discovery index — content that doesn't change
+    turn-to-turn within a session). `system_prompt_volatile` carries the
+    *volatile* portion (`USER.md`, `MEMORY.md`, anything mutating). The
+    split is load-bearing for prompt caching: see
+    `docs/specs/context-assembler.md` §2-§3. Adapters concatenate the
+    two segments stable-first when the provider doesn't expose
+    breakpoints; for Anthropic the cache breakpoint sits between them.
+
+    `workspace_path` is the absolute path of the session's workspace.
+    Used by the adapter to resolve `ImageBlock(kind="file_ref")` payloads
+    via `WorkspaceFileAPI` (workspace path security is load-bearing —
+    don't bypass it). Optional: callers without a workspace context (or
+    requests with no `file_ref` images) leave it None.
     """
 
     request_id: str  # ULID; passed to cancel()
@@ -63,6 +78,8 @@ class CanonicalRequest:
     output_schema: dict | None = None
     stream: bool = False
     tool_id_map: ToolIdMap | None = None
+    system_prompt_volatile: str | None = None
+    workspace_path: str | None = None
 
 
 @dataclass

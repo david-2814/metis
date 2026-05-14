@@ -175,7 +175,9 @@ async def test_memory_factory_creates_per_session_store(bus, workspace):
 
 
 async def test_memory_appears_in_system_prompt_on_next_turn(bus, workspace):
-    """Pre-populating USER.md/MEMORY.md flows into the next turn's system prompt."""
+    """Pre-populating USER.md/MEMORY.md flows into the next turn's volatile
+    system segment (separated from the stable prefix so the cache breakpoint
+    can ride on the latter — see context-assembler.md §5)."""
     # Pre-write to the store before submitting a turn.
     store = MemoryStore(workspace)
     store.add_entry(MemoryFile.USER, "user is a Go developer")
@@ -190,11 +192,14 @@ async def test_memory_appears_in_system_prompt_on_next_turn(bus, workspace):
     await manager.submit_turn(session.id, "hi")
     await bus.drain()
     await bus.stop()
-    sp = adapter.requests[0].system_prompt
-    assert "user is a Go developer" in sp
-    assert "tests live in tests/" in sp
+    volatile = adapter.requests[0].system_prompt_volatile
+    assert volatile is not None
+    assert "user is a Go developer" in volatile
+    assert "tests live in tests/" in volatile
     # USER.md before MEMORY.md.
-    assert sp.index("USER.md") < sp.index("MEMORY.md")
+    assert volatile.index("USER.md") < volatile.index("MEMORY.md")
+    # Stable prefix stays free of memory so the cache breakpoint works.
+    assert "user is a Go developer" not in (adapter.requests[0].system_prompt or "")
 
 
 async def test_memory_tool_emits_memory_updated_event(bus, event_log, workspace):
@@ -348,8 +353,9 @@ async def test_second_turn_picks_up_memory_written_in_first_turn(bus, event_log,
     await bus.stop()
 
     # Turn 1's first request: no memory yet.
-    assert "user is a Rust dev" not in adapter.requests[0].system_prompt
-    # Turn 1's second request (after tool dispatch): memory now present.
-    assert "user is a Rust dev" in adapter.requests[1].system_prompt
-    # Turn 2's request: memory still present.
-    assert "user is a Rust dev" in adapter.requests[2].system_prompt
+    assert not (adapter.requests[0].system_prompt_volatile or "").__contains__("user is a Rust dev")
+    # Turn 1's second request (after tool dispatch): memory now in the
+    # volatile segment, kept out of the cached stable prefix.
+    assert "user is a Rust dev" in (adapter.requests[1].system_prompt_volatile or "")
+    # Turn 2's request: memory still present in the volatile segment.
+    assert "user is a Rust dev" in (adapter.requests[2].system_prompt_volatile or "")

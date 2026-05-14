@@ -1,9 +1,7 @@
 ---
 import Layout from "../layouts/Layout.astro";
 import TerminalDemo from "../components/TerminalDemo.astro";
-
-// TODO: swap to the public repo URL when the project is open-sourced.
-const GITHUB_URL = "https://github.com/2sumai/metis";
+import DashboardShowcase from "../components/DashboardShowcase.astro";
 
 const pillars = [
   {
@@ -70,13 +68,8 @@ const inProgress = [
         </a>
         <nav class="flex items-center gap-6 text-sm">
           <a href="#thesis" class="text-fg-muted hover:text-fg">thesis</a>
+          <a href="#dashboard" class="text-fg-muted hover:text-fg">dashboard</a>
           <a href="#status" class="text-fg-muted hover:text-fg">status</a>
-          <a
-            href={GITHUB_URL}
-            class="rounded border border-border-strong px-3 py-1.5 text-fg hover:border-accent hover:text-accent"
-          >
-            github
-          </a>
         </nav>
       </div>
     </header>
@@ -106,17 +99,11 @@ const inProgress = [
         go down as the agent learns your workload.
       </p>
 
-      <div class="mt-10 flex flex-wrap items-center gap-4">
-        <a
-          href={GITHUB_URL}
-          class="inline-flex items-center gap-2 rounded border border-accent bg-accent/10 px-5 py-3 text-sm font-bold text-accent hover:bg-accent hover:text-bg"
-        >
-          <span>view on github</span>
-          <span aria-hidden="true">&rarr;</span>
-        </a>
-        <span class="text-sm text-fg-muted">
-          binary releases coming soon &middot; runs on macOS / Linux
-        </span>
+      <div class="mt-10 flex flex-wrap items-center gap-3">
+        <div class="inline-flex items-center gap-3 rounded border border-border-strong bg-bg-card px-4 py-3 text-sm">
+          <span class="text-accent">[coming soon]</span>
+          <span class="text-fg-muted">macOS &middot; Linux &middot; binary releases in beta</span>
+        </div>
       </div>
 
       <!-- terminal demo -->
@@ -188,6 +175,54 @@ const inProgress = [
       </div>
     </section>
 
+    <!-- DASHBOARD -->
+    <section id="dashboard" class="border-t border-border">
+      <div class="mx-auto max-w-6xl px-6 py-20">
+        <div class="mb-12 max-w-2xl">
+          <p class="prompt-before mb-3 text-sm text-fg-muted">
+            <span class="text-fg">open http://localhost:8421/dashboard</span>
+          </p>
+          <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">
+            See where every cent goes.
+          </h2>
+          <p class="mt-4 text-fg-muted">
+            A local dashboard ships with the agent. Every turn, every model,
+            every dollar &mdash; measured against what it would have cost on
+            a single-model baseline. No SaaS, no telemetry.
+          </p>
+        </div>
+
+        <DashboardShowcase />
+
+        <div class="mt-10 grid gap-6 text-sm md:grid-cols-3">
+          <div class="rounded-lg border border-border bg-bg-card p-5">
+            <p class="font-bold text-accent">Baseline comparison</p>
+            <p class="mt-2 leading-relaxed text-fg-muted">
+              Every spend total is shown against what the same workload would
+              have cost on a single model (e.g. claude-sonnet-4-6). The savings
+              story stops being a guess.
+            </p>
+          </div>
+          <div class="rounded-lg border border-border bg-bg-card p-5">
+            <p class="font-bold text-accent">Cache effectiveness</p>
+            <p class="mt-2 leading-relaxed text-fg-muted">
+              Per-model breakdown of cache hits, writes, and uncached tokens.
+              Context-engineering work is visible immediately &mdash; not buried
+              in a provider invoice three weeks later.
+            </p>
+          </div>
+          <div class="rounded-lg border border-border bg-bg-card p-5">
+            <p class="font-bold text-accent">Routing &amp; reliability</p>
+            <p class="mt-2 leading-relaxed text-fg-muted">
+              Which decision slot picked which model, p50 / p95 latency per
+              model, failure classification, session-level cost attribution.
+              Every turn is auditable.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- STATUS -->
     <section id="status" class="border-t border-border bg-bg-elev/40">
       <div class="mx-auto max-w-6xl px-6 py-20">
@@ -241,18 +276,18 @@ const inProgress = [
           Ready when you are.
         </h2>
         <p class="mx-auto mt-4 max-w-xl text-fg-muted">
-          Metis runs locally on your machine, against your API keys. When
-          binary releases drop, you&apos;ll be able to install with a single
-          command. For now, the source is on GitHub.
+          Metis runs locally on your machine, against your API keys.
+          Binary releases for macOS and Linux are coming soon &mdash;
+          install with a single command, no infrastructure to manage.
         </p>
         <div class="mt-8">
-          <a
-            href={GITHUB_URL}
-            class="inline-flex items-center gap-2 rounded border border-accent bg-accent/10 px-5 py-3 text-sm font-bold text-accent hover:bg-accent hover:text-bg"
-          >
-            <span>view on github</span>
-            <span aria-hidden="true">&rarr;</span>
-          </a>
+          <div class="inline-flex items-center gap-3 rounded border border-border-strong bg-bg-card px-5 py-3 text-sm">
+            <span class="relative flex h-2 w-2">
+              <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50"></span>
+              <span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span>
+            </span>
+            <span class="font-bold text-accent">launching soon</span>
+          </div>
         </div>
       </div>
     </section>
@@ -265,7 +300,6 @@ const inProgress = [
           <span>metis &mdash; local-first AI dev agent</span>
         </div>
         <div class="flex items-center gap-6">
-          <a href={GITHUB_URL} class="hover:text-fg">github</a>
           <span>&copy; 2026</span>
         </div>
       </div>

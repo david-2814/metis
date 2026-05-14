@@ -32,10 +32,6 @@ Spec says `Literal["base64", "url", "file_ref"]`. Impl uses `str`. msgspec will 
 
 ## Adapters
 
-### 🔴 `AnthropicAdapter` `ImageBlock.kind="file_ref"` is interpreted as base64
-
-[`packages/metis-core/src/metis_core/adapters/anthropic.py`](../packages/metis-core/src/metis_core/adapters/anthropic.py) treats `file_ref` source by stuffing the workspace-relative path string into Anthropic's base64 `data` field. The path needs to be resolved (read bytes, base64-encode, fill `media_type`). Currently a `file_ref` ImageBlock through this adapter would deliver garbled payload to the API. No test exercises `file_ref`.
-
 ### 🟡 Anthropic `supports_streaming` honesty — verify
 
 Last reviewed before `adapters/streaming.py` landed. After streaming layer arrived, the `supports_streaming=True` capability declaration may now be honest. Spend 60s running with streaming enabled and confirm; if it still doesn't drive `stream()`, the declaration is a lie that routing will rely on.
@@ -122,9 +118,8 @@ Documented in `chat.py::_async_input` docstring. The input thread is daemon — 
 
 Things that aren't promised by any spec but probably should be. AI agents proposing work in adjacent areas should know they're missing.
 
-- **No context-assembler spec.** Biggest cost lever; design undefined. See `STRATEGY.md §6`.
+- **No context-assembler spec for skill activation / history compression.** [`docs/specs/context-assembler.md`](specs/context-assembler.md) v1 covers cache-breakpoint placement only. Skill activation, history compression, and behavior near the context window are not yet specified. See `STRATEGY.md §6`.
 - **No pattern-store spec.** Referenced by `routing-engine.md §5.5`; mechanics undefined.
 - **No evaluator spec.** Architecture mentions it; no contract.
-- **No prompt-caching strategy.** `AdapterCapabilities.supports_prompt_caching` exists; no adapter writes `cache_control` markers. Leaving 5–10× on the table for any session with stable system prompt + tools.
 - **No tool-confirmation REST endpoint.** `server-api.md §4.2` specs it; not wired. Dispatcher uses `AutoAllowHandler` (see above).
 - **No benchmark / savings methodology.** Strategy-level gap; see `STRATEGY.md §6.4`.
