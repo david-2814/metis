@@ -11,6 +11,7 @@ the spec, log to CHANGES.md. New types are deliberate spec changes.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 import msgspec
@@ -296,6 +297,151 @@ class MemoryEviction(msgspec.Struct, frozen=True):
     size_after_bytes: int
 
 
+# --- §6.5b Pattern domain (Phase 2.5) ---------------------------------------
+
+FingerprintKindLiteral = Literal["structural", "hybrid"]
+
+
+class PatternRecorded(msgspec.Struct, frozen=True):
+    """`pattern.recorded` per pattern-store.md §10.1.
+
+    Emitted by the session-ended batch subscriber after a fingerprint/outcome
+    pair is upserted into the pattern store. One event per (fingerprint,
+    primary_model) write.
+
+    The cost field is named `cost_usd_at_record` (not `cost_usd`) to
+    disambiguate from `llm.call_completed.cost_usd` and to follow the
+    `Decimal` convention from canonical-message-format.md §6.4. Pattern-store
+    spec §10.1 currently drafts the field as `cost_usd`; this rename is
+    flagged for the Wave 4 reconciliation sweep.
+    """
+
+    fingerprint_id: str
+    fingerprint_kind: FingerprintKindLiteral
+    primary_model: str
+    sample_size_before: int
+    sample_size_after: int
+    was_new_fingerprint: bool
+    success_score: float | None
+    cost_usd_at_record: Decimal
+    pricing_version: str
+    over_soft_cap: bool
+
+
+class PatternMatched(msgspec.Struct, frozen=True):
+    """`pattern.matched` per pattern-store.md §10.2.
+
+    Emitted when the routing engine's slot 4 wins (the pattern policy chose
+    the model used for the turn). Distinct from `route.decided` so consumers
+    can query "how often does pattern routing fire?" without a JSON scan
+    over `route.decided.chain`. Not emitted when the pattern policy deferred.
+    """
+
+    fingerprint_id: str
+    fingerprint_kind: FingerprintKindLiteral
+    chosen_model: str
+    confidence: float
+    sample_size: int
+    k_cluster_size: int
+    alternatives_count: int
+
+
+PatternEvictionTrigger = Literal[
+    "soft_cap_signal",
+    "hard_cap_evict",
+    "age_trim",
+    "manual_clear",
+]
+
+
+class PatternEvicted(msgspec.Struct, frozen=True):
+    """`pattern.evicted` per pattern-store.md §10.3.
+
+    Mirrors `memory.eviction`. Fired on soft-cap signal, hard-cap auto-evict,
+    age-based continuous trim, or manual `/patterns clear`. Counts and ages
+    only — no content.
+    """
+
+    trigger: PatternEvictionTrigger
+    fingerprints_before: int
+    fingerprints_after: int
+    outcomes_before: int
+    outcomes_after: int
+    entries_evicted: int
+    oldest_evicted_age_days: float | None = None
+
+
+# --- §6.12 Eval domain (Phase 3) --------------------------------------------
+
+EvalSubjectKind = Literal["turn", "tool_cycle", "session", "workload"]
+EvalJudgeKind = Literal["heuristic", "llm", "hybrid"]
+EvalTrigger = Literal["bus", "batch", "feedback_arrived", "benchmark"]
+EvalFailureMode = Literal[
+    "judge_output_invalid",
+    "judge_call_failed",
+    "throttled_no_heuristic",
+    "subject_not_found",
+    "rubric_invalid",
+]
+
+
+class EvalStarted(msgspec.Struct, frozen=True):
+    """`eval.started` per evaluator.md §8.1.
+
+    Emitted when the evaluator begins scoring a subject. Pairs 1:1 with a
+    later `eval.completed` or `eval.failed` carrying the same `eval_id`.
+    """
+
+    eval_id: str
+    subject_kind: EvalSubjectKind
+    subject_id: str
+    rubric_id: str
+    rubric_version: str
+    judge_kind_planned: EvalJudgeKind
+    trigger: EvalTrigger
+
+
+class EvalCompleted(msgspec.Struct, frozen=True):
+    """`eval.completed` per evaluator.md §8.2.
+
+    `judge_cost_usd` is `Decimal` (serialized as string by msgspec, mirroring
+    `Usage.cost_usd` per canonical-message-format.md §6.4). `signals` is an
+    opaque JSON-roundtrippable dict; rationale-redacted opt-in fields inside
+    it trigger sensitivity uplift per §4.4.1 (caller passes the elevated
+    sensitivity to `make_event`).
+    """
+
+    eval_id: str
+    subject_kind: EvalSubjectKind
+    subject_id: str
+    score: float
+    confidence: float
+    judge_kind: EvalJudgeKind
+    judge_cost_usd: Decimal
+    judge_latency_ms: int
+    rubric_id: str
+    rubric_version: str
+    signals: dict
+    judge_model: str | None = None
+    judge_pricing_version: str | None = None
+    parent_eval_id: str | None = None
+
+
+class EvalFailed(msgspec.Struct, frozen=True):
+    """`eval.failed` per evaluator.md §8.3.
+
+    Emitted instead of `eval.completed` when the judge couldn't produce a
+    verdict (LLM parse failure, missing subject, rubric load failure, etc.).
+    """
+
+    eval_id: str
+    subject_kind: EvalSubjectKind
+    subject_id: str
+    failure_mode: EvalFailureMode
+    error_message: str
+    judge_latency_ms: int
+
+
 # --- §6.10 Bus meta-events --------------------------------------------------
 
 
@@ -350,6 +496,14 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     # memory (Phase 2)
     "memory.updated": (MemoryUpdated, Sensitivity.PRIVATE),
     "memory.eviction": (MemoryEviction, Sensitivity.PRIVATE),
+    # pattern (Phase 2.5)
+    "pattern.recorded": (PatternRecorded, Sensitivity.PSEUDONYMOUS),
+    "pattern.matched": (PatternMatched, Sensitivity.PSEUDONYMOUS),
+    "pattern.evicted": (PatternEvicted, Sensitivity.PSEUDONYMOUS),
+    # eval (Phase 3)
+    "eval.started": (EvalStarted, Sensitivity.PSEUDONYMOUS),
+    "eval.completed": (EvalCompleted, Sensitivity.PSEUDONYMOUS),
+    "eval.failed": (EvalFailed, Sensitivity.PSEUDONYMOUS),
     # bus
     "bus.subscriber_registered": (BusSubscriberRegistered, Sensitivity.PSEUDONYMOUS),
     "bus.subscriber_unregistered": (BusSubscriberUnregistered, Sensitivity.PSEUDONYMOUS),

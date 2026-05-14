@@ -20,6 +20,7 @@ import jsonschema
 import msgspec
 
 from metis_core.canonical.content import TextBlock, ToolResultBlock, ToolUseBlock
+from metis_core.canonical.ids import next_monotonic_ulid
 from metis_core.canonical.tools import (
     SideEffects,
     ToolDefinition,
@@ -52,13 +53,14 @@ from metis_core.tools.errors import (
     ToolError,
     ToolExecutionError,
     ToolNotFoundError,
+    ToolPermissionDeniedError,
     ToolRegistrationError,
     ToolTimeoutError,
     ToolUserDeniedError,
     ToolValidationError,
 )
 from metis_core.tools.protocol import Tool, ToolContext, ToolFactory, ToolOutput
-from metis_core.tools.workspace import WorkspaceFileAPI
+from metis_core.tools.workspace import WorkspaceEscapeError, WorkspaceFileAPI
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,10 @@ _TIMEOUT_DEFAULTS: dict[SideEffects, float] = {
     SideEffects.EXECUTE: 600.0,
     SideEffects.NETWORK: 600.0,
 }
+
+# Per-session concurrency cap (tool-dispatcher.md §4.1). Excess dispatches queue
+# in arrival order behind an asyncio.Semaphore keyed by session_id.
+_DEFAULT_CONCURRENCY_CAP_PER_SESSION = 4
 
 
 @dataclass
@@ -97,15 +103,23 @@ class ToolDispatcher:
         confirmation_handler: ConfirmationHandler | None = None,
         confirmation_timeout_seconds: float = 300.0,
         timeouts: dict[SideEffects, float] | None = None,
+        concurrency_cap_per_session: int = _DEFAULT_CONCURRENCY_CAP_PER_SESSION,
     ) -> None:
+        if concurrency_cap_per_session < 1:
+            raise ValueError("concurrency_cap_per_session must be >= 1")
         self._bus = bus
         self._confirmation_policy = confirmation_policy
         self._confirmation_handler: ConfirmationHandler = confirmation_handler or AutoAllowHandler()
         self._confirmation_timeout = confirmation_timeout_seconds
         self._timeouts = {**_TIMEOUT_DEFAULTS, **(timeouts or {})}
+        self._concurrency_cap = concurrency_cap_per_session
         self._registry: dict[str, _Registered] = {}
         # Per-session in-flight registry for cancel_session_tools.
         self._in_flight: dict[str, list[_InFlight]] = {}
+        # Per-session semaphore enforcing the concurrency cap (§4.1). Created
+        # lazily on first dispatch for the session so test sessions that never
+        # dispatch leave no state behind.
+        self._session_semaphores: dict[str, asyncio.Semaphore] = {}
 
     # ---- Registry ------------------------------------------------------
 
@@ -201,7 +215,26 @@ class ToolDispatcher:
 
         definition = registered.definition
 
-        # Step 3: confirmation
+        # Step 3: workspace scope pre-check (tool-dispatcher.md §9.2).
+        # Escape rejection must emit tool.failed *without* a preceding
+        # tool.called, so the check has to happen before step 5.
+        workspace = WorkspaceFileAPI(workspace_path) if definition.requires_workspace else None
+        if workspace is not None:
+            try:
+                _precheck_workspace_paths(tool_use.input, workspace)
+            except WorkspaceEscapeError as exc:
+                err = ToolPermissionDeniedError(str(exc), tool_use_id=tool_use.id)
+                self._emit_tool_failed(
+                    tool_use,
+                    err,
+                    latency_ms=0,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    parent_event_id=parent_event_id,
+                )
+                return _error_result(tool_use, err)
+
+        # Step 4: confirmation
         mode = self._confirmation_policy.mode_for(definition.name, definition.side_effects)
         called_event_id: str | None = None
         if mode == ConfirmationMode.DENY:
@@ -245,7 +278,7 @@ class ToolDispatcher:
                 )
                 return _error_result(tool_use, err)
 
-        # Step 4: emit tool.called
+        # Step 5: emit tool.called (after escape + confirmation gates).
         called_event_id = self._emit_tool_called(
             tool_use,
             definition,
@@ -254,9 +287,9 @@ class ToolDispatcher:
             parent_event_id=parent_event_id,
         )
 
-        # Step 5: instantiate fresh tool, build context, execute
+        # Step 6: instantiate fresh tool, build context, execute under the
+        # per-session concurrency cap (§4.1).
         tool = registered.factory()
-        workspace = WorkspaceFileAPI(workspace_path) if definition.requires_workspace else None
         context = ToolContext(
             session_id=session_id,
             turn_id=turn_id,
@@ -271,9 +304,11 @@ class ToolDispatcher:
         self._in_flight.setdefault(session_id, []).append(in_flight)
 
         timeout = self._timeouts[definition.side_effects]
+        semaphore = self._semaphore_for(session_id)
         start = time.monotonic()
         try:
-            output = await asyncio.wait_for(tool.execute(tool_use.input, context), timeout)
+            async with semaphore:
+                output = await asyncio.wait_for(tool.execute(tool_use.input, context), timeout)
         except TimeoutError:
             err = ToolTimeoutError(
                 f"tool {definition.name!r} exceeded {timeout}s timeout",
@@ -353,6 +388,13 @@ class ToolDispatcher:
         for entry in in_flight:
             entry.context.cancel_event.set()
             await _safe_cancel(entry.tool)
+
+    def _semaphore_for(self, session_id: str) -> asyncio.Semaphore:
+        sem = self._session_semaphores.get(session_id)
+        if sem is None:
+            sem = asyncio.Semaphore(self._concurrency_cap)
+            self._session_semaphores[session_id] = sem
+        return sem
 
     # ---- Event emission helpers ----------------------------------------
 
@@ -450,7 +492,7 @@ class ToolDispatcher:
         turn_id: str,
         parent_event_id: str | None,
     ) -> ConfirmationDecision:
-        request_id = f"conf_{tool_use.id}"
+        request_id = str(next_monotonic_ulid())
         expires_at = datetime.fromtimestamp(time.time() + self._confirmation_timeout, tz=UTC)
         self._bus.emit(
             make_event(
@@ -559,6 +601,33 @@ async def _safe_cancel(tool: Tool) -> None:
         await tool.cancel()
     except Exception:
         logger.exception("tool.cancel raised")
+
+
+# Conventional input keys carrying a workspace path. Any tool with
+# requires_workspace=True that uses these names has its paths pre-checked at
+# dispatch time (before tool.called) so workspace-escape rejections do not emit
+# an orphaned tool.called event (tool-dispatcher.md §9.2).
+_PATH_INPUT_KEYS: frozenset[str] = frozenset({"path", "paths"})
+
+
+def _precheck_workspace_paths(input: dict, workspace: WorkspaceFileAPI) -> None:
+    """Resolve any path-like top-level input field through the workspace API.
+
+    Raises WorkspaceEscapeError on the first escape attempt. Tools whose path
+    arguments use non-conventional names still get caught at execute-time by
+    the workspace API; the pre-check is the spec-required fast path for the
+    common case.
+    """
+    for key in _PATH_INPUT_KEYS:
+        if key not in input:
+            continue
+        value = input[key]
+        if isinstance(value, str):
+            workspace._resolve(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, str):
+                    workspace._resolve(item)
 
 
 __all__ = ["ToolDispatcher"]

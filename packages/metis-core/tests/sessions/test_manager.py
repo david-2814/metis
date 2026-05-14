@@ -44,6 +44,10 @@ async def event_log(bus: EventBus) -> list[Event]:
     log: list[Event] = []
 
     async def handler(e: Event) -> None:
+        # Filter bus.* lifecycle events; session tests assert on domain
+        # event sequences and shouldn't see the fixture's own registration.
+        if e.type.startswith("bus."):
+            return
         log.append(e)
 
     bus.subscribe(Subscription(filter=EventFilter(), handler=handler, name="log", fast_path=True))

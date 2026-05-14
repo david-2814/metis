@@ -19,7 +19,9 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import uuid4
 
 import msgspec
@@ -28,15 +30,43 @@ from metis_core.events.envelope import Actor, Event
 from metis_core.events.errors import (
     EventBusOverflowError,
     EventValidationError,
+    FastPathHandlerError,
     UnknownEventTypeError,
 )
-from metis_core.events.payloads import PAYLOAD_REGISTRY
+from metis_core.events.payloads import (
+    PAYLOAD_REGISTRY,
+    BusSubscriberRegistered,
+    BusSubscriberUnregistered,
+    make_event,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_QUEUE_SIZE = 10_000
 
+# Sentinel session id for bus lifecycle events that aren't scoped to a real
+# session (e.g. global subscribers like the trace store). Spec §4.1 requires
+# session_id on every Event; we mint a stable sentinel rather than threading
+# scope through every call site. Consumers reading these events filter on
+# the type, not the session.
+_BUS_SESSION_ID = "system"
+
+UnsubscribeReason = Literal["explicit", "client_disconnect", "shutdown", "removed_after_errors"]
+
 Handler = Callable[[Event], Awaitable[None]]
+
+
+def slow(handler: Handler) -> Handler:
+    """Mark a handler as slow — must not register on the fast path.
+
+    Spec §3.4 / §9.1 test 4: handlers tagged @slow cannot register with
+    `fast_path=True`. The bus enforces this on `subscribe()` by raising
+    `FastPathHandlerError`. Used by tests and as a self-documenting marker
+    for known-slow handlers (anything doing disk I/O beyond the WAL+NORMAL
+    SQLite append, network calls, or non-trivial CPU work).
+    """
+    handler.__metis_slow__ = True  # type: ignore[attr-defined]
+    return handler
 
 
 class ValidationMode(StrEnum):
@@ -158,13 +188,63 @@ class EventBus:
     # ---- Subscription --------------------------------------------------
 
     def subscribe(self, sub: Subscription) -> SubscriptionHandle:
+        """Register a subscription.
+
+        Raises FastPathHandlerError if `sub.fast_path=True` and `sub.handler`
+        is marked `@slow` (spec §9.1 test 4). Emits `bus.subscriber_registered`
+        after successful registration; emission failures are logged but do
+        not undo the registration.
+        """
+        if sub.fast_path and getattr(sub.handler, "__metis_slow__", False):
+            raise FastPathHandlerError(sub.name)
         handle = SubscriptionHandle(id=str(uuid4()), subscription=sub)
         self._subscriptions[handle.id] = sub
+        self._emit_lifecycle(
+            type="bus.subscriber_registered",
+            payload=BusSubscriberRegistered(
+                subscription_name=sub.name,
+                filter=sub.filter.to_dict(),
+                fast_path=sub.fast_path,
+            ),
+        )
         return handle
 
-    def unsubscribe(self, handle: SubscriptionHandle) -> None:
-        """Remove a subscription. Idempotent."""
-        self._subscriptions.pop(handle.id, None)
+    def unsubscribe(
+        self, handle: SubscriptionHandle, *, reason: UnsubscribeReason = "explicit"
+    ) -> None:
+        """Remove a subscription. Idempotent.
+
+        Emits `bus.subscriber_unregistered` only when a subscription was
+        actually removed (so repeated calls don't produce spurious events).
+        """
+        sub = self._subscriptions.pop(handle.id, None)
+        if sub is None:
+            return
+        self._emit_lifecycle(
+            type="bus.subscriber_unregistered",
+            payload=BusSubscriberUnregistered(
+                subscription_name=sub.name,
+                reason=reason,
+            ),
+        )
+
+    def _emit_lifecycle(self, *, type: str, payload: msgspec.Struct) -> None:
+        """Emit a bus-lifecycle event, swallowing emission failures.
+
+        Lifecycle events are diagnostic: a malformed catalog entry or a full
+        queue should not break the underlying subscribe/unsubscribe call.
+        """
+        try:
+            event = make_event(
+                type=type,
+                session_id=_BUS_SESSION_ID,
+                actor=Actor.SYSTEM,
+                payload=payload,
+                timestamp=datetime.now(UTC),
+            )
+            self.emit(event)
+        except Exception:
+            logger.warning("failed to emit bus lifecycle event %r", type, exc_info=True)
 
     # ---- Emit ----------------------------------------------------------
 

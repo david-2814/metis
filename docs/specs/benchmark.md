@@ -124,12 +124,26 @@ expect:                                # optional, aggregate across the workload
   max_total_cost_usd: 0.50
   min_llm_calls: 1
   max_hard_failures: 0                # /analytics/routing.hard_failures over the window
+evaluate:                              # optional, workload-level quality rubric
+  rubric: heuristic                    # heuristic | llm | hybrid; default heuristic
+  expect_substring_in_final_response: "..."   # passthrough to heuristic signals
+  llm_judge_model: anthropic:claude-haiku-4-5   # required when rubric != heuristic
+  weight_per_turn: 1.0                 # how turns aggregate (default 1.0)
 ```
 
 **Schema enforcement.** The harness validates the YAML against this shape at
-load time using `msgspec.yaml.decode` against a `Workload` struct. Unknown
-top-level keys are rejected; unknown `expect` keys are rejected. This forces
-schema migrations to flow through this spec.
+load time. Unknown top-level keys, unknown `expect` keys, and unknown
+`evaluate` keys are rejected. This forces schema migrations to flow through
+this spec.
+
+**The `evaluate:` block.** Optional; omitting it is equivalent to
+`rubric: heuristic` with no substring assertion. The harness passes the
+parsed `evaluate` to the evaluator with `subject_kind=workload` after each
+workload run; the resulting `eval.completed.score` shows up in the
+benchmark report's quality column and feeds the "savings on successful
+work" headline ([`evaluator.md §5.4`](evaluator.md)). v1 ships
+`rubric: heuristic` only — `llm` / `hybrid` parse but defer to the
+heuristic until the LLM-as-judge tier lands.
 
 **Assertions are soft floors / hard ceilings.** `min_*` and `max_*` bound a
 window of acceptable behavior — if the model gets cheaper at the same task,

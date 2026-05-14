@@ -29,11 +29,18 @@ class TierMap:
 
 @dataclass(frozen=True)
 class PatternConfig:
-    """Pattern store knobs (routing-engine §5.5)."""
+    """Pattern store knobs (routing-engine §5.5).
+
+    `min_eval_confidence` is the consumer-side confidence gate from
+    `pattern-store.md §15.4`: verdicts with `confidence < min_eval_confidence`
+    are recorded but excluded from K-cluster success aggregation. Default
+    `0.5` matches `evaluator.md §4.3`.
+    """
 
     cost_weight: float = 0.3
     min_confidence: float = 0.3
     min_sample_size: int = 5
+    min_eval_confidence: float = 0.5
 
 
 # ---- Predicates ------------------------------------------------------------

@@ -42,23 +42,66 @@ ANTHROPIC_MODELS = {
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Padding designed to clear Anthropic's per-model cache minimum. The 1024-
-# token sonnet/opus floor and the 2048-token haiku floor are both met when
-# this string lands in the system prompt unchanged.
-_STABLE_PADDING = (
-    "## Operating context\n"
-    + "\n".join(
-        f"- Guideline {i:03d}: be precise; cite file paths with line numbers; "
-        "prefer the smallest correct edit; never invent APIs that aren't in "
-        "the provided context; surface ambiguity rather than guessing."
-        for i in range(1, 41)
+# Padding designed to clear Anthropic's per-model cache minimum with
+# margin. Haiku's floor is 2048 tokens; sonnet/opus floors are 1024. The
+# first iteration of this script targeted ~2050 tokens, which sat right
+# at the haiku floor — and Anthropic appears to silently drop cache_control
+# when the cached prefix tokenizes below the floor. The padding here
+# targets >3000 tokens of stable instructions with margin. Each guideline
+# is intentionally distinct text so BPE tokenization can't compress
+# repeated lines and undercount.
+_GUIDELINE_VARIATIONS = [
+    "be precise; cite file paths with line numbers; prefer the smallest correct edit",
+    "never invent APIs that aren't in the provided context; surface ambiguity rather than guessing",
+    "when modifying code, preserve existing formatting, import order, and naming conventions",
+    "before refactoring, prove the test suite passes; after refactoring, prove it still passes",
+    "treat shared dependencies as load-bearing; coordinate breaking changes with their consumers",
+    "log decisions inline with a short why; reviewers should not have to reconstruct intent",
+    "when a function grows past one screen, split it; long functions hide bugs in their middles",
+    "validate inputs at the system boundary; trust internal callers within the same module",
+    "prefer immutable structures unless the call site demonstrably needs mutation",
+    "name things after what they are, not how they are used; usage drifts faster than identity",
+    "when something is unclear, write a one-line clarifying question, not a five-paragraph guess",
+    "every new file should be small; large files are usually two files pretending to be one",
+    "tests that exercise the real database catch migration bugs that mocks silently approve",
+    "TODOs without a date or owner are camouflage for abandonment; either fix or file an issue",
+    "when error messages are seen by a human, name the action that triggered them, not the layer",
+    "when error messages are seen by a machine, keep the shape stable across releases",
+    "feature flags decay; remove them within one release of full rollout or full retirement",
+    "concurrency bugs hide in shared mutable state; prefer message passing over shared locks",
+    "performance work without a measurement is decoration; profile before, profile after",
+    "if you find yourself writing a comment to explain a name, rename the thing instead",
+]
+
+
+def _build_padding() -> str:
+    lines = ["## Operating context"]
+    for i in range(1, 161):
+        variant = _GUIDELINE_VARIATIONS[(i - 1) % len(_GUIDELINE_VARIATIONS)]
+        lines.append(f"- Guideline {i:03d}: {variant}.")
+    lines.append("")
+    lines.append("## Style")
+    lines.append(
+        "Be terse. Lead with the answer. Code blocks only when they're load-bearing. "
+        "When citing a file, use the form path/to/file.py:LINE. When making a claim "
+        "the user can check, link to the source. When you don't know, say so and "
+        "name what would resolve the uncertainty."
     )
-    + "\n\n## Style\n"
-    "Be terse. Lead with the answer. Code blocks only when they're load-bearing. "
-    "When citing a file, use the form path/to/file.py:LINE. When making a claim "
-    "the user can check, link to the source. When you don't know, say so and "
-    "name what would resolve the uncertainty.\n"
-)
+    lines.append("")
+    lines.append("## Tool use")
+    lines.append(
+        "Tools are owned by the workspace, not by the conversation. A tool call that "
+        "mutates state should be obviously safe to retry; if it isn't, fail loudly rather "
+        "than re-run and double-apply. When listing files, prefer the smallest pattern that "
+        "answers the question. When reading files, read once into memory and reason there, "
+        "rather than re-reading on every step. When writing files, write the whole final "
+        "shape, not an in-progress checkpoint. When running shell commands, never assume "
+        "the working directory; pass absolute paths or set cwd explicitly."
+    )
+    return "\n".join(lines) + "\n"
+
+
+_STABLE_PADDING = _build_padding()
 
 
 def _load_dotenv(path: Path) -> None:

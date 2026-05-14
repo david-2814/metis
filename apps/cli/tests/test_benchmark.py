@@ -82,3 +82,47 @@ def test_rejects_empty_turns(tmp_path: Path):
     yaml_path.write_text("name: x\ndescription: x\nsuite_version: 1\nturns: []\n")
     with pytest.raises(benchmark.WorkloadSchemaError, match="non-empty"):
         benchmark.load_workload(yaml_path)
+
+
+def test_accepts_evaluate_block(tmp_path: Path):
+    yaml_path = tmp_path / "workload.yaml"
+    yaml_path.write_text(
+        "name: x\n"
+        "description: x\n"
+        "suite_version: 1\n"
+        "turns:\n"
+        "  - prompt: hi\n"
+        "evaluate:\n"
+        "  rubric: heuristic\n"
+        "  expect_substring_in_final_response: off-by-one\n"
+        "  weight_per_turn: 2.0\n"
+    )
+    workload = benchmark.load_workload(yaml_path)
+    assert workload.evaluate.rubric == "heuristic"
+    assert workload.evaluate.expect_substring_in_final_response == "off-by-one"
+    assert workload.evaluate.weight_per_turn == 2.0
+
+
+def test_rejects_unknown_evaluate_key(tmp_path: Path):
+    yaml_path = tmp_path / "workload.yaml"
+    yaml_path.write_text(
+        "name: x\n"
+        "description: x\n"
+        "suite_version: 1\n"
+        "turns:\n"
+        "  - prompt: hi\n"
+        "evaluate:\n"
+        "  rubric: heuristic\n"
+        "  not_a_real_key: 1\n"
+    )
+    with pytest.raises(benchmark.WorkloadSchemaError, match="not_a_real_key"):
+        benchmark.load_workload(yaml_path)
+
+
+def test_evaluate_block_defaults_when_absent(tmp_path: Path):
+    yaml_path = tmp_path / "workload.yaml"
+    yaml_path.write_text("name: x\ndescription: x\nsuite_version: 1\nturns:\n  - prompt: hi\n")
+    workload = benchmark.load_workload(yaml_path)
+    assert workload.evaluate.rubric == "heuristic"
+    assert workload.evaluate.expect_substring_in_final_response is None
+    assert workload.evaluate.weight_per_turn == 1.0

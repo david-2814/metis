@@ -1,8 +1,17 @@
 # Event Bus and Trace Catalog
 
-**Status:** Draft v3
-**Last updated:** 2026-05-08
+**Status:** Draft v3.1
+**Last updated:** 2026-05-14
 **Owner:** _your name_
+
+> **v3.1 changes (2026-05-14):** `eval` domain added to closed list (§4.5)
+> with three new event types — `eval.started`, `eval.completed`, `eval.failed`
+> (§6.12) per `evaluator.md §8`. Three new pattern event types added under
+> the existing pattern domain (§6.5b) — `pattern.recorded`, `pattern.matched`,
+> `pattern.evicted` per `pattern-store.md §10`. All six payloads landed in
+> `events/payloads.py` and `PAYLOAD_REGISTRY`. Sensitivity floor is
+> `pseudonymous` for all six; `eval.completed` admits opt-in uplift to
+> `user_controlled` per §4.4.1.
 
 > **v3 changes:** Streaming events explicitly excluded from catalog (§4.5);
 > streaming server removed from bus subscriber table (§5.4) — they receive
@@ -265,7 +274,7 @@ memory.updated
 feedback.explicit
 ```
 
-Domains: `session`, `turn`, `llm`, `tool`, `route`, `skill`, `memory`, `delegate`, `feedback`, `bus`, `pattern`, `provider`. Closed list. Adding a domain is a spec change.
+Domains: `session`, `turn`, `llm`, `tool`, `route`, `skill`, `memory`, `delegate`, `feedback`, `bus`, `pattern`, `provider`, `eval`. Closed list. Adding a domain is a spec change.
 
 #### 4.5.1 Streaming-only domains (NOT in this catalog)
 
@@ -765,6 +774,74 @@ Emitted when the user runs `/route ignore` (or otherwise dismisses a pattern-dis
 
 The session continues with the original routing decision; this event is purely informational (and feeds back into pattern learning to track which suggestions get dismissed).
 
+#### `pattern.recorded`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 2.5
+> **Actor:** SYSTEM
+> **Parent:** `session.ended`
+
+Emitted by the session-ended batch subscriber after computing the session's contributing fingerprints + outcomes and calling `PatternStore.record()` for each. One event per (fingerprint, primary_model) write, not one per session. See `pattern-store.md §10.1`.
+
+```python
+{
+    "fingerprint_id": str,                        # ULID
+    "fingerprint_kind": Literal["structural", "hybrid"],
+    "primary_model": str,
+    "sample_size_before": int,
+    "sample_size_after": int,
+    "was_new_fingerprint": bool,
+    "success_score": float | None,                # this session's score (None if evaluator didn't run)
+    "cost_usd_at_record": str,                    # Decimal serialized as string; this session's contribution
+    "pricing_version": str,
+    "over_soft_cap": bool,
+}
+```
+
+Field-name note: `cost_usd_at_record` (not `cost_usd`) — disambiguates from `llm.call_completed.cost_usd` and follows the `Decimal` serialization convention from `canonical-message-format.md §6.4`. The pattern-store draft (§10.1) currently names this field `cost_usd`; reconcile in the Wave 4 sweep.
+
+#### `pattern.matched`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 2.5
+> **Actor:** SYSTEM
+> **Parent:** `route.decided`
+
+Emitted when the routing engine's slot 4 wins (the pattern policy chose the model used for the turn). Distinct from `route.decided`, so consumers can query "how often does pattern routing fire?" without a JSON scan over `route.decided.chain`. Not emitted when the pattern policy deferred — the deferred recommendation is already captured in `route.decided.chain[].verdict = "deferred"`. See `pattern-store.md §10.2`.
+
+```python
+{
+    "fingerprint_id": str,
+    "fingerprint_kind": Literal["structural", "hybrid"],
+    "chosen_model": str,                          # mirrors route.decided.chosen_model
+    "confidence": float,
+    "sample_size": int,                           # neighbors backing chosen_model
+    "k_cluster_size": int,                        # total neighbors found (≤ K)
+    "alternatives_count": int,                    # how many distinct models scored
+}
+```
+
+#### `pattern.evicted`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 2.5
+> **Actor:** SYSTEM
+> **Parent:** `pattern.recorded` (cap-triggered) or none (manual / scheduled trim)
+
+Mirrors `memory.eviction`. Fired when (1) a write lands the store over `soft_cap_rows` (signal only; `entries_evicted` may be 0), (2) a write lands the store over `hard_cap_rows` and auto-evict removed rows, (3) the continuous age-trim removed stale rows, or (4) the operator ran `/patterns clear`. Counts and ages only; no content. See `pattern-store.md §10.3`.
+
+```python
+{
+    "trigger": Literal["soft_cap_signal", "hard_cap_evict", "age_trim", "manual_clear"],
+    "fingerprints_before": int,
+    "fingerprints_after": int,
+    "outcomes_before": int,
+    "outcomes_after": int,
+    "entries_evicted": int,                       # outcomes removed; 0 for soft_cap_signal
+    "oldest_evicted_age_days": float | None,      # for age_trim and hard_cap_evict
+}
+```
+
 ### 6.6 Skill domain
 
 #### `skill.loaded`
@@ -1050,6 +1127,87 @@ The gap itself is not recoverable — those events are lost. The event documents
 ```
 
 Distinguished from `routing.provider_unavailable`: degraded is a soft state (Phase 2 refinement); unavailable is the hard state that causes routing to reject.
+
+### 6.12 Eval domain
+
+The evaluator (`evaluator.md`) emits one verdict per scored subject. Subjects are turns, tool cycles, sessions, and benchmark workloads. Verdicts are append-only — re-evaluating an older subject produces a new `eval.completed` event with a fresh `eval_id`; the prior verdict is preserved. The `eval` domain is closed (see §4.5).
+
+#### `eval.started`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 3
+> **Actor:** SYSTEM
+> **Parent:** `turn.completed` / `tool.completed` / `tool.failed` / `session.ended` / `feedback.explicit`
+
+Emitted when the evaluator begins scoring a subject. Pairs 1:1 with a later `eval.completed` or `eval.failed` carrying the same `eval_id`. See `evaluator.md §8.1`.
+
+```python
+{
+    "eval_id": str,                               # monotonic ULID
+    "subject_kind": Literal["turn", "tool_cycle", "session", "workload"],
+    "subject_id": str,
+    "rubric_id": str,
+    "rubric_version": str,
+    "judge_kind_planned": Literal["heuristic", "llm", "hybrid"],
+    "trigger": Literal["bus", "batch", "feedback_arrived", "benchmark"],
+}
+```
+
+#### `eval.completed`
+
+> **Sensitivity:** `pseudonymous` (floor; can upgrade to `user_controlled` per §4.4.1 when `signals.rationale_redacted` is populated on opt-in)
+> **Phase:** 3
+> **Actor:** SYSTEM
+> **Parent:** `eval.started`
+
+```python
+{
+    "eval_id": str,
+    "subject_kind": Literal["turn", "tool_cycle", "session", "workload"],
+    "subject_id": str,
+    "score": float,                               # in [0.0, 1.0]; 1.0 = clear success
+    "confidence": float,                          # in [0.0, 1.0]; judge's confidence in `score`
+    "judge_kind": Literal["heuristic", "llm", "hybrid"],
+    "judge_model": str | None,                    # canonical id when llm/hybrid used the LLM tier
+    "judge_cost_usd": str,                        # Decimal serialized as string (same as Usage.cost_usd per canonical-format §6.4)
+    "judge_pricing_version": str | None,          # set when judge_cost_usd > 0
+    "judge_latency_ms": int,
+    "rubric_id": str,
+    "rubric_version": str,
+    "signals": dict,                              # judge-specific evidence; see evaluator.md §4.4
+    "parent_eval_id": str | None,                 # for tool_cycle→turn / turn→session rollups
+}
+```
+
+`judge_cost_usd` is `Decimal("0")` for heuristic verdicts and `judge_pricing_version` is `None` in that case — pricing semantics don't apply to code that did no inference.
+
+**Sensitivity uplift.** When the user has opted into capturing LLM judge rationales, the emitter populates `signals.rationale_redacted` and passes `Sensitivity.USER_CONTROLLED` to `make_event` per §4.4.1. The catalog floor remains `pseudonymous`.
+
+#### `eval.failed`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 3
+> **Actor:** SYSTEM
+> **Parent:** `eval.started`
+
+Emitted instead of `eval.completed` when the judge couldn't produce a verdict. See `evaluator.md §8.3`.
+
+```python
+{
+    "eval_id": str,
+    "subject_kind": Literal["turn", "tool_cycle", "session", "workload"],
+    "subject_id": str,
+    "failure_mode": Literal[
+        "judge_output_invalid",                   # LLM response didn't parse against the rubric schema
+        "judge_call_failed",                      # LLM call hit a hard error (provider down, auth, etc.)
+        "throttled_no_heuristic",                 # caps fired AND heuristic also unavailable (defensive; v1 unreachable)
+        "subject_not_found",                      # subject_id resolved to no events
+        "rubric_invalid",                         # rubric file failed to load
+    ],
+    "error_message": str,
+    "judge_latency_ms": int,
+}
+```
 
 ---
 

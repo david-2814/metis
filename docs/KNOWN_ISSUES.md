@@ -18,23 +18,7 @@ When you fix one, **delete the entry**. This file is not a changelog; it's a wat
 
 ---
 
-## Canonical types
-
-### 🟡 No tolerance path for unknown content block types
-
-`canonical-message-format.md §10.3` requires *"skip with warning rather than crash"* for unknown `type` discriminators. msgspec's tagged union decoding raises on unknown types. Currently no test exercises this; no impact while the catalog is closed.
-
-### 🟡 `ImageSource.kind: str` is unconstrained
-
-Spec says `Literal["base64", "url", "file_ref"]`. Impl uses `str`. msgspec will happily decode `{"kind": "garbage", ...}`.
-
----
-
 ## Adapters
-
-### 🟡 Anthropic `supports_streaming` honesty — verify
-
-Last reviewed before `adapters/streaming.py` landed. After streaming layer arrived, the `supports_streaming=True` capability declaration may now be honest. Spend 60s running with streaming enabled and confirm; if it still doesn't drive `stream()`, the declaration is a lie that routing will rely on.
 
 ### 🟢 `CanonicalResponse` shape divergence from spec
 
@@ -43,18 +27,6 @@ Spec §3.3 returns `CanonicalResponse.message: Message`. Impl returns `content: 
 ---
 
 ## Tool dispatcher
-
-### 🟡 No per-session concurrency cap
-
-Spec §4.1 mandates a default cap of 4 concurrent dispatches per session. Impl runs every dispatch immediately. Risk: a model emitting 12 parallel tool_use blocks all run at once.
-
-### 🟡 `tool.called` emitted before workspace escape detection
-
-Spec §9.2 worked example shows escape rejection emits `tool.failed` *without* a preceding `tool.called`. Impl emits `tool.called` first, then catches `WorkspaceEscapeError` lazily inside the tool. Effect: orphan `tool.called` events on escape rejections.
-
-### 🟡 `confirmation_request_id` is not a ULID
-
-Spec catalog says `confirmation_request_id: str # ULID`. Impl uses `f"conf_{tool_use.id}"`. Unique but not ULID-sortable.
 
 ### 🟢 `get_definitions_for_session(session)` doesn't accept a session
 
@@ -76,18 +48,6 @@ Spec §9.2: *"The override syntax must be at the start of the message and follow
 
 ## Event bus
 
-### 🟡 `bus.subscriber_registered` / `bus.subscriber_unregistered` are never emitted
-
-The structs are in the catalog as Phase 1, but `EventBus.subscribe` / `.unsubscribe` don't emit. Either wire emission or strike from Phase 1.
-
-### 🟡 `FastPathHandlerError` registration check missing
-
-`event-bus-and-trace-catalog.md §9.1 test 4` requires registering a `@slow`-annotated handler with `fast_path=True` to raise. The error class exists; `subscribe()` performs no check.
-
-### 🟡 No `bus.gap_detected` mechanism
-
-Spec §6.10 / §9.1 test 3 defines a startup ULID-gap scan; the payload struct is registered but no detector runs.
-
 ### 🟢 Sensitivity upgrade rule unenforced
 
 §4.4.1 says classification can only move *toward less private*. `make_event` accepts any `sensitivity` override without checking it's less private than the catalog default.
@@ -95,10 +55,6 @@ Spec §6.10 / §9.1 test 3 defines a startup ULID-gap scan; the payload struct i
 ---
 
 ## Trace store
-
-### 🟡 Datetime fields in payloads stored as strings, never re-typed
-
-[`trace/store.py`](../packages/metis-core/src/metis_core/trace/store.py) uses `json.dumps(..., default=str)`. Payload fields like `tool.confirmation_requested.expires_at` become ISO strings on write and stay strings on read. Downstream readers expecting `datetime` need to round-trip through `msgspec.convert`. Either standardize on stringly-typed payload reads (and document it) or store payloads via `msgspec.json.encode` and decode back via the registered Struct class on read.
 
 ### 🟢 No `FOREIGN KEY (session_id) REFERENCES sessions(id)`
 

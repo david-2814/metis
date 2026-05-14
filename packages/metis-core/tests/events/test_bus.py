@@ -7,11 +7,12 @@ import logging
 from datetime import UTC, datetime
 
 import pytest
-from metis_core.events.bus import EventBus, EventFilter, Subscription, ValidationMode
+from metis_core.events.bus import EventBus, EventFilter, Subscription, ValidationMode, slow
 from metis_core.events.envelope import Actor, Event, Sensitivity
 from metis_core.events.errors import (
     EventBusOverflowError,
     EventValidationError,
+    FastPathHandlerError,
     UnknownEventTypeError,
 )
 from metis_core.events.payloads import (
@@ -88,6 +89,8 @@ async def test_fast_path_subscriber_receives_event():
     received: list[Event] = []
 
     async def handler(event: Event) -> None:
+        if event.type.startswith("bus."):
+            return
         received.append(event)
 
     bus.subscribe(Subscription(filter=EventFilter(), handler=handler, name="t", fast_path=True))
@@ -106,9 +109,13 @@ async def test_multiple_subscribers_all_receive():
     b: list[Event] = []
 
     async def ha(e: Event) -> None:
+        if e.type.startswith("bus."):
+            return
         a.append(e)
 
     async def hb(e: Event) -> None:
+        if e.type.startswith("bus."):
+            return
         b.append(e)
 
     bus.subscribe(Subscription(filter=EventFilter(), handler=ha, name="a", fast_path=True))
@@ -128,6 +135,8 @@ async def test_non_fast_path_subscriber_receives_event():
 
     async def handler(event: Event) -> None:
         await asyncio.sleep(0)  # yield to scheduler
+        if event.type.startswith("bus."):
+            return
         received.append(event)
 
     bus.subscribe(Subscription(filter=EventFilter(), handler=handler, name="t", fast_path=False))
@@ -298,9 +307,13 @@ async def test_handler_error_does_not_block_other_subscribers(caplog):
     good: list[Event] = []
 
     async def bad(event: Event) -> None:
+        if event.type.startswith("bus."):
+            return
         raise RuntimeError("boom")
 
     async def ok(event: Event) -> None:
+        if event.type.startswith("bus."):
+            return
         good.append(event)
 
     bus.subscribe(Subscription(filter=EventFilter(), handler=bad, name="bad", fast_path=True))
@@ -320,6 +333,8 @@ async def test_unsubscribe_stops_delivery():
     received: list[Event] = []
 
     async def handler(event: Event) -> None:
+        if event.type.startswith("bus."):
+            return
         received.append(event)
 
     handle = bus.subscribe(
@@ -346,3 +361,280 @@ async def test_unsubscribe_is_idempotent():
     )
     bus.unsubscribe(handle)
     bus.unsubscribe(handle)  # second call must not raise
+
+
+# ---- Subscriber lifecycle events ---------------------------------------
+
+
+async def test_subscribe_emits_subscriber_registered():
+    """Spec §6.10: subscribe() must emit bus.subscriber_registered."""
+    bus = EventBus()
+    bus.start()
+    received: list[Event] = []
+
+    async def collector(event: Event) -> None:
+        received.append(event)
+
+    # Watcher first so we observe the second subscribe's lifecycle event.
+    bus.subscribe(
+        Subscription(
+            filter=EventFilter(event_types=frozenset({"bus.subscriber_registered"})),
+            handler=collector,
+            name="watcher",
+            fast_path=True,
+        )
+    )
+    bus.subscribe(
+        Subscription(
+            filter=EventFilter(event_types=frozenset({"turn.started"})),
+            handler=collector,
+            name="target",
+            fast_path=False,
+        )
+    )
+    await bus.drain()
+    await bus.stop()
+
+    # First lifecycle event is "watcher" itself (registered after the bus accepts
+    # match-all subscribes); second is "target". Assert "target" is present so the
+    # test stays robust regardless of self-delivery ordering.
+    by_name = {e.payload["subscription_name"] for e in received}
+    assert "target" in by_name
+    target = next(e for e in received if e.payload["subscription_name"] == "target")
+    assert target.type == "bus.subscriber_registered"
+    assert target.actor == Actor.SYSTEM
+    assert target.payload["fast_path"] is False
+    assert target.payload["filter"]["event_types"] == ["turn.started"]
+
+
+async def test_unsubscribe_emits_subscriber_unregistered():
+    """Spec §6.10: unsubscribe() must emit bus.subscriber_unregistered."""
+    bus = EventBus()
+    bus.start()
+    received: list[Event] = []
+
+    async def collector(event: Event) -> None:
+        received.append(event)
+
+    bus.subscribe(
+        Subscription(
+            filter=EventFilter(event_types=frozenset({"bus.subscriber_unregistered"})),
+            handler=collector,
+            name="watcher",
+            fast_path=True,
+        )
+    )
+
+    async def noop(event: Event) -> None:
+        pass
+
+    handle = bus.subscribe(
+        Subscription(filter=EventFilter(), handler=noop, name="ephemeral", fast_path=True)
+    )
+    bus.unsubscribe(handle)
+    await bus.drain()
+    await bus.stop()
+
+    matching = [e for e in received if e.payload["subscription_name"] == "ephemeral"]
+    assert len(matching) == 1
+    assert matching[0].payload["reason"] == "explicit"
+
+
+async def test_unsubscribe_emits_only_when_subscription_existed():
+    """Repeated unsubscribe must not produce duplicate lifecycle events."""
+    bus = EventBus()
+    bus.start()
+    received: list[Event] = []
+
+    async def collector(event: Event) -> None:
+        received.append(event)
+
+    bus.subscribe(
+        Subscription(
+            filter=EventFilter(event_types=frozenset({"bus.subscriber_unregistered"})),
+            handler=collector,
+            name="watcher",
+            fast_path=True,
+        )
+    )
+
+    async def noop(event: Event) -> None:
+        pass
+
+    handle = bus.subscribe(
+        Subscription(filter=EventFilter(), handler=noop, name="ephemeral", fast_path=True)
+    )
+    bus.unsubscribe(handle)
+    bus.unsubscribe(handle)  # idempotent; must NOT emit a second event
+    await bus.drain()
+    await bus.stop()
+
+    matching = [e for e in received if e.payload["subscription_name"] == "ephemeral"]
+    assert len(matching) == 1
+
+
+# ---- Fast-path / @slow enforcement -------------------------------------
+
+
+async def test_slow_handler_rejected_on_fast_path():
+    """Spec §9.1 test 4: @slow-annotated handler with fast_path=True raises."""
+    bus = EventBus()
+
+    @slow
+    async def slow_handler(event: Event) -> None:
+        pass
+
+    with pytest.raises(FastPathHandlerError):
+        bus.subscribe(
+            Subscription(
+                filter=EventFilter(),
+                handler=slow_handler,
+                name="slow-fast",
+                fast_path=True,
+            )
+        )
+
+
+async def test_slow_handler_allowed_on_batch_path():
+    """@slow is only checked when fast_path=True; batch subscribers are fine."""
+    bus = EventBus()
+
+    @slow
+    async def slow_handler(event: Event) -> None:
+        pass
+
+    handle = bus.subscribe(
+        Subscription(
+            filter=EventFilter(),
+            handler=slow_handler,
+            name="slow-batch",
+            fast_path=False,
+        )
+    )
+    assert handle is not None  # registration succeeded
+
+
+# ---- Bus lifecycle events (§6.10) --------------------------------------
+
+
+async def test_subscribe_emits_subscriber_registered_event():
+    """§6.10: registering a subscriber emits `bus.subscriber_registered`."""
+    bus = EventBus()
+    bus.start()
+    seen: list[Event] = []
+
+    async def observer(event: Event) -> None:
+        seen.append(event)
+
+    bus.subscribe(
+        Subscription(
+            filter=EventFilter(event_types=frozenset({"bus.subscriber_registered"})),
+            handler=observer,
+            name="observer",
+            fast_path=True,
+        )
+    )
+
+    # Now register a second subscriber to provoke the lifecycle event.
+    async def noop(event: Event) -> None:
+        pass
+
+    bus.subscribe(
+        Subscription(
+            filter=EventFilter(event_types=frozenset({"turn.started"})),
+            handler=noop,
+            name="target",
+            fast_path=False,
+        )
+    )
+    await bus.drain()
+    await bus.stop()
+
+    # The observer's own registration also produces an event; both should be
+    # present. We assert on the target subscription event specifically.
+    target_events = [e for e in seen if e.payload["subscription_name"] == "target"]
+    assert len(target_events) == 1
+    payload = target_events[0].payload
+    assert payload["fast_path"] is False
+    assert payload["filter"]["event_types"] == ["turn.started"]
+    assert target_events[0].actor == Actor.SYSTEM
+
+
+async def test_unsubscribe_emits_subscriber_unregistered_event():
+    """§6.10: removing a subscription emits `bus.subscriber_unregistered`
+    with the given reason. Idempotent unsubscribe does not re-emit."""
+    bus = EventBus()
+    bus.start()
+    seen: list[Event] = []
+
+    async def observer(event: Event) -> None:
+        seen.append(event)
+
+    bus.subscribe(
+        Subscription(
+            filter=EventFilter(event_types=frozenset({"bus.subscriber_unregistered"})),
+            handler=observer,
+            name="observer",
+            fast_path=True,
+        )
+    )
+
+    async def noop(event: Event) -> None:
+        pass
+
+    handle = bus.subscribe(
+        Subscription(filter=EventFilter(), handler=noop, name="target", fast_path=True)
+    )
+    bus.unsubscribe(handle, reason="shutdown")
+    bus.unsubscribe(handle, reason="shutdown")  # idempotent; must not re-emit
+    await bus.drain()
+    await bus.stop()
+
+    target_events = [e for e in seen if e.payload["subscription_name"] == "target"]
+    assert len(target_events) == 1
+    assert target_events[0].payload["reason"] == "shutdown"
+
+
+# ---- Fast-path / slow handler enforcement (§9.1 test 4) -----------------
+
+
+async def test_slow_handler_with_fast_path_raises():
+    """A handler marked `@slow` cannot register with `fast_path=True`."""
+    bus = EventBus()
+
+    @slow
+    async def slow_handler(event: Event) -> None:
+        pass
+
+    with pytest.raises(FastPathHandlerError) as exc:
+        bus.subscribe(
+            Subscription(
+                filter=EventFilter(),
+                handler=slow_handler,
+                name="slow-on-fast",
+                fast_path=True,
+            )
+        )
+    assert "slow-on-fast" in str(exc.value)
+
+
+async def test_slow_handler_allowed_on_non_fast_path():
+    """`@slow` handlers may still register if `fast_path=False`."""
+    bus = EventBus()
+    bus.start()
+    received: list[Event] = []
+
+    @slow
+    async def slow_handler(event: Event) -> None:
+        if event.type.startswith("bus."):
+            return
+        received.append(event)
+
+    bus.subscribe(
+        Subscription(filter=EventFilter(), handler=slow_handler, name="slow-ok", fast_path=False)
+    )
+    bus.emit(_session_created())
+    await bus.drain()
+    await bus.stop()
+
+    assert len(received) == 1
