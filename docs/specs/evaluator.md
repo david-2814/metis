@@ -1,7 +1,7 @@
 # Evaluator Specification
 
-**Status:** Draft v1
-**Last updated:** 2026-05-13
+**Status:** v1 (heuristic + LLM + hybrid tiers shipped)
+**Last updated:** 2026-05-14
 
 > Defines the feedback loop that turns "was this turn successful?" into a
 > recorded signal the pattern store and the analytics surface can read. This
@@ -394,6 +394,16 @@ the LLM judge" (maximum cost, maximum signal); `escalation_threshold = 1` is
 "never run the LLM judge" (zero cost, heuristic-only). The default lands in
 between, with the dashboard's agreement-rate view ([§9.2](#92-analytics-quality))
 as the calibration surface.
+
+**Implementation status (2026-05-14).** LLM tier landed at
+[`packages/metis-core/src/metis_core/eval/llm_judge.py`](../../packages/metis-core/src/metis_core/eval/llm_judge.py).
+Hybrid escalation knob default `0.7` is configurable via
+`HybridJudge(..., escalation_threshold=...)`. Budget-exhausted LLM calls
+return a `signals.budget_exhausted=True` verdict (confidence=0); HybridJudge
+falls back to its heuristic verdict and records
+`signals.escalation_skipped="budget_exhausted"`. The LLM judge also delegates
+to the heuristic for tool_cycle / session subjects so the v1 heuristic-only
+commitment for those kinds holds even when an LLM judge is wired in.
 
 ### 5.4 Workload rubric
 

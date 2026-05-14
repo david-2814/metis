@@ -665,3 +665,597 @@ uv run metis serve $(pwd) \
   --db-path benchmarks/.runs/benchmark-2026-05-14T06-08-16Z.db
 open http://127.0.0.1:8421/dashboard
 ```
+
+---
+
+## Experiment A2: K-NN selectivity after wiring `user_message_text`
+
+> An earlier draft of this section described plumbing that wasn't actually
+> landed (a `fingerprint_inputs_hook` and a corresponding runtime builder).
+> This is the version against the real code: the producer-side hook +
+> builder now exist and are exercised by end-to-end tests.
+
+**Date (UTC):** 2026-05-14
+**Branch:** `2026-05-14`
+**Status:** offline numerical evidence + producer-side plumbing landed;
+full-suite re-run deferred to avoid spending API budget when the K-NN-side
+argument is provable analytically.
+
+### Motivation
+
+A1's caveat §"`default_fingerprint_builder` records empty
+`user_message_text`" called out the v1 wedge: the routing-side
+fingerprint and the recording-side fingerprint *both* fed
+`user_message_text=""` into `build_structural_features`, so
+`intent_tags` was always empty and the weighted-Jaccard collapsed every
+turn into one cluster. The wedge wasn't `pattern-store.md §10.4`'s
+"raw text not on bus" — the session manager already has the text — it
+was that nobody plumbed it through. This experiment isolates the
+selectivity gain from doing so.
+
+### What changed
+
+Two producer-side seams land on `2026-05-14` so the receiver-side
+plumbing that Wave 5 5b-3 already shipped (`TurnCompleted.signals_extra`
+in [packages/metis-core/src/metis_core/events/payloads.py](../packages/metis-core/src/metis_core/events/payloads.py),
+`PatternEventSubscriber.set_fingerprint_inputs` in
+[packages/metis-core/src/metis_core/patterns/subscriber.py](../packages/metis-core/src/metis_core/patterns/subscriber.py),
+the evaluator subscriber's `signals_extra` read in
+[packages/metis-core/src/metis_core/eval/subscriber.py](../packages/metis-core/src/metis_core/eval/subscriber.py))
+sees real data:
+
+1. **`SessionManager._emit_turn_completed` stamps `signals_extra`.**
+   The turn's `last_assistant_text` (already accumulated in the turn
+   loop in [packages/metis-core/src/metis_core/sessions/manager.py](../packages/metis-core/src/metis_core/sessions/manager.py))
+   is passed through as `signals_extra={"final_response_text": …}`
+   when non-empty; the key is omitted when the assistant produced no
+   text. The evaluator subscriber's content-penalty path (`evaluator.md
+   §5.1`) now fires on the online bus path, not just the workload harness.
+
+2. **`SessionManager` accepts a `fingerprint_inputs_hook`.** A
+   `Callable[[str, TurnContext], None]` invoked right after
+   `_build_turn_context` so the CLI runtime can pre-populate the
+   pattern subscriber's per-turn override before `turn.completed` fires.
+   The hook is optional — when unset, the subscriber falls back to
+   `default_fingerprint_builder` (preserving the "raw text not on bus"
+   guarantee in `pattern-store.md §10.4` for embedded callers).
+
+3. **`apps/cli/src/metis_cli/runtime.py` wires the hook against the
+   same builder it passes to the routing engine.** Both ends of the
+   fingerprint (query-side at routing and record-side at outcome
+   recording) now read identical fields from `TurnContext`:
+
+```python
+# apps/cli/src/metis_cli/runtime.py
+def _routing_fingerprint_inputs(ctx) -> FingerprintInputs:
+    return FingerprintInputs(
+        user_message_text=ctx.user_message_text,
+        workspace_path=ctx.workspace_path,
+        estimated_input_tokens=ctx.estimated_input_tokens,
+        has_images=ctx.has_images,
+        has_tool_calls_in_history=ctx.has_tool_calls_in_history,
+    )
+
+def _on_turn_fingerprint_inputs(turn_id: str, ctx) -> None:
+    pattern_subscriber.set_fingerprint_inputs(
+        turn_id, _routing_fingerprint_inputs(ctx)
+    )
+
+manager = SessionManager(..., fingerprint_inputs_hook=_on_turn_fingerprint_inputs)
+```
+
+`TurnContext.user_message_text` is set in
+`SessionManager._build_turn_context` from the new user `Message`'s first
+`TextBlock`, so `intent_tags` (mechanical regex from
+`patterns/fingerprint.py::_INTENT_PATTERNS`) finally fires on a real
+string at both query time and record time.
+
+### End-to-end tests that prove the producer-side fires
+
+Four new tests in [packages/metis-core/tests/sessions/test_manager.py](../packages/metis-core/tests/sessions/test_manager.py)
+and [packages/metis-core/tests/patterns/test_subscriber.py](../packages/metis-core/tests/patterns/test_subscriber.py)
+drive a real `SessionManager` (scripted adapter, no live API) and
+assert on the resulting bus events:
+
+- `test_turn_completed_carries_final_response_text_in_signals_extra`
+  — scripts a refusal response, asserts `turn.completed.signals_extra
+  ["final_response_text"]` is populated with the refusal text.
+- `test_turn_completed_omits_signals_extra_when_no_assistant_text`
+  — guards the producer's "omit empty" behavior so the evaluator
+  doesn't mis-trigger the empty-response penalty on tool-only turns.
+- `test_refusal_signals_drop_eval_score_below_baseline` — drives the
+  same refusal through the heuristic evaluator subscriber and asserts
+  the resulting `eval.completed.score < 0.6` (refusal multiplier 0.5
+  × clean lifecycle base) with `flags_negative` containing
+  `assistant_refusal_detected`. Previously this turn would have
+  scored 1.0 because the evaluator never saw the refusal text.
+- `test_clean_response_keeps_eval_score_at_baseline` — control case;
+  pins the delta in the refusal test to the content-penalty path,
+  not to other lifecycle drift.
+- `test_fingerprint_inputs_hook_records_distinct_signatures_per_turn`
+  (in `tests/patterns/test_subscriber.py`) — submits two turns with
+  substantively different user messages ("refactor this function" vs
+  "debug the failing test") through SessionManager + the hook,
+  asserts the pattern store recorded two distinct
+  `fingerprint_id`s, not the single collapsed signature the pre-hook
+  codepath would have produced.
+
+These complement the existing
+`test_knn_returns_matching_cluster_for_distinct_user_messages` in
+[packages/metis-core/tests/patterns/test_knn_selectivity.py](../packages/metis-core/tests/patterns/test_knn_selectivity.py),
+which proved the K-NN math at the store level. With the new tests,
+the entire chain — `submit_turn` → hook → subscriber → store →
+`find_k_nearest` — is exercised under unit test, no live API.
+
+Test count: 1096 → 1101 (`uv run pytest -q`).
+
+### Pairwise weighted-Jaccard over the shipped workload suite
+
+Computed against each workload's *first-turn user prompt*, holding all
+other structural fields identical (the goal is to isolate the change in
+`intent_tags`):
+
+| Workload                                    | `intent_tags` (after) |
+|---------------------------------------------|------------------------|
+| `fix-a-bug-small`                           | `(architecture, debug, doc)` |
+| `intentionally-failing-task`                | `()`                   |
+| `multi-file-refactor-with-shared-types`     | `()`                   |
+| `multi-turn-refactor`                       | `(refactor, architecture, doc)` |
+| `regex-with-edge-cases`                     | `()`                   |
+| `write-a-doc-from-notes`                    | `()`                   |
+
+**Unique structural signatures across the 6 workloads:**
+**1 (before) → 3 (after)**.
+
+`weighted_jaccard(a, b)` per `pattern-store.md §5.3` formula, using each
+workload's first-turn prompt:
+
+| Pair                                                                                | Before | After |
+|-------------------------------------------------------------------------------------|-------:|------:|
+| `fix-a-bug-small`              vs `intentionally-failing-task`                      | 1.000  | 0.700 |
+| `fix-a-bug-small`              vs `multi-file-refactor-with-shared-types`           | 1.000  | 0.700 |
+| `fix-a-bug-small`              vs `multi-turn-refactor`                             | 1.000  | 0.850 |
+| `fix-a-bug-small`              vs `regex-with-edge-cases`                           | 1.000  | 0.700 |
+| `fix-a-bug-small`              vs `write-a-doc-from-notes`                          | 1.000  | 0.700 |
+| `intentionally-failing-task`   vs `multi-file-refactor-with-shared-types`           | 1.000  | 1.000 |
+| `intentionally-failing-task`   vs `multi-turn-refactor`                             | 1.000  | 0.700 |
+| `intentionally-failing-task`   vs `regex-with-edge-cases`                           | 1.000  | 1.000 |
+| `intentionally-failing-task`   vs `write-a-doc-from-notes`                          | 1.000  | 1.000 |
+| `multi-file-refactor-with-shared-types` vs `multi-turn-refactor`                    | 1.000  | 0.700 |
+| `multi-file-refactor-with-shared-types` vs `regex-with-edge-cases`                  | 1.000  | 1.000 |
+| `multi-file-refactor-with-shared-types` vs `write-a-doc-from-notes`                 | 1.000  | 1.000 |
+| `multi-turn-refactor`          vs `regex-with-edge-cases`                           | 1.000  | 0.700 |
+| `multi-turn-refactor`          vs `write-a-doc-from-notes`                          | 1.000  | 0.700 |
+| `regex-with-edge-cases`        vs `write-a-doc-from-notes`                          | 1.000  | 1.000 |
+
+A1's commentary estimated "cluster Jaccard similarity is the same ~0.85
+for every turn against every recorded fingerprint." That was a rounded
+estimate; with `user_message_text=""` the structural signatures are
+actually *identical* (Jaccard = 1.000) for any pair with matching
+token_bucket / has_images / has_tool_calls — i.e. every workload pair
+in the shipped suite. The fix introduces real spread: 9 of 15 pairs now
+fall below 1.000, 5 fall to the `0.700` floor (no `intent_tags`
+overlap), and one (`fix-a-bug-small` vs `multi-turn-refactor`) sits at
+`0.850` because both prompts share `architecture` and `doc` tags.
+
+### What this proves (and what it doesn't)
+
+**Proves.**
+
+- The K-NN store can now distinguish workloads with different mechanical
+  intent_tags. Slot 4's K-cluster aggregation will read genuinely
+  different neighbor sets per turn instead of always pulling every
+  recorded outcome with similarity ~1.0.
+- `test_knn_returns_matching_cluster_for_distinct_user_messages` in
+  `packages/metis-core/tests/patterns/test_knn_selectivity.py` exercises
+  the same property at the store level: a refactor probe ranks the
+  refactor neighbor's similarity above the debug neighbor's.
+
+**Does not prove.**
+
+- That the recommended *model* changes for real workloads on the
+  *current* heuristic judge alone. The judge still scores every clean
+  turn ~1.0 on these workloads (refusal/empty are the only penalties
+  with teeth in v1), so the cluster aggregator falls back to
+  `cost_efficiency` — same model wins. The refusal/empty path now
+  reaches the online subscriber thanks to this commit's other half
+  (`final_response_text` on `turn.completed.signals_extra`; see
+  `evaluator.md §5.1`), and the new
+  `test_refusal_signals_drop_eval_score_below_baseline` test asserts
+  end-to-end that a scripted refusal lands `score < 0.6` on the bus
+  path. Lifting the *non*-refusal floor still needs the LLM-as-judge
+  tier (`evaluator.md §5.2`) — that's Experiment A3.
+- That intent_tags are sufficient. Four of the six shipped workloads
+  still hit `()` because their prompts use task-domain words (`runner`,
+  `notes`, `handlers`) that the mechanical regex doesn't recognize.
+  v2's hybrid fingerprint (embedding over user message) is the
+  follow-up; the structural floor lands now.
+
+### Why not re-run `scripts/benchmark.py` end-to-end here
+
+The benchmark suite spends ~$0.30–$1.00 of real API budget per run.
+A1 already executed a 3-pass benchmark (~$0.50) that pinned slot 4 firing.
+A2's argument — that K-NN selectivity improves once
+`user_message_text` is plumbed — is fully provable from the static
+weighted-Jaccard table above, the new unit tests, and the visible
+delta in `intent_tags` per workload. Re-running the full benchmark
+would re-verify A1's savings number under the new plumbing (expected:
+unchanged at 66.7% under the same single-model routing) without
+producing any new information about the K-NN-side change. The
+follow-up A3 — "re-run the suite under a *non-trivial* evaluator that
+distinguishes haiku from sonnet on at least one workload" — is the run
+worth spending money on; it's blocked on the evaluator's LLM-as-judge
+tier (`evaluator.md §5.2`), not on this plumbing.
+
+### Reproduce the selectivity numbers
+
+```bash
+# Same Python env that runs pytest.
+uv run python -c "
+import yaml
+from pathlib import Path
+from metis_core.patterns.fingerprint import (
+    FingerprintInputs, build_structural_features, structural_signature,
+)
+from metis_core.patterns.similarity import weighted_jaccard
+
+WORKLOADS_DIR = Path('benchmarks/workloads')
+
+def prompts():
+    return {
+        w.name: (yaml.safe_load((w / 'workload.yaml').read_text()).get('turns') or [{}])[0].get('prompt', '').strip().replace('\n', ' ')
+        for w in sorted(WORKLOADS_DIR.iterdir())
+        if (w / 'workload.yaml').exists()
+    }
+
+def features(text):
+    return build_structural_features(FingerprintInputs(
+        user_message_text=text, workspace_path='/dummy',
+        estimated_input_tokens=1000, has_images=False,
+        has_tool_calls_in_history=False,
+    ))
+
+p = prompts()
+old = {n: features('') for n in p}
+new = {n: features(t) for n, t in p.items()}
+print('unique sigs before:', len({structural_signature(f) for f in old.values()}))
+print('unique sigs after: ', len({structural_signature(f) for f in new.values()}))
+names = list(p)
+for i, a in enumerate(names):
+    for b in names[i+1:]:
+        print(f'{a:42s} vs {b:42s}  before={weighted_jaccard(old[a], old[b]):.3f}  after={weighted_jaccard(new[a], new[b]):.3f}')
+"
+```
+
+## Workload diversity v1: discriminating success-rate workloads
+
+**Date (UTC):** 2026-05-14
+**Branch:** `2026-05-14`
+**Commit:** `a6e9679` + dirty working tree (new fixtures + test set update)
+**Test baseline:** 1029 passed (`uv run pytest -q`)
+
+### Motivation
+
+Experiment A1's caveat surfaced the v1 rubric's structural ceiling:
+"Both runs scored every turn at `success_score=1.0` ... the cluster
+ranking is dominated by `cost_efficiency`, not by success signal." The
+three primary workloads (`fix-a-bug-small`, `multi-turn-refactor`,
+`write-a-doc-from-notes`) all score `1.00 @ 0.80` for both haiku-4-5
+and sonnet-4-6, so the pattern store's slot-4 recommendation is a
+mechanical "pick the cheaper model" — correct given the inputs but
+unable to invert when a cheaper model is also a worse model. This
+section ships two new fixtures that intentionally stress success rate
+and reports the haiku-vs-sonnet score delta against the *unchanged*
+heuristic judge.
+
+### What ships
+
+Two new workloads under [`benchmarks/workloads/`](workloads/):
+
+| Workload                                  | Shape                                     | Discrimination strategy |
+|-------------------------------------------|-------------------------------------------|-------------------------|
+| `regex-with-edge-cases`                   | One-shot regex over 16 labeled NANP cases | Iteration is locked down (`max_tool_calls: 3` on the write turn, `max_tool_calls: 1` on the run turn); a `runner.py` fixture prints `PASS 16/16` only on full correctness, and `expect_substring_in_final_response: "PASS 16/16"` checks the agent's final message. A naive regex (e.g., one that omits the `+1 ...` country-code variants or accepts unbalanced parens) fails the runner and the substring check; non-zero exit on the runner also fires `tool.failed`, dropping the per-turn score. |
+| `multi-file-refactor-with-shared-types`   | Rename `UserId` → `AccountId` across 7 files | `legacy.py` uses an aliased import (`from domain import UserId as UID`) and `test_users.py` imports from every other module; any missed rename throws `ImportError` at pytest collection time, and `expect_substring_in_final_response: "3 passed"` only matches on a clean run. The prompt does not call out the alias trap directly. |
+
+A third candidate — `architectural-explanation-without-hallucination` —
+was considered and rejected. The v1 heuristic judge only checks
+substring *presence*, not absence, so it cannot penalize hallucinated
+class names; the workload would have measured omission, not
+fabrication. Logged here so the option doesn't get re-picked without
+evaluator-tier work first.
+
+Both workloads ship with `evaluate:` blocks pinning the heuristic
+rubric and an objective substring assertion. Both score `0.0` on the
+existing assertion-set's content-penalty path if the agent refuses or
+produces no text — same backstop as `intentionally-failing-task`.
+
+### Iteration history
+
+| Iteration | Workload | Change | haiku score | sonnet score | Delta | Verdict |
+|-----------|----------|--------|------------:|-------------:|------:|---------|
+| iter 1    | `regex-with-edge-cases`             | Three-turn structure with `"iterate until PASS"` on the run turn (`max_tool_calls: 12`). | 1.00 | 1.00 | 0.00 | Both models reach PASS via trial-and-error; iteration absorbs all signal. |
+| iter 2 (shipped) | `regex-with-edge-cases`             | Turn 2 prohibits running, turn 3 locked to `max_tool_calls: 1`. | **0.25** | **1.00** | **0.75** | Strong discriminator. Haiku's one-shot regex emits `FAIL 15/16`; sonnet's emits `PASS 16/16`. |
+| iter 1    | `multi-file-refactor-with-shared-types` | Six-file workspace, no alias trap, brittle `contains_substring: "AccountId"` on turn 3. | 0.75 | (not run) | n/a | Score reflects rubric brittleness — haiku completed the rename and pytest passed but its turn-3 grep summary said "no references remain" without literally saying "AccountId." Fixture problem, not model failure. |
+| iter 2    | `multi-file-refactor-with-shared-types` | Brittle assertion removed; `legacy.py` (aliased import) added; tests grown to 3. Prompt explicitly warned about aliased imports. | 1.00 | 1.00 | 0.00 | Both models catch the alias because the prompt names the pattern. |
+| iter 3 (shipped) | `multi-file-refactor-with-shared-types` | Prompt hint removed; agent must discover the aliased import from turn 1's enumeration on its own. | **1.00** | **1.00** | **0.00** | Does not discriminate. Both models enumerate every `.py` file in turn 1, find the `UserId` token in `legacy.py`'s import line, and update it. Haiku 4-5 is capable enough on standard refactor tasks that even a moderately adversarial import doesn't break it; pytest passes in both runs. |
+
+### Shipped numbers
+
+Ran the two new workloads in isolation (`--workload <name>`) against
+each model. Per `benchmark.md §6.1` provenance: pricing version
+`2026-05-08+openrouter-c40a0b72db6a`, temperature `0.0`, Python
+`3.13.12`.
+
+| Workload                                | Model  | Quality score | Confidence | LLM calls | Tool calls | `actual_repriced_usd` | Substring assertion | Notes |
+|-----------------------------------------|--------|--------------:|-----------:|----------:|-----------:|----------------------:|---------------------|-------|
+| `regex-with-edge-cases`                 | haiku  | **0.25**      | 0.80       | 7         | 5          | $0.0386               | **MISS** (`FAIL 15/16`) | haiku's one-shot regex omits the `+1 (415) 555-0123` country-code variant. |
+| `regex-with-edge-cases`                 | sonnet | **1.00**      | 0.80       | 6         | 4          | $0.1041               | hit | `PASS 16/16` in one shot. |
+| `multi-file-refactor-with-shared-types` | haiku  | **1.00**      | 0.80       | 13        | 26         | $0.0603               | hit | Catches `legacy.py` alias via turn-1 enumeration; iterates once to clean docstring references. |
+| `multi-file-refactor-with-shared-types` | sonnet | **1.00**      | 0.80       | 17        | 29         | $0.1618               | hit | More verbose enumeration in turn 3 (grep + wider sweep) but same outcome. |
+
+JSON artifacts:
+[`benchmarks/.runs/diversity-regex-haiku.json`](.runs/diversity-regex-haiku.json),
+[`benchmarks/.runs/diversity-regex-sonnet.json`](.runs/diversity-regex-sonnet.json),
+[`benchmarks/.runs/diversity-mfr-haiku.json`](.runs/diversity-mfr-haiku.json),
+[`benchmarks/.runs/diversity-mfr-sonnet.json`](.runs/diversity-mfr-sonnet.json).
+Total API spend across all six benchmark passes (including the two
+iterations on each new workload): **$0.853**.
+
+### Cost-per-success: the inversion
+
+The savings story is `actual / score` (cost per unit of successful
+output), not `actual` alone:
+
+| Workload                                | haiku $/score | sonnet $/score | Cheaper model | Margin |
+|-----------------------------------------|--------------:|---------------:|---------------|-------:|
+| `regex-with-edge-cases`                 | **$0.154**    | $0.104         | **sonnet**    | -32%   |
+| `multi-file-refactor-with-shared-types` | $0.060        | $0.162         | **haiku**     | +63%   |
+
+On `regex-with-edge-cases`, **sonnet's cost-per-success is 32% lower
+than haiku's** despite sonnet's raw spend being 2.7× higher — because
+haiku's score is 0.25, not 1.00. On `multi-file-refactor-with-shared-types`,
+haiku retains its expected 63% advantage because it succeeds.
+
+### Implications for the savings narrative
+
+Run 1 reported a **structural** 66.7% `savings_pct` (haiku's rate card
+is uniformly cheaper than sonnet's; multiply token counts by either
+rate, the ratio is fixed). That number is true and reproducible — but
+it is silent on whether the work succeeded.
+
+With the new workloads:
+
+1. **The 66.7% headline holds when haiku succeeds.** Both shipped
+   workloads run under the same single-model harness, so the
+   `actual_repriced_usd / baseline_repriced_usd` ratio reproduces the
+   structural number per-workload. That hasn't changed.
+2. **Cost-per-success on `regex-with-edge-cases` inverts.** Sonnet at
+   $0.104 / 1.0 success beats haiku at $0.0386 / 0.25 success.
+   `savings_pct` over a workload mix that includes this shape is
+   misleading without weighting by success — picking haiku saves
+   dollars in the analytics ledger but does not save dollars-of-
+   correct-work.
+3. **Pattern-store recommendation can now invert correctly.**
+   `pattern-store.md §8.3` aggregates outcomes as
+   `(1 - cost_weight) * success_mean + cost_weight * cost_efficiency`
+   with `cost_weight=0.3`. Plugging in haiku's `success_mean=0.25` and
+   sonnet's `success_mean=1.00` from this fixture:
+   `haiku_score = 0.7 × 0.25 + 0.3 × 1.0 = 0.475`,
+   `sonnet_score = 0.7 × 1.0 + 0.3 × 0.0 = 0.700`.
+   Sonnet wins the cluster despite being more expensive, which is
+   precisely the behavior A1 was unable to demonstrate. The mechanism
+   was already implemented; this section provides the first input
+   distribution where it triggers.
+4. **`savings_pct` should grow a quality-weighted sibling.** A future
+   `/analytics/savings_per_success` (or a `quality_weight` parameter on
+   the existing endpoint) would multiply each row's repriced cost by
+   `1/score` before the ratio. Spec impact lives in
+   [`docs/specs/analytics-api.md`](../docs/specs/analytics-api.md);
+   tracked separately, not landed here.
+
+### Caveats
+
+- **`multi-file-refactor-with-shared-types` does not discriminate at
+  haiku-4-5 level.** Both models score 1.00 in three iterations of the
+  fixture (with-hint, no-hint, alias-trap added). Haiku is capable
+  enough to enumerate `.py` files via `read_file`/`shell`, identify
+  every `UserId` token (including the import in `legacy.py`), and
+  apply the rename consistently. The workload is shipped anyway as a
+  parity datapoint: it proves the rubric isn't pinned-low either, and
+  the cost differential ($0.060 vs $0.162) demonstrates haiku's
+  intended savings story on a task where it actually succeeds. A
+  follow-up could replace it with a workload that does discriminate
+  (e.g., a 12-file refactor where one reference is in a comment-only
+  location, or a subtle algorithmic bug where the obvious fix doesn't
+  cover the test fixtures).
+- **One model pair, one snapshot.** Numbers are for `haiku-4-5` vs
+  `sonnet-4-6` on commit `a6e9679`. A future haiku rev might one-shot
+  the regex; a future sonnet rev might miss it. Re-running on a model
+  refresh re-establishes the delta.
+- **`temperature=0.0` is not strictly deterministic.** Per
+  `benchmark.md §6.2` the per-workload `actual_repriced_usd` is
+  expected to vary by ±25% relative and `llm_call_count` by ±2. The
+  0.25-vs-1.00 score delta on regex-with-edge-cases is too large for
+  that variance to explain away, but a single run is not a proof — the
+  score-delta direction (haiku < sonnet) is the load-bearing signal,
+  not the exact magnitude.
+- **The score-1.0 ceiling masks finer differentiation on mfr.** The
+  workload-level rubric is monotone-but-coarse: success collapses to
+  `1.0` once pytest passes regardless of tool-cycle efficiency or
+  edit-set minimality. A model that touches 12 files unnecessarily but
+  passes pytest scores identically to one that touches the 6 strictly
+  needed. An LLM-tier judge (`evaluator.md §5.2`) is the right place
+  to add that gradient.
+
+### Reproduce
+
+```bash
+# Confirm test baseline.
+uv run pytest -q                                # 1029 passed
+
+# Run each new workload against haiku and sonnet.
+uv run python scripts/benchmark.py \
+    --workload regex-with-edge-cases \
+    --model haiku --db-path benchmarks/.runs/diversity-regex-haiku.db
+uv run python scripts/benchmark.py \
+    --workload regex-with-edge-cases \
+    --model sonnet --db-path benchmarks/.runs/diversity-regex-sonnet.db
+uv run python scripts/benchmark.py \
+    --workload multi-file-refactor-with-shared-types \
+    --model haiku --db-path benchmarks/.runs/diversity-mfr-haiku.db
+uv run python scripts/benchmark.py \
+    --workload multi-file-refactor-with-shared-types \
+    --model sonnet --db-path benchmarks/.runs/diversity-mfr-sonnet.db
+
+# Quality scores and assertion failures land in the JSON artifact:
+jq '.workloads[] | {name, quality_score, assertion_failures, actual_repriced_usd}' \
+    benchmarks/.runs/diversity-*.json
+
+# Total spend ≈ $0.40 for the four runs above; full iteration history
+# (iter1 of regex, iter2 of mfr, plus the shipped runs) totaled $0.85.
+```
+
+---
+
+## Run 3: post-§5.1 (minimum-cacheable-prefix rule wired)
+
+Same workload suite (now 6 workloads — `intentionally-failing-task` from
+Run 2 plus `regex-with-edge-cases` and
+`multi-file-refactor-with-shared-types` from the diversity wave),
+re-run after `context-assembler.md §5.1` shipped. The §5.1 rule pads
+the natural Metis stable prefix above the haiku-4-5 effective cache
+floor (~4000 actual tokens) with a deterministic operating-context
+block, so the cached prefix fires on **every** session — not just
+`multi-turn-refactor` like in Run 2 §A2.
+
+### Run 3 metadata
+
+| Field              | Value                                                |
+|--------------------|------------------------------------------------------|
+| Run date (UTC)     | 2026-05-14T17:14:58Z                                 |
+| Commit SHA         | `a6e9679` + dirty Wave-5 working tree                |
+| Branch             | `2026-05-14`                                         |
+| Suite version      | 1 (now 6 workloads — diversity-wave additions plus original 3 plus `intentionally-failing-task`) |
+| Actual model       | `anthropic:claude-haiku-4-5`                         |
+| Baseline model     | `anthropic:claude-sonnet-4-6`                        |
+| Pricing version    | `2026-05-08+openrouter-c40a0b72db6a`                 |
+| Temperature        | 0.0                                                  |
+| Python             | 3.13.12                                              |
+| Test baseline      | 1038 passed (`uv run pytest -q`; 1029 inherited + 9 new §5.1 tests minus 2 reverted-by-other-agent) |
+| Smoke cache        | PASSED with natural prompt, $0.007786 (turn 1 wrote 5167 cache tokens; turn 2 read 5167 cached tokens) |
+
+JSON artifact: [`.runs/benchmark-2026-05-14T17-14-58Z.json`](.runs/benchmark-2026-05-14T17-14-58Z.json)
+Trace DB: `.runs/benchmark-2026-05-14T17-14-58Z.db`
+
+### Run 3 aggregate
+
+| Metric                            | Run 2 cold (3 workloads) | Run 3 same-3-workloads | Run 3 all-6-workloads |
+|-----------------------------------|---------------------------|------------------------|------------------------|
+| `rows_total`                      | 30                        | —                      | 49                     |
+| `rows_missing_from_price_table`   | 0                         | —                      | 0                      |
+| `actual_repriced_usd`             | $0.108273                 | **$0.083632**          | **$0.180137**          |
+| `baseline_repriced_usd`           | $0.324819                 | —                      | $0.540410              |
+| `savings_pct` (vs sonnet baseline)| 66.7%                     | 66.7%                  | 66.7%                  |
+| `hard_failures` (routing)         | 0                         | —                      | 0                      |
+| Wall time                         | ~58 s                     | —                      | ~125 s                 |
+
+**Cost delta for the original-3 workloads vs Run 2 cold:** `-$0.024641`
+(**-22.8%**). The §5.1 padding pays for itself across the suite: the
+cache fires on every workload (not just `multi-turn-refactor`), and
+the cache reads on the two previously-uncached workloads more than
+offset the new cache-write overhead.
+
+### Run 3 cache token totals
+
+| Run    | LLM calls | Calls w/ cache hit | `cache_creation_input_tokens` | `cached_input_tokens` |
+|--------|-----------|--------------------|-------------------------------|------------------------|
+| Run 2 cold | 30    | 10 (33%)           | 11,229                        | 47,918                 |
+| Run 3      | 49    | **49 (100%)**      | 36,962                        | 366,441                |
+
+**Every single LLM call** in Run 3 had cache activity (write or read).
+Cache reads grew 7.6× while writes only grew 3.3× — i.e. the cache
+is being amortized more, not just used more.
+
+### Run 3 per-workload (same-3 subset, vs Run 2 cold)
+
+| Workload                  | Turns | Actual $ (Run 2 cold → Run 3) | Δ ($) | Δ (%) | Cache writes (Run 2 → Run 3) | Cache reads (Run 2 → Run 3) |
+|---------------------------|-------|-------------------------------|-------|-------|-------------------------------|------------------------------|
+| `fix-a-bug-small`         | 3     | $0.015380 → $0.021494         | +$0.0061 | **+39.7%** | 0 → 7,779                     | 0 → 38,860                    |
+| `multi-turn-refactor`     | 4     | $0.074921 → $0.049288         | -$0.0256 | **-34.2%** | 11,229 → 10,336              | 47,918 → 119,917             |
+| `write-a-doc-from-notes`  | 2     | $0.017972 → $0.012850         | -$0.0051 | **-28.5%** | 0 → 1,436                    | 0 → 31,018                    |
+| **Total (3 workloads)**   |       | **$0.108273 → $0.083632**     | **-$0.0246** | **-22.8%** | 11,229 → 19,551               | 47,918 → 189,795             |
+
+`fix-a-bug-small` costs *more* under §5.1 — its short 3-turn arc means
+the cache-write overhead on the padded prefix exceeds the read savings
+within the session. The two longer workloads recover that loss many
+times over (the +$0.006 on `fix-a-bug-small` is dwarfed by the
+-$0.026 on `multi-turn-refactor` alone).
+
+### Run 3 per-workload (new 3 workloads)
+
+| Workload                                | Turns | Actual $   | Cache writes | Cache reads |
+|-----------------------------------------|-------|------------|--------------|-------------|
+| `intentionally-failing-task`            | 1     | $0.000965  | 0            | 5,781       |
+| `multi-file-refactor-with-shared-types` | 4     | $0.065495  | 15,040       | 120,453     |
+| `regex-with-edge-cases`                 | 3     | $0.030045  | 2,371        | 50,412      |
+
+Note: `intentionally-failing-task` shows **5,781 cache reads on a
+single LLM call with 0 cache writes**. This is the §5.1 deterministic-
+padding side-effect: because every Metis session in the suite carries
+the same stable prefix (DEFAULT_SYSTEM_PROMPT + tools + the same
+`_OPERATING_CONTEXT_PADDING` block), Anthropic's cache (which persists
+for ~5 minutes across requests sharing identical prefixes) was already
+warm from earlier workloads when this session started. The session
+read the warmed prefix without paying for a cache write — a "free
+warm-up" effect that is not load-bearing for the §5.1 correctness
+claim but is a real cross-session efficiency that emerges from the
+byte-stability rule.
+
+### Run 3 finding
+
+**§5.1 makes prompt caching fire universally.** Run 2 §A2's
+"`multi-turn-refactor` only" limitation is resolved: every LLM call in
+every workload now writes or reads cache. The 22.8% same-3-workload
+aggregate cost reduction is the visible signal; the underlying
+mechanism is that ~5K-token cached reads at the 10% cache-read rate
+replace ~5K-token full-input reads at the 100% input rate.
+
+The cost trade-off documented in `context-assembler.md §5.1` shows
+up cleanly in `fix-a-bug-small`: 3-turn workloads with very short
+natural prefixes lose ~$0.006 on padding. This is **acceptable in
+aggregate** because (a) the cost is dwarfed by the wins on longer
+workloads, (b) sessions in production tend to be longer than the
+benchmark's bare-bones 3-turn shape, and (c) the cross-session warm-
+prefix effect (seen on `intentionally-failing-task`) amplifies the
+saving for cohorts of related sessions sharing a workspace and
+system prompt.
+
+### Run 3 caveats
+
+- **The 66.7% `savings_pct` is structural, not behavioral.** It's
+  fixed by the haiku/sonnet rate-card ratio at equal token counts;
+  see Run 2's same observation. The §5.1 win lands in `actual_$`
+  (smaller numerator) and the cache-token totals (which `savings_pct`
+  doesn't see), not in the aggregate percentage.
+- **One workload regressed on cost** (`fix-a-bug-small`, +39.7%).
+  This is the natural prefix being far below the cache floor — the
+  §5.1 padding pays for itself per turn, so very short sessions
+  amortize less of the overhead. A future revision MAY add a
+  "skip padding when natural prefix < X" escape hatch; the §5.1
+  decision log already flags this trade-off.
+- **The `intentionally-failing-task` 5,781-cache-read "free" effect
+  is timing-sensitive.** It only fires when an earlier workload
+  warms the cache within Anthropic's ~5-minute TTL. Running the
+  workload in isolation produces 0 reads.
+- **`regex-with-edge-cases` and `multi-file-refactor-with-shared-types`
+  weren't in Run 2** so we can't compute Δ for them directly. Their
+  Run 3 cache activity (100% of LLM calls cached) is a forward
+  baseline.
+
+### Reproduce
+
+```bash
+uv run pytest -q                                # expect 1038 passed
+uv run python scripts/smoke_cache.py --model haiku   # expect PASSED
+uv run python scripts/benchmark.py              # full 6-workload suite
+```

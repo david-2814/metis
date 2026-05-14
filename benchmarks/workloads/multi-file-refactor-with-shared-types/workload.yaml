@@ -1,0 +1,57 @@
+name: multi-file-refactor-with-shared-types
+description: >-
+  Rename `UserId` -> `AccountId` across a seven-file mini-project. The
+  shared dataclass is defined in `domain.py`; `users.py`, `workspaces.py`,
+  `legacy.py`, `handlers/user_handler.py`, `handlers/workspace_handler.py`,
+  and `test_users.py` all reference it. `legacy.py` deliberately imports
+  the type under an alias (`from domain import UserId as UID`), so a naive
+  grep-and-replace pass misses the line entirely. `test_users.py` imports
+  from every other module and exercises the legacy shim, so any missed
+  rename produces an `ImportError` at collection time and pytest does not
+  print "3 passed". Verification is objective (pytest output), not the
+  agent's self-report.
+suite_version: 1
+turns:
+  - prompt: >-
+      Read every `.py` file in this workspace (including the `handlers/`
+      subdirectory). List every file that references `UserId` and the line
+      number(s) for each. Don't make any edits yet.
+    expect:
+      min_tool_calls: 3
+      max_tool_calls: 15
+      contains_substring: "domain.py"
+  - prompt: >-
+      Now rename `UserId` to `AccountId` throughout the workspace. Cover
+      the dataclass definition, every type annotation, every test
+      reference, and any docstring that names `UserId` directly. Do NOT
+      rename `make_user`, `index_users`, `user_handler.py`, the
+      `users.py` filename, or any local variable like `uid`. Make the
+      smallest set of edits that completes the rename. After this turn
+      you will run pytest, and any module that fails to import will
+      surface in the test output.
+    expect:
+      min_tool_calls: 4
+      max_tool_calls: 30
+  - prompt: >-
+      Run `grep -rn UserId .` from the workspace root and report the exact
+      output. If any references remain, fix them and re-run grep until none
+      remain. Then list every file you edited (in turn 2 and in this turn),
+      separated by newlines.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 10
+  - prompt: >-
+      Run `python -m pytest test_users.py -v` from the workspace root and
+      report the exact final line of the output. If anything failed, fix it
+      and re-run pytest until every test passes.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 12
+      contains_substring: "3 passed"
+expect:
+  max_total_cost_usd: 1.50
+  min_llm_calls: 4
+  max_hard_failures: 0
+evaluate:
+  rubric: heuristic
+  expect_substring_in_final_response: "3 passed"

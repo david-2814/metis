@@ -198,6 +198,129 @@ async def test_sessions_zero_limit_rejected(seeded_client):
     assert r.json()["error"]["code"] == "invalid_limit"
 
 
+# ---- /analytics/quality (evaluator.md §9.2) -------------------------------
+
+
+@pytest.fixture
+async def quality_seeded_client(runtime, now):
+    """Like `seeded_client` but seeds `eval.completed` + `route.decided` rows.
+
+    The /analytics/quality endpoint reads these two event types; we insert
+    them directly to avoid spinning up the full evaluator + bus stack.
+    """
+    db_path: Path = runtime.db_file
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn.executescript(_SCHEMA)
+    # One route.decided per turn (routing-engine §4.1 invariant).
+    for i, model in enumerate(["anthropic:claude-haiku-4-5", "anthropic:claude-sonnet-4-6"]):
+        turn_id = f"turn_q_{i}"
+        conn.execute(
+            "INSERT INTO events "
+            "(id, timestamp_us, session_id, turn_id, parent_event_id, type, "
+            " actor, sensitivity, payload_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                f"01HZQ{i:020d}",
+                _to_micros(now),
+                "sess_q",
+                turn_id,
+                None,
+                "route.decided",
+                "system",
+                "pseudonymous",
+                json.dumps(
+                    {
+                        "chosen_model": model,
+                        "winner_index": 0,
+                        "elapsed_ms": 1.0,
+                        "chain": [{"policy": "workspace_default", "verdict": "selected"}],
+                    }
+                ),
+            ),
+        )
+        # One eval.completed per turn.
+        conn.execute(
+            "INSERT INTO events "
+            "(id, timestamp_us, session_id, turn_id, parent_event_id, type, "
+            " actor, sensitivity, payload_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                f"01HZV{i:020d}",
+                _to_micros(now),
+                "sess_q",
+                turn_id,
+                None,
+                "eval.completed",
+                "system",
+                "pseudonymous",
+                json.dumps(
+                    {
+                        "eval_id": f"eval_{i}",
+                        "subject_kind": "turn",
+                        "subject_id": turn_id,
+                        "score": 0.9 if "haiku" in model else 0.5,
+                        "confidence": 0.8,
+                        "judge_kind": "heuristic",
+                        "judge_model": None,
+                        "judge_cost_usd": "0",
+                        "judge_latency_ms": 2,
+                        "rubric_id": "turn-heuristic-v1",
+                        "rubric_version": "1.0.0",
+                        "signals": {"flags": ["stop_reason_clean"]},
+                        "parent_eval_id": None,
+                        "judge_pricing_version": None,
+                    }
+                ),
+            ),
+        )
+    conn.close()
+    app = build_app(runtime)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+        yield c
+
+
+async def test_quality_endpoint_round_trip(quality_seeded_client, now):
+    r = await quality_seeded_client.get(
+        "/analytics/quality",
+        params={
+            "from": now.replace(hour=0).isoformat(),
+            "to": now.replace(hour=23).isoformat(),
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "window" in body
+    assert "current_pricing_version" in body
+    assert isinstance(body["data"], list)
+    # Two distinct models judged → two rows.
+    by_model = {row["chosen_model"]: row for row in body["data"]}
+    assert set(by_model) == {
+        "anthropic:claude-haiku-4-5",
+        "anthropic:claude-sonnet-4-6",
+    }
+    assert by_model["anthropic:claude-haiku-4-5"]["mean_score"] == 0.9
+
+
+async def test_quality_invalid_group_by_returns_400(quality_seeded_client):
+    r = await quality_seeded_client.get("/analytics/quality", params={"group_by": "DROP TABLE"})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_group_by"
+
+
+async def test_quality_invalid_min_confidence_returns_400(quality_seeded_client):
+    r = await quality_seeded_client.get("/analytics/quality", params={"min_confidence": "1.5"})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_group_by"
+
+
+async def test_quality_group_by_judge_kind(quality_seeded_client):
+    r = await quality_seeded_client.get("/analytics/quality", params={"group_by": "judge_kind"})
+    assert r.status_code == 200
+    body = r.json()
+    assert any(row["judge_kind"] == "heuristic" for row in body["data"])
+
+
 async def test_turn_drill_down_404_unknown(seeded_client):
     r = await seeded_client.get("/analytics/turns/does_not_exist")
     assert r.status_code == 404

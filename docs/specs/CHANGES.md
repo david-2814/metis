@@ -63,6 +63,40 @@ When changing a spec, the dependent specs (right column whose left column is the
 
 ## Change log
 
+### 2026-05-14 — context-assembler.md v2 (minimum-cacheable-prefix rule)
+
+- **Spec:** `context-assembler.md` §5.1 (new), with rationale + decision log entries.
+- **Change:** v1's prompt-cache breakpoint placement was honest but the natural Metis stable prefix (DEFAULT_SYSTEM_PROMPT + five built-in tools ≈ 265 heuristic tokens) tokenizes well below the *effective* haiku-4-5 cache floor — a live probe found a 3320-actual-token prefix produces `cache_creation_input_tokens = 0` while a 4957-token prefix succeeds. v2 adds a §5.1 rule requiring `SessionManager` to pad the stable prefix to clear that effective floor with margin (`MIN_CACHEABLE_PREFIX_TOKENS = 4500`, `MAX_CACHEABLE_PREFIX_TOKENS = 5500` heuristic tokens). Padding sources, in priority order: (1) loaded skill bodies in name-ascending order, (2) a static byte-stable `_OPERATING_CONTEXT_PADDING` block of Metis operating guidelines. Determinism is load-bearing — module-level constant; no per-call I/O. v1's breakpoint placement, the two-segment `system_prompt`/`system_prompt_volatile` shape, and the breakpoint-on-last-stable-block rule are all unchanged. Live verification: `scripts/smoke_cache.py --model haiku` now passes with the natural Metis prompt (turn 1 writes 5167 cache tokens; turn 2 reads 5167). Benchmark Run 3 (`benchmarks/RESULTS.md`): cache fires on **49 of 49 LLM calls (100%)** vs Run 2 cold's **10 of 30 (33%)**; same-3-workload aggregate cost dropped 22.8%.
+- **Type:** additive. The §5.1 rule is a new section; v1's existing rules in §1–§4 and §5 (preceding §5.1) are unchanged. Callers that pass a custom `system_prompt` already above the floor see §5.1 as a no-op.
+- **References to verify:**
+  - `canonical-message-format.md §7` — adapter contract unchanged; `CanonicalRequest.system_prompt` / `system_prompt_volatile` shape unchanged. ✓
+  - `analytics-api.md §4.2` — `cache_effectiveness` endpoint reads the same `cache_creation_input_tokens` / `cached_input_tokens` fields; no schema change. ✓
+  - `skill-format.md` — v2 §5.1 inlines skill bodies into the cached prefix when padding is needed, which is a deviation from agentskills.io "progressive disclosure" (discovery only, activation via `skill_load`). The decision log records the reasoning: progressive disclosure still applies to the discovery index; bodies are only inlined when the prefix needs the bytes to clear the floor. No skill-format spec change required. ✓
+  - `benchmark.md §6.2` — variance tolerance (`±5pp` on `savings_pct`, `±2 llm_call_count`) unchanged; Run 3 sits within tolerance against Run 2. ✓
+- **Status:** verified.
+
+### 2026-05-14 — benchmark workload diversity v1 (two discriminating fixtures)
+
+- **Spec:** `benchmark.md` §4 (the suite).
+- **Change:** Two new workloads added under [`benchmarks/workloads/`](../../benchmarks/workloads/): `regex-with-edge-cases` (one-shot NANP regex against 16 labeled cases; locked-down iteration via `max_tool_calls: 1` on the run turn) and `multi-file-refactor-with-shared-types` (7-file rename with an aliased import in `legacy.py`). Both ship `evaluate:` blocks with `expect_substring_in_final_response` so the heuristic judge gets an objective success signal. The shipped regex workload discriminates haiku-4-5 (`0.25`) vs sonnet-4-6 (`1.00`) at the workload-level score; the mfr workload scores `1.00 / 1.00` (parity datapoint, not a discriminator at the current model pair's capability). Full numbers and the cost-per-success inversion are in [`benchmarks/RESULTS.md`](../../benchmarks/RESULTS.md) under "Workload diversity v1". The benchmark spec's §4 "V1 ships three workloads" table is now an undercount (six workloads ship via filesystem discovery, including the prior `intentionally-failing-task` control case) — descriptive drift rather than a contract change.
+- **Type:** additive. New fixtures discovered via the existing filesystem-based loader in `scripts/benchmark.py`; no harness or schema changes. The test that pins the discovered-workload set ([`apps/cli/tests/test_benchmark.py::test_shipped_workloads_load_clean`](../../apps/cli/tests/test_benchmark.py)) was updated to include the two new names — purely additive, no removal. Test count: 1029 passed (was 979; the +50 includes other parallel work landing during the same window).
+- **References to verify:**
+  - `pattern-store.md §8.3` — the K-cluster aggregator formula now has an input distribution where `success_mean_haiku < success_mean_sonnet`. The mechanism was already implemented; the new fixture provides the first real-API distribution that triggers the cost-vs-success trade-off. ✓ (no spec change needed; section in RESULTS.md cites the formula).
+  - `evaluator.md §5.4` — workload-level rubric's `expect_substring_in_final_response` path is exercised by both new fixtures. The hybrid judge tier (just-landed) reads the same `signals_extra` plumbing, so these fixtures double as inputs to the LLM-judge upgrade. ✓
+  - `benchmark.md §4` — the table listing v1's three workloads is now an undercount (six workloads discovered). Worth a follow-up edit to either enumerate all six or note that discovery is filesystem-based; not blocking.
+- **Status:** verified.
+
+### 2026-05-14 — evaluator: LLM-as-judge + hybrid escalation tier shipped
+
+- **Spec:** `evaluator.md` §5.2 (LLM rubric), §5.3 (hybrid escalation), §9.2 (`/analytics/quality`).
+- **Change:** LLM-as-judge tier landed at `packages/metis-core/src/metis_core/eval/llm_judge.py` (`LLMJudge`, `HybridJudge`, `LLMJudgeConfig`). Hybrid is the default for turn / workload subjects; tool_cycle / session remain heuristic-only per §5.5 / §5.6. Default escalation threshold = `0.7`. Budget-exhausted LLM calls return a `signals.budget_exhausted=True` verdict (confidence=0); HybridJudge falls back to its heuristic verdict and records `signals.escalation_skipped="budget_exhausted"`. New `/analytics/quality` endpoint (`apps/server/src/metis_server/analytics.py`) projects `eval.completed` over a window with `group_by` ∈ {model, judge_kind, rubric_id, none} and `min_confidence` filter; the `chosen_model` field joins via `route.decided` so the per-model rollup reflects the *judged* model, not the judge's.
+- **Type:** additive (new classes, new endpoint, no breaking changes to existing heuristic path).
+- **References to verify:**
+  - `event-bus-and-trace-catalog.md §6.12` — three `eval.*` payloads unchanged; new signals (`budget_exhausted`, `escalation_skipped`, `heuristic_score`, `heuristic_confidence`) all live in the opaque `signals` dict so the catalog contract is preserved. ✓
+  - `pattern-store.md §10.4` — pattern store reads `score` + `confidence` only; new signals don't affect that contract. ✓
+  - `analytics-api.md` — new `/analytics/quality` endpoint follows the standard envelope and error mapping. ✓
+- **Status:** verified.
+
 ### 2026-05-14 — evaluator: opt-in content penalty (refusal / empty response)
 
 - **Spec:** `evaluator.md` §5.1 (turn rubric), §5.4 (workload rubric).

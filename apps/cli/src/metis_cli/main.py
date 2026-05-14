@@ -86,6 +86,60 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restrict to a single session (default: all sessions in window).",
     )
 
+    gateway = sub.add_parser(
+        "gateway",
+        help="Run the transparent OpenAI/Anthropic-shape HTTP gateway, or issue keys.",
+    )
+    gateway_sub = gateway.add_subparsers(dest="gateway_command", required=False)
+
+    # `metis gateway` with no subcommand = start the server.
+    gateway.add_argument(
+        "--keystore",
+        help="Gateway keystore path. Default: ~/.metis/gateway/keys.json",
+        default=None,
+    )
+    gateway.add_argument(
+        "--db-path",
+        help="SQLite path for trace + sessions. Default: ~/.metis/metis.db",
+        default=None,
+    )
+    gateway.add_argument(
+        "--global-default",
+        help="Model used when routing finds no other slot win. "
+        "Default: anthropic:claude-sonnet-4-6",
+        default="anthropic:claude-sonnet-4-6",
+    )
+    gateway.add_argument("--host", default="127.0.0.1", help="Bind host (loopback-only in v1).")
+    gateway.add_argument("--port", type=int, default=8422, help="Bind port.")
+
+    issue = gateway_sub.add_parser(
+        "issue-key",
+        help="Create a new gateway key and append it to the keystore (prints token once).",
+    )
+    issue.add_argument(
+        "--keystore",
+        help="Gateway keystore path. Default: ~/.metis/gateway/keys.json",
+        default=None,
+    )
+    issue.add_argument("--name", required=True, help="Display name for the key.")
+    issue.add_argument(
+        "--workspace",
+        required=True,
+        help="Workspace path the key is scoped to.",
+    )
+    issue.add_argument(
+        "--allow-model",
+        action="append",
+        default=None,
+        help="Restrict the key to a model id or alias (repeat for multiple).",
+    )
+    issue.add_argument(
+        "--daily-cap-usd",
+        type=float,
+        default=None,
+        help="Optional per-day spend cap (gateway.md §V; enforcement is informational in v1).",
+    )
+
     return parser
 
 
@@ -146,6 +200,36 @@ def main(argv: list[str] | None = None) -> int:
             if args.session_id:
                 evaluate_argv.extend(["--session-id", args.session_id])
             return evaluate_main(evaluate_argv)
+        if args.command == "gateway":
+            if args.gateway_command == "issue-key":
+                from pathlib import Path
+
+                from metis_gateway.issue_key import issue_key_command
+                from metis_gateway.runtime import default_keystore_path
+
+                keystore = (
+                    Path(args.keystore).expanduser() if args.keystore else default_keystore_path()
+                )
+                allowed = tuple(args.allow_model) if args.allow_model else None
+                return issue_key_command(
+                    keystore_path=keystore,
+                    name=args.name,
+                    workspace_path=args.workspace,
+                    allowed_models=allowed,
+                    daily_cap_usd=args.daily_cap_usd,
+                )
+            # Default: run the gateway server.
+            from metis_gateway.cli import run_gateway_command
+
+            return asyncio.run(
+                run_gateway_command(
+                    keystore_path=args.keystore,
+                    db_path=args.db_path,
+                    global_default_model=args.global_default,
+                    host=args.host,
+                    port=args.port,
+                )
+            )
     except KeyboardInterrupt:
         print()
         return 130

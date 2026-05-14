@@ -22,5 +22,9 @@ build/
 .idea/
 .vscode/
 
+# Claude Code: ignore runtime + personal state, allow shared config (settings.json, commands/, agents/)
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
 # Metis runtime
 .metis/

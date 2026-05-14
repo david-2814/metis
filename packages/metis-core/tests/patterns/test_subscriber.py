@@ -181,3 +181,119 @@ async def test_eval_completed_patches_score(bus, event_log, tmp_path: Path) -> N
         assert row["success_score_count"] == 1
     finally:
         store.close()
+
+
+async def test_fingerprint_inputs_hook_records_distinct_signatures_per_turn(
+    bus, event_log, tmp_path: Path
+) -> None:
+    """Producer-side plumbing: the SessionManager's `fingerprint_inputs_hook`
+    forwards each turn's `TurnContext.user_message_text` to the pattern
+    subscriber via `set_fingerprint_inputs`. Two turns with substantively
+    different user messages (refactor vs debug) must record distinct
+    structural fingerprints, not collapse into a single empty-intent
+    cluster as the pre-hook codepath did."""
+    from metis_core.adapters.protocol import StopReason
+    from metis_core.canonical.content import TextBlock
+    from metis_core.patterns.fingerprint import (
+        build_structural_features,
+        structural_signature,
+    )
+    from metis_core.pricing import DEFAULT_PRICE_TABLE
+    from metis_core.routing import ModelRegistry, RoutingEngine
+    from metis_core.sessions import InMemorySessionStore, SessionManager
+    from metis_core.tools.dispatcher import ToolDispatcher
+
+    from tests_shared.scripted_adapter import (
+        _ScriptedAnthropicAdapter,
+        _ScriptedResponse,
+    )
+
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+            ),
+            _ScriptedResponse(
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+            ),
+        ]
+    )
+    registry = ModelRegistry()
+    registry.register(model_id="anthropic:claude-sonnet-4-6", adapter=adapter, aliases=["sonnet"])
+    routing = RoutingEngine(registry=registry, bus=bus)
+    dispatcher = ToolDispatcher(bus)
+
+    store = PatternStore(tmp_path)
+    try:
+        subscriber = PatternEventSubscriber(
+            store_factory=lambda _ws: store,
+            workspace_resolver=lambda _sid: str(tmp_path),
+            bus=bus,
+        )
+        subscriber.attach()
+
+        def _builder(ctx) -> FingerprintInputs:
+            return FingerprintInputs(
+                user_message_text=ctx.user_message_text,
+                workspace_path=ctx.workspace_path,
+                estimated_input_tokens=ctx.estimated_input_tokens,
+                has_images=ctx.has_images,
+                has_tool_calls_in_history=ctx.has_tool_calls_in_history,
+            )
+
+        def _hook(turn_id: str, ctx) -> None:
+            subscriber.set_fingerprint_inputs(turn_id, _builder(ctx))
+
+        manager = SessionManager(
+            registry=registry,
+            routing=routing,
+            dispatcher=dispatcher,
+            bus=bus,
+            store=InMemorySessionStore(),
+            pricing=DEFAULT_PRICE_TABLE,
+            fingerprint_inputs_hook=_hook,
+        )
+        session = manager.create_session(workspace_path=str(tmp_path))
+        await manager.submit_turn(session.id, "refactor this function")
+        await bus.drain()
+        await bus.drain()
+
+        session_2 = manager.create_session(workspace_path=str(tmp_path))
+        await manager.submit_turn(session_2.id, "debug the failing test")
+        await bus.drain()
+        await bus.drain()
+
+        recorded = [e for e in event_log if e.type == "pattern.recorded"]
+        assert len(recorded) == 2
+        fp_ids = {e.payload["fingerprint_id"] for e in recorded}
+        assert len(fp_ids) == 2, (
+            f"two substantively different prompts should produce two fingerprints; got {fp_ids!r}"
+        )
+
+        refactor_sig = structural_signature(
+            build_structural_features(
+                FingerprintInputs(
+                    user_message_text="refactor this function",
+                    workspace_path=str(tmp_path),
+                    estimated_input_tokens=0,
+                    has_images=False,
+                    has_tool_calls_in_history=False,
+                )
+            )
+        )
+        debug_sig = structural_signature(
+            build_structural_features(
+                FingerprintInputs(
+                    user_message_text="debug the failing test",
+                    workspace_path=str(tmp_path),
+                    estimated_input_tokens=0,
+                    has_images=False,
+                    has_tool_calls_in_history=False,
+                )
+            )
+        )
+        assert refactor_sig != debug_sig
+    finally:
+        store.close()

@@ -60,6 +60,15 @@ class TurnCompleted(msgspec.Struct, frozen=True):
     total_output_tokens: int
     total_cost_usd: float
     wall_time_seconds: float
+    # Supplementary content/judgement fields downstream subscribers (the
+    # evaluator's content-penalty path; future LLM judge tier) need but
+    # the lifecycle event itself doesn't structurally model. Keys are
+    # conventions, not contract: `final_response_text` carries the
+    # assistant's terminal text blocks so the evaluator subscriber path
+    # can fire the refusal / empty-response penalties from `evaluator.md`
+    # §5.1. Bus emitters set fields they have; subscribers treat missing
+    # keys as "no signal," not as an error.
+    signals_extra: dict | None = None
 
 
 class TurnCancelled(msgspec.Struct, frozen=True):
@@ -92,6 +101,12 @@ class LLMCallCompleted(msgspec.Struct, frozen=True):
     stop_reason: Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]
     produced_tool_calls: int
     produced_thinking_blocks: int
+    # Gateway dimensions (gateway.md §6). Both `None` when the call originated
+    # from the in-process agent loop (CLI / TUI / `metis serve`); set when the
+    # call entered through the gateway HTTP surface so analytics can roll up by
+    # key and inbound translator.
+    gateway_key_id: str | None = None
+    inbound_shape: Literal["openai", "anthropic"] | None = None
 
 
 # 8-value error_class enum per provider-adapter §6.1.

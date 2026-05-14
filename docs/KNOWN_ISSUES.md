@@ -1,6 +1,6 @@
 # Known Issues
 
-**Last updated:** 2026-05-12
+**Last updated:** 2026-05-14
 
 Carryover findings from prior implementation reviews that haven't been fixed yet. These are bugs that look correct in isolation — invariants the specs claim that the code doesn't quite honor, or capability declarations that are honest in intent but wrong in practice. AI agents working in the repo should know about them so they don't:
 
@@ -31,10 +31,6 @@ Spec §3.3 returns `CanonicalResponse.message: Message`. Impl returns `content: 
 ### 🟢 `get_definitions_for_session(session)` doesn't accept a session
 
 Spec §3.4 signature names the session arg (used to filter memory tools from worker sessions per §6.2.1). Current impl returns all tools globally. Phase 2+; signature shape should match now so callers don't get rewritten later.
-
-### 🟢 `AutoAllowHandler` is the default confirmation handler
-
-Auto-approves *everything* including WRITE/EXECUTE/NETWORK. Fine for single-user dev (and documented in AGENTS.md gotchas). Do not ship anywhere shared without swapping in a real handler.
 
 ---
 
@@ -70,12 +66,22 @@ Documented in `chat.py::_async_input` docstring. The input thread is daemon — 
 
 ---
 
+## Gateway
+
+### 🟡 Per-key analytics roll-up has no HTTP surface
+
+`gateway_key_id` and `inbound_shape` are stamped on every `llm.call_completed` and `turn.completed` (verified during Wave-5 smoke 2026-05-14), but `/analytics/cost` does not accept `group_by=gateway_key` and there is no `/analytics/by_key` endpoint. Operators currently roll up cost-by-key via direct SQL on the trace DB. Tracked against `gateway.md §V` ("Add a `group_by=gateway_key` dimension to `/analytics/cost` in a follow-up spec change"); both `_COST_GROUP_BY_ALLOWED` and the spec section need to land together. Spec impact: `analytics-api.md §4.1` group_by enum and gateway.md §V.
+
+### 🟢 Gateway clients always trigger `per_message_override` slot win
+
+OpenAI / Anthropic SDKs always include `model` in the request body, so `route.decided.chain` reports `policy=per_message_override`, `verdict=chose` on every gateway request. The `rule`, `pattern`, `workspace_default`, and `global_default` slots are unreachable unless the client deliberately omits `model`. Correct per `gateway.md §V` (treat inbound `model` as a per-message override) but worth knowing when reading gateway traces. Documented in AGENTS.md "Gotchas."
+
+---
+
 ## Gaps that aren't bugs (but worth tracking)
 
 Things that aren't promised by any spec but probably should be. AI agents proposing work in adjacent areas should know they're missing.
 
-- **No context-assembler spec for skill activation / history compression.** [`docs/specs/context-assembler.md`](specs/context-assembler.md) v1 covers cache-breakpoint placement only. Skill activation, history compression, and behavior near the context window are not yet specified. See `STRATEGY.md §6`.
-- **No pattern-store spec.** Referenced by `routing-engine.md §5.5`; mechanics undefined.
-- **No evaluator spec.** Architecture mentions it; no contract.
-- **No tool-confirmation REST endpoint.** `server-api.md §4.2` specs it; not wired. Dispatcher uses `AutoAllowHandler` (see above).
-- **No benchmark / savings methodology.** Strategy-level gap; see `STRATEGY.md §6.4`.
+- **No context-assembler spec for skill activation / history compression.** [`docs/specs/context-assembler.md`](specs/context-assembler.md) v1+§5.1 covers cache-breakpoint placement and the minimum-cacheable-prefix rule. Skill activation, history compression, and behavior near the context window are not yet specified. See `STRATEGY.md §6`.
+- **No multi-user / team-level analytics rollups.** Gateway v1 stamps `gateway_key_id` per call; teams of keys, multi-workspace per key, and tenant aggregation are deferred per `gateway.md §11`.
+- **Pattern store v2 (embedding fingerprint) not specced.** v1 fingerprint is structural (intent regex tags + tool-use signals + length bucket); embedding-based fingerprinting would lift K-NN selectivity but is deferred until v1 K-NN data shows a concrete shortfall.

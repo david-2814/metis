@@ -209,13 +209,8 @@ async def setup_runtime(
             return None
 
     def _routing_fingerprint_inputs(ctx) -> FingerprintInputs:
-        # Mirror the pattern subscriber's default_fingerprint_builder so the
-        # query-side fingerprint matches what record() persists. The raw user
-        # message text isn't on the bus (only its hash) so the recording side
-        # leaves user_message_text="" and intent_tags empty; we do the same
-        # at query time to keep structural signatures aligned end-to-end.
         return FingerprintInputs(
-            user_message_text="",
+            user_message_text=ctx.user_message_text,
             workspace_path=ctx.workspace_path,
             estimated_input_tokens=ctx.estimated_input_tokens,
             has_images=ctx.has_images,
@@ -243,20 +238,6 @@ async def setup_runtime(
             workspace_dir=workspace_skills if workspace_skills.is_dir() else None,
         )
 
-    manager = SessionManager(
-        registry=registry,
-        routing=routing,
-        dispatcher=dispatcher,
-        bus=bus,
-        store=session_store,
-        pricing=pricing_table,
-        global_default_model=global_default_model,
-        memory_factory=lambda ws: MemoryStore(ws),
-        skill_store_factory=_build_skill_store,
-    )
-
-    evaluator, _ = register_evaluator(bus, trace)
-
     def _workspace_resolver(session_id: str) -> str | None:
         try:
             return session_store.get_session(session_id).workspace_path
@@ -269,6 +250,24 @@ async def setup_runtime(
         bus=bus,
     )
     pattern_subscriber.attach()
+
+    def _on_turn_fingerprint_inputs(turn_id: str, ctx) -> None:
+        pattern_subscriber.set_fingerprint_inputs(turn_id, _routing_fingerprint_inputs(ctx))
+
+    manager = SessionManager(
+        registry=registry,
+        routing=routing,
+        dispatcher=dispatcher,
+        bus=bus,
+        store=session_store,
+        pricing=pricing_table,
+        global_default_model=global_default_model,
+        memory_factory=lambda ws: MemoryStore(ws),
+        skill_store_factory=_build_skill_store,
+        fingerprint_inputs_hook=_on_turn_fingerprint_inputs,
+    )
+
+    evaluator, _ = register_evaluator(bus, trace)
 
     return ChatRuntime(
         bus=bus,

@@ -26,7 +26,9 @@ def test_shipped_workloads_load_clean():
     assert names == {
         "fix-a-bug-small",
         "intentionally-failing-task",
+        "multi-file-refactor-with-shared-types",
         "multi-turn-refactor",
+        "regex-with-edge-cases",
         "write-a-doc-from-notes",
     }
     for w in workloads:

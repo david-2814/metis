@@ -46,6 +46,10 @@ class SubjectContext:
     walking the trace store for the subject. `signals_extra` lets the
     benchmark harness pass workload-rubric inputs (assistant text,
     workload-name etc.) the bus events don't carry directly.
+
+    `session_id` is the session that owns this subject — required by the
+    LLM/Hybrid judges so they can charge their inference cost against the
+    shared BudgetTracker's per-session cap. The heuristic tier ignores it.
     """
 
     subject_kind: EvalSubjectKind
@@ -54,6 +58,7 @@ class SubjectContext:
     parent_eval_id: str | None = None
     workload_rubric: WorkloadRubric | None = None
     signals_extra: dict | None = None
+    session_id: str | None = None
 
 
 @runtime_checkable

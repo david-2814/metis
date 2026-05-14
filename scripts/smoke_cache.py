@@ -1,17 +1,21 @@
 """Smoke test: prove prompt-cache breakpoints actually pay off.
 
-Drives a 2-turn conversation against the real Anthropic API with a stable
-system prompt large enough to sit above Anthropic's caching minimum (1024
-tokens on sonnet/opus, 2048 tokens on haiku — we pad above 2048 so any
-model in the family caches).
+Drives a 2-turn conversation against the real Anthropic API using the
+*natural* Metis system prompt (`DEFAULT_SYSTEM_PROMPT` + built-in tools).
+The session manager's §5.1 minimum-cacheable-prefix rule appends the
+deterministic operating-context padding so the cached prefix clears the
+provider's per-model cache floor automatically.
 
 Asserts:
 - Turn 1: `cache_creation_input_tokens > 0` (the cache is being written).
 - Turn 2: `cached_input_tokens > 0` (the cache is being read).
 
-Cost: < $0.05 per run. Validates `docs/specs/context-assembler.md §3` end
-to end against a real provider; the unit tests assert that the wire shape
-carries `cache_control`, this test asserts the provider actually honors it.
+Cost: < $0.05 per run. Validates `docs/specs/context-assembler.md §3
+(breakpoint placement) and §5.1 (minimum-cacheable-prefix padding)
+end to end against a real provider. The unit tests assert that the
+wire shape carries `cache_control` and that the stable prefix is
+padded above the cache floor; this test asserts the provider actually
+honors both.
 
 Usage:
     uv run python scripts/smoke_cache.py [--model haiku|sonnet|opus]
@@ -41,67 +45,6 @@ ANTHROPIC_MODELS = {
 }
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-# Padding designed to clear Anthropic's per-model cache minimum with
-# margin. Haiku's floor is 2048 tokens; sonnet/opus floors are 1024. The
-# first iteration of this script targeted ~2050 tokens, which sat right
-# at the haiku floor — and Anthropic appears to silently drop cache_control
-# when the cached prefix tokenizes below the floor. The padding here
-# targets >3000 tokens of stable instructions with margin. Each guideline
-# is intentionally distinct text so BPE tokenization can't compress
-# repeated lines and undercount.
-_GUIDELINE_VARIATIONS = [
-    "be precise; cite file paths with line numbers; prefer the smallest correct edit",
-    "never invent APIs that aren't in the provided context; surface ambiguity rather than guessing",
-    "when modifying code, preserve existing formatting, import order, and naming conventions",
-    "before refactoring, prove the test suite passes; after refactoring, prove it still passes",
-    "treat shared dependencies as load-bearing; coordinate breaking changes with their consumers",
-    "log decisions inline with a short why; reviewers should not have to reconstruct intent",
-    "when a function grows past one screen, split it; long functions hide bugs in their middles",
-    "validate inputs at the system boundary; trust internal callers within the same module",
-    "prefer immutable structures unless the call site demonstrably needs mutation",
-    "name things after what they are, not how they are used; usage drifts faster than identity",
-    "when something is unclear, write a one-line clarifying question, not a five-paragraph guess",
-    "every new file should be small; large files are usually two files pretending to be one",
-    "tests that exercise the real database catch migration bugs that mocks silently approve",
-    "TODOs without a date or owner are camouflage for abandonment; either fix or file an issue",
-    "when error messages are seen by a human, name the action that triggered them, not the layer",
-    "when error messages are seen by a machine, keep the shape stable across releases",
-    "feature flags decay; remove them within one release of full rollout or full retirement",
-    "concurrency bugs hide in shared mutable state; prefer message passing over shared locks",
-    "performance work without a measurement is decoration; profile before, profile after",
-    "if you find yourself writing a comment to explain a name, rename the thing instead",
-]
-
-
-def _build_padding() -> str:
-    lines = ["## Operating context"]
-    for i in range(1, 161):
-        variant = _GUIDELINE_VARIATIONS[(i - 1) % len(_GUIDELINE_VARIATIONS)]
-        lines.append(f"- Guideline {i:03d}: {variant}.")
-    lines.append("")
-    lines.append("## Style")
-    lines.append(
-        "Be terse. Lead with the answer. Code blocks only when they're load-bearing. "
-        "When citing a file, use the form path/to/file.py:LINE. When making a claim "
-        "the user can check, link to the source. When you don't know, say so and "
-        "name what would resolve the uncertainty."
-    )
-    lines.append("")
-    lines.append("## Tool use")
-    lines.append(
-        "Tools are owned by the workspace, not by the conversation. A tool call that "
-        "mutates state should be obviously safe to retry; if it isn't, fail loudly rather "
-        "than re-run and double-apply. When listing files, prefer the smallest pattern that "
-        "answers the question. When reading files, read once into memory and reason there, "
-        "rather than re-reading on every step. When writing files, write the whole final "
-        "shape, not an in-progress checkpoint. When running shell commands, never assume "
-        "the working directory; pass absolute paths or set cwd explicitly."
-    )
-    return "\n".join(lines) + "\n"
-
-
-_STABLE_PADDING = _build_padding()
 
 
 def _load_dotenv(path: Path) -> None:
@@ -151,14 +94,9 @@ async def main() -> int:
     dispatcher = ToolDispatcher(bus)
     register_builtins(dispatcher)
 
-    # Use a long, stable system prompt so the breakpoint sits above the
-    # provider's caching minimum.
-    long_system_prompt = (
-        "You are Metis, an AI assistant operating in a developer's workspace. "
-        "Use the available tools to read and modify files, run shell commands, "
-        "and answer questions about the workspace. Be concise.\n\n" + _STABLE_PADDING
-    )
-
+    # Use the *natural* Metis system prompt — no custom padding here.
+    # SessionManager's §5.1 minimum-cacheable-prefix rule pads the stable
+    # prefix to clear the haiku-4-5 effective cache floor automatically.
     manager = SessionManager(
         registry=registry,
         routing=routing,
@@ -166,7 +104,6 @@ async def main() -> int:
         bus=bus,
         store=InMemorySessionStore(),
         pricing=DEFAULT_PRICE_TABLE,
-        system_prompt=long_system_prompt,
     )
 
     resolved = registry.resolve_alias(args.model)
@@ -178,9 +115,7 @@ async def main() -> int:
 
     print("=== Metis prompt-cache smoke test ===")
     print(f"Model:                 {resolved}")
-    print(
-        f"System prompt length:  {len(long_system_prompt)} chars (~{len(long_system_prompt) // 4} tok)"
-    )
+    print("Mode:                  natural Metis system prompt (relies on §5.1 padding)")
     print()
 
     turns = [
@@ -225,12 +160,15 @@ async def main() -> int:
         f"cached_input_tokens = {turn2['cached_input_tokens']}"
     )
 
-    # Turn 1 should have written to the cache (system prompt is large enough).
+    # Turn 1 should have written to the cache (the §5.1 padding lifts the
+    # stable prefix above the provider's effective cache floor).
     if turn1["cache_creation_input_tokens"] <= 0:
         print(
-            "FAILED: turn 1 cache_creation_input_tokens == 0 — system prompt may be "
-            "below the provider's caching minimum (1024 tokens on sonnet/opus, "
-            "2048 tokens on haiku). Increase _STABLE_PADDING.",
+            "FAILED: turn 1 cache_creation_input_tokens == 0 — the §5.1 "
+            "minimum-cacheable-prefix padding did not lift the prefix above "
+            "the provider's effective cache floor. Check "
+            "sessions/manager.py:_pad_stable_prefix_for_cache and "
+            "MIN_CACHEABLE_PREFIX_TOKENS.",
             file=sys.stderr,
         )
         exit_code = 1

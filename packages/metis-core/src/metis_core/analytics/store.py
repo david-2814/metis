@@ -44,6 +44,20 @@ _SESSIONS_ORDER_COLUMN: dict[str, str] = {
     "recency": "s.updated_at",
 }
 
+# Allowed group_by values for /analytics/quality (evaluator.md §9.2).
+_QUALITY_GROUP_BY_ALLOWED: tuple[str, ...] = (
+    "model",
+    "judge_kind",
+    "rubric_id",
+    "none",
+)
+_QUALITY_SUBJECT_KINDS_ALLOWED: tuple[str, ...] = (
+    "turn",
+    "tool_cycle",
+    "session",
+    "workload",
+)
+
 # Closed enum from routing-engine.md §4.1 — the seven policy slots.
 _POLICY_SLOTS: tuple[str, ...] = (
     "per_message_override",
@@ -442,6 +456,122 @@ class AnalyticsStore:
             "rows_missing_from_price_table": rows_missing,
         }
 
+    # ---- /analytics/quality -----------------------------------------------
+
+    def quality(
+        self,
+        window: TimeWindow,
+        *,
+        subject_kind: str = "turn",
+        group_by: str = "model",
+        min_confidence: float = 0.0,
+    ) -> list[dict] | dict:
+        """Aggregate `eval.completed` verdicts over the window.
+
+        Joins on `route.decided.chosen_model` when grouping by model: the
+        model whose work was judged, not the judge's model (evaluator.md
+        §9.2). `judge_cost_usd` is summed in Decimal and emitted via
+        `_dec_to_json` at the wire boundary.
+
+        Returns a list[dict] for grouped queries; a single dict (with the
+        same shape and no group key) when `group_by="none"`. Verdicts with
+        `confidence < min_confidence` are excluded from the score
+        statistics (mean / p50 / p10) but still counted in
+        `verdict_count` and `judge_cost_usd_total` — they exist, they
+        just don't drive routing-side decisions.
+        """
+        if subject_kind not in _QUALITY_SUBJECT_KINDS_ALLOWED:
+            raise InvalidGroupByError(subject_kind, _QUALITY_SUBJECT_KINDS_ALLOWED)
+        if group_by not in _QUALITY_GROUP_BY_ALLOWED:
+            raise InvalidGroupByError(group_by, _QUALITY_GROUP_BY_ALLOWED)
+
+        # Build the turn_id -> chosen_model lookup once when grouping by
+        # model. tool_cycle's subject_id is a tool_use_id, so this join
+        # only makes sense for subject_kind="turn"; for other kinds,
+        # group_by="model" falls back to the verdict's `judge_model`.
+        subject_model_lookup: dict[str, str | None] | None = None
+        if group_by == "model" and subject_kind == "turn":
+            subject_model_lookup = self._chosen_model_by_turn(window)
+
+        sql = (
+            "SELECT json_extract(payload_json, '$.subject_kind') AS subject_kind, "
+            "  json_extract(payload_json, '$.subject_id') AS subject_id, "
+            "  json_extract(payload_json, '$.score') AS score, "
+            "  json_extract(payload_json, '$.confidence') AS confidence, "
+            "  json_extract(payload_json, '$.judge_kind') AS judge_kind, "
+            "  json_extract(payload_json, '$.judge_model') AS judge_model, "
+            "  json_extract(payload_json, '$.judge_cost_usd') AS judge_cost_usd, "
+            "  json_extract(payload_json, '$.rubric_id') AS rubric_id, "
+            "  json_extract(payload_json, '$.signals') AS signals_json "
+            "FROM events "
+            "WHERE type = 'eval.completed' "
+            "  AND json_extract(payload_json, '$.subject_kind') = ? "
+            "  AND timestamp_us >= ? AND timestamp_us < ?"
+        )
+        cursor = self._conn.execute(
+            sql,
+            (subject_kind, window.start_us, window.end_us),
+        )
+
+        groups: dict[tuple, dict] = {}
+        for row in cursor:
+            confidence = float(row["confidence"] or 0.0)
+            key, key_names = _quality_group_key(row, group_by, subject_model_lookup)
+            agg = groups.get(key)
+            if agg is None:
+                agg = {n: key[i] for i, n in enumerate(key_names)}
+                agg.update(_init_quality_aggregate())
+                groups[key] = agg
+            agg["verdict_count"] += 1
+            agg["_confidences"].append(confidence)
+            agg["judge_cost_usd"] += _coerce_decimal(row["judge_cost_usd"])
+            if confidence >= min_confidence:
+                agg["_scores_for_mean"].append(float(row["score"] or 0.0))
+            # Optional signals — heuristic flags / budget exhaustion. Best-
+            # effort: signals are judge-internal and not every verdict
+            # carries the same keys.
+            signals_json = row["signals_json"]
+            if signals_json:
+                try:
+                    signals_obj = json.loads(signals_json)
+                except (TypeError, ValueError):
+                    signals_obj = None
+                if isinstance(signals_obj, dict):
+                    flags_neg = signals_obj.get("flags_negative") or []
+                    if "explicit_thumbs_down" in flags_neg:
+                        agg["thumbs_down_count"] += 1
+                    if signals_obj.get("budget_exhausted"):
+                        agg["budget_exhausted_count"] += 1
+                    if signals_obj.get("escalated"):
+                        agg["escalated_count"] += 1
+
+        results = [_finalize_quality_aggregate(agg) for agg in groups.values()]
+        results.sort(key=lambda r: r["verdict_count"], reverse=True)
+        if group_by == "none":
+            return results[0] if results else _empty_quality_row()
+        return results
+
+    def _chosen_model_by_turn(self, window: TimeWindow) -> dict[str, str | None]:
+        """Map `turn_id -> chosen_model` from `route.decided` within `window`.
+
+        One row per turn (routing-engine.md §4.1 invariant — exactly one
+        `route.decided` per turn). Missing keys mean the verdict's parent
+        turn fell outside the window; the dashboard treats those as
+        `chosen_model: null`.
+        """
+        sql = (
+            "SELECT turn_id, "
+            "  json_extract(payload_json, '$.chosen_model') AS chosen_model "
+            "FROM events "
+            "WHERE type = 'route.decided' "
+            "  AND timestamp_us >= ? AND timestamp_us < ? "
+            "  AND turn_id IS NOT NULL"
+        )
+        out: dict[str, str | None] = {}
+        for row in self._conn.execute(sql, (window.start_us, window.end_us)):
+            out[row["turn_id"]] = row["chosen_model"]
+        return out
+
 
 # ---------------------------------------------------------------------------
 # Module-private helpers
@@ -558,3 +688,95 @@ def _to_micros(dt: datetime) -> int:
     epoch = datetime(1970, 1, 1, tzinfo=dt.tzinfo)
     delta = dt - epoch
     return delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
+
+
+# ---- /analytics/quality helpers ------------------------------------------
+
+
+def _quality_group_key(
+    row,
+    group_by: str,
+    subject_model_lookup: dict[str, str | None] | None,
+) -> tuple[tuple, tuple[str, ...]]:
+    """Return (key_tuple, key_names) for a verdict row under `group_by`.
+
+    For group_by=model with subject_kind=turn, we join via
+    `route.decided.chosen_model` (the model under evaluation). For other
+    subject kinds, we fall back to `judge_model` (best-effort label).
+    """
+    if group_by == "model":
+        if subject_model_lookup is not None:
+            chosen = subject_model_lookup.get(row["subject_id"])
+        else:
+            chosen = row["judge_model"]
+        return ((chosen,), ("chosen_model",))
+    if group_by == "judge_kind":
+        return ((row["judge_kind"],), ("judge_kind",))
+    if group_by == "rubric_id":
+        return ((row["rubric_id"],), ("rubric_id",))
+    # group_by="none" — single bucket
+    return ((), ())
+
+
+def _init_quality_aggregate() -> dict:
+    return {
+        "verdict_count": 0,
+        "_scores_for_mean": [],
+        "_confidences": [],
+        "judge_cost_usd": Decimal("0"),
+        "thumbs_down_count": 0,
+        "budget_exhausted_count": 0,
+        "escalated_count": 0,
+    }
+
+
+def _finalize_quality_aggregate(agg: dict) -> dict:
+    """Convert internal accumulator to the response dict shape.
+
+    Score percentiles ignore confidence-filtered rows; `mean_confidence`
+    averages over *all* verdicts (the confidence gate is consumer-side,
+    not part of the confidence statistic itself).
+    """
+    scores = sorted(agg["_scores_for_mean"])
+    confidences = agg["_confidences"]
+    out = {
+        k: v
+        for k, v in agg.items()
+        if k
+        not in (
+            "_scores_for_mean",
+            "_confidences",
+            "judge_cost_usd",
+        )
+    }
+    out["mean_score"] = sum(scores) / len(scores) if scores else None
+    out["p50_score"] = _percentile_float(scores, 0.50)
+    out["p10_score"] = _percentile_float(scores, 0.10)
+    out["mean_confidence"] = sum(confidences) / len(confidences) if confidences else None
+    out["judge_cost_usd_total"] = _dec_to_json(agg["judge_cost_usd"])
+    return out
+
+
+def _percentile_float(sorted_vals: list[float], p: float) -> float | None:
+    if not sorted_vals:
+        return None
+    k = (len(sorted_vals) - 1) * p
+    f = int(k)
+    c = min(f + 1, len(sorted_vals) - 1)
+    if f == c:
+        return float(sorted_vals[f])
+    return float(sorted_vals[f] + (sorted_vals[c] - sorted_vals[f]) * (k - f))
+
+
+def _empty_quality_row() -> dict:
+    return {
+        "verdict_count": 0,
+        "mean_score": None,
+        "p50_score": None,
+        "p10_score": None,
+        "mean_confidence": None,
+        "judge_cost_usd_total": 0.0,
+        "thumbs_down_count": 0,
+        "budget_exhausted_count": 0,
+        "escalated_count": 0,
+    }

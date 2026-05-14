@@ -138,3 +138,33 @@ async def savings(request: Request) -> Response:
     except UnknownBaselineModelError as exc:
         raise unknown_baseline_model(exc.model_id) from exc
     return _json(_envelope(window, pricing.version, data))
+
+
+async def quality(request: Request) -> Response:
+    """GET /analytics/quality (evaluator.md §9.2).
+
+    Read-only projection over `eval.completed` events. Backs the
+    dashboard's quality tile: score histograms, mean / p50 / p10,
+    judge_kind breakdown, and per-model quality rollup (which model
+    scored best on which subject kind).
+    """
+    window = _resolve_window_from_query(request)
+    subject_kind = request.query_params.get("subject_kind", "turn")
+    group_by = request.query_params.get("group_by", "model")
+    min_confidence_raw = request.query_params.get("min_confidence", "0.0")
+    try:
+        min_confidence = float(min_confidence_raw)
+    except ValueError as exc:
+        raise invalid_group_by(f"min_confidence={min_confidence_raw!r} is not a float") from exc
+    if not 0.0 <= min_confidence <= 1.0:
+        raise invalid_group_by(f"min_confidence must be in [0, 1]; got {min_confidence}")
+    try:
+        data = _store(request).quality(
+            window,
+            subject_kind=subject_kind,
+            group_by=group_by,
+            min_confidence=min_confidence,
+        )
+    except InvalidGroupByError as exc:
+        raise invalid_group_by(str(exc)) from exc
+    return _json(_envelope(window, _pricing(request).version, data))

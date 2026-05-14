@@ -1,8 +1,10 @@
 # Context Assembler Specification
 
-**Status:** Draft v1
-**Last updated:** 2026-05-13
-**Scope:** v1 covers prompt-cache breakpoint placement only. The full
+**Status:** Draft v2 (additive on v1)
+**Last updated:** 2026-05-14
+**Scope:** v1 covers prompt-cache breakpoint placement; v2 (§5.1) adds
+a **minimum-cacheable-prefix** rule so the cached prefix tokenizes above
+the per-model cache floor on *every* session, not just long ones. The full
 context-assembler design (skill activation, history compression, behavior
 near the context window) is a later spec — see [`STRATEGY.md §6.5`](../STRATEGY.md).
 
@@ -122,6 +124,129 @@ This puts the volatile content **after** the cache breakpoint on the
 wire, so a turn that mutates `MEMORY.md` doesn't invalidate the cached
 prefix for the next turn.
 
+### 5.1. Minimum-cacheable-prefix rule (v2)
+
+Anthropic's cache silently drops `cache_control` markers when the cached
+prefix tokenizes below the per-model floor. The Anthropic docs cite:
+
+| Model family   | Documented cache floor (tokens) |
+|----------------|---------------------------------|
+| haiku 4.5      | 2048                            |
+| sonnet 4.x     | 1024                            |
+| opus 4.x       | 1024                            |
+
+A live probe against `anthropic:claude-haiku-4-5`
+([`benchmarks/RESULTS.md` "Run 3"](../../benchmarks/RESULTS.md)) found
+the **effective** floor is higher than the documented 2048 — a prefix
+of ~3320 actual input tokens produced
+`cache_creation_input_tokens = 0`, while a prefix of ~4957 actual tokens
+produced a successful cache write. The implementation MUST target above
+the *effective* floor, not the documented one.
+
+The natural Metis stable prefix (the short `DEFAULT_SYSTEM_PROMPT` plus
+the five built-in tools) tokenizes to ~265 heuristic tokens — far below
+even the documented floor. On haiku that means **every short session
+caches zero**: the prefix never clears the floor, the provider drops
+the markers, and turn N pays full input-rate on tokens that should
+have read at 10% input-rate. This was the root cause of Run 2's
+"cache activity in `multi-turn-refactor` only" finding
+([`benchmarks/RESULTS.md` §A2](../../benchmarks/RESULTS.md)).
+
+**Rule.** `SessionManager` MUST ensure the stable prefix tokenizes above
+the effective floor of any model the session might route to. Concretely:
+
+1. Compute an estimate of `tokens(tools + stable_system_prompt)`.
+2. If the estimate is below `MIN_CACHEABLE_PREFIX_TOKENS`, append
+   bounded, deterministic padding to `stable_system_prompt` until the
+   estimate clears the floor or the upper bound is reached.
+3. Hard upper bound: `MAX_CACHEABLE_PREFIX_TOKENS`. Padding stops
+   before this bound regardless of remaining headroom — we want a
+   cached prefix, not a maximal one.
+
+Default values (per the haiku-4-5 probe):
+
+| Constant                       | Value (heuristic tokens) |
+|--------------------------------|--------------------------|
+| `MIN_CACHEABLE_PREFIX_TOKENS`  | 4500                     |
+| `MAX_CACHEABLE_PREFIX_TOKENS`  | 5500                     |
+
+These are heuristic (`~4 chars / token`) values. Real English-prose
+tokenization typically yields *more* actual tokens than the heuristic
+estimates (the operating-context block at ~9.7K chars estimated to
+~2400 heuristic tokens tokenized to ~3045 actual tokens, a ratio of
+~1.26×). Targeting 4500 heuristic tokens corresponds to ~5670 actual
+tokens, comfortably above the observed effective floor.
+
+**Padding sources, in priority order:**
+
+1. **Loaded skill bodies.** If the per-session `SkillStore` has one or
+   more skills, append each skill's `SKILL.md` body (heading + body
+   text), in `name`-ascending order, until the bound is reached or
+   bodies run out. Skill bodies are substantive content the agent
+   might activate anyway via `skill_load`, so pre-loading them into
+   the cached prefix is functional, not filler. (This deviates from
+   the discovery-only stance of `skill-format.md` "progressive
+   disclosure": v2 keeps `skill_load` for explicit activation, but
+   accepts the extra bytes in the cached prefix when the prefix
+   *needs* the bytes to clear the floor. The skill-format spec's
+   progressive-disclosure norm still applies to the discovery index —
+   bodies are only inlined when padding is required.)
+2. **Operating-context guidelines.** A static, byte-stable block of
+   Metis operating guidelines defined in `metis_core.sessions.manager`
+   (constant: `_OPERATING_CONTEXT_PADDING`). This is the universal
+   fallback for sessions with no skills loaded. The block must be:
+   - **Deterministic across runs** — no timestamps, no run-specific
+     ids, no machine fingerprint.
+   - **Byte-stable across turns** — generated from a module-level
+     constant, not assembled per call.
+   - **Substantive** — real guidance about how Metis operates (tool
+     etiquette, naming, style, error handling), not lorem-ipsum.
+   - **Sized to clear the floor alone** — even with zero skills and
+     no tools, the block must tokenize ≥ `MIN_CACHEABLE_PREFIX_TOKENS
+     - MAX_BASE_PROMPT_TOKENS` heuristic tokens.
+
+**Determinism constraints (load-bearing).** The padding text MUST be
+byte-identical turn-to-turn within a session. Any per-call variation
+(e.g. enumerating loaded files, including a session id, embedding the
+current time) invalidates the cache on every turn and defeats the rule.
+Implementations SHOULD source padding from module-level constants and
+sorted, frozen collections.
+
+**Sessions with custom `system_prompt`.** When a caller passes a custom
+`system_prompt` to `SessionManager` (e.g. an integration test with its
+own padded prompt), §5.1 still runs but typically becomes a no-op: the
+caller's prompt is already above the floor, the estimate clears
+`MIN_CACHEABLE_PREFIX_TOKENS`, and no padding is appended. The rule is
+a floor, not a ceiling.
+
+**Cost trade-off (informational).** Padding adds bytes to every cached
+write and read. The break-even N (turns above which padding saves cost)
+depends on the *natural* prefix size:
+
+- When the natural prefix is *close to but below* the floor (the
+  ~1500–2000-token case in `STRATEGY.md`'s pre-skill design), padding
+  is a clear win after ~2 turns.
+- When the natural prefix is *far below* the floor (the bare-bones
+  case, ~265 tokens with no skills), padding writes more tokens than
+  the natural prefix would ever cost uncached — but it lets the
+  cache pipeline activate, which is the precondition for any future
+  savings as skills, memory, and project instructions accumulate
+  in the stable prefix.
+
+The implementation pads in both cases for simplicity. A future
+revision MAY introduce a "skip padding when natural prefix is below X"
+escape hatch if the bare-bones case turns out to be cost-dominant in
+production traffic.
+
+**Observable effect.** After §5.1 lands, the smoke-test scenario
+"natural Metis system prompt + no skills" against haiku must produce
+`cached_input_tokens > 0` on turn 2 (the load-bearing assertion in
+`scripts/smoke_cache.py`). The benchmark suite's
+`actual_repriced_usd` should change visibly on the two short workloads
+(`fix-a-bug-small`, `write-a-doc-from-notes`) that registered zero
+cache tokens in Run 2 §A2 — the direction (savings or modest cost
+increase) depends on the trade-off above.
+
 ---
 
 ## 6. Validation
@@ -164,6 +289,9 @@ turn 2. Cost ≤ $0.05 per run.
 | 2026-05-13 | Two breakpoints (tools + stable system); volatile system trails | Captures the dominant prefix savings without overthinking the design. The four-breakpoint budget is reserved for a future revision once the simple shape ships and is measured. |
 | 2026-05-13 | Two-segment system prompt on `CanonicalRequest` rather than a callback or block-list | Lowest-friction shape for callers; adapters that don't care just concatenate the two strings. Block-list shape would force every caller to think about cache placement. |
 | 2026-05-13 | OpenRouter declares `supports_prompt_caching=False` | The honest answer: cache behavior depends on which upstream the route lands on. Lying breaks routing's substitutability gate. |
+| 2026-05-14 | Minimum-cacheable-prefix rule with bounded padding (§5.1, v2) | v1's breakpoint placement was honest but the natural Metis prefix tokenizes below the effective haiku-4-5 cache floor on short sessions. Without padding, every short session pays full input-rate on tokens that should cache. Padding is bounded so we don't pay for a maximal prefix; sourced first from loaded skill bodies (substantive content) and falling back to a static operating-context block (universal fallback for no-skill sessions). |
+| 2026-05-14 | Targets clear the *effective* haiku-4-5 floor (~4000 actual tokens), not the documented 2048 | Live probe showed a 3320-actual-token prefix produced `cache_creation=0`; a 4957-actual-token prefix worked. Picking 4500 heuristic tokens (≈5670 actual at observed ~1.26× ratio) clears the effective floor with margin. |
+| 2026-05-14 | Static `_OPERATING_CONTEXT_PADDING` lives in the session manager, not in a separate file | The padding is load-bearing for caching but is otherwise inert text. Keeping it next to the assembly code makes the byte-stability invariant easy to enforce (module-level constant; no I/O at call time). A future v3 may move it to a per-workspace override if users want to customize. |
 
 ---
 

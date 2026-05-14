@@ -1,0 +1,49 @@
+name: regex-with-edge-cases
+description: >-
+  Write a NANP phone-number regex that passes all 16 labeled edge cases in
+  `test_cases.txt` (8 YES, 8 NO) on the first run. The agent creates
+  `solution.py` exporting `PHONE_REGEX`, then runs `runner.py` exactly once
+  (no iteration allowed). `runner.py` prints `PASS 16/16` only if every case
+  is classified correctly. Smaller models tend to miss the international
+  prefix (`+1 ...`) variants or write overly permissive character classes
+  that let malformed NO cases through; without an iteration budget they
+  can't paper over those gaps by trial-and-error. Objective verification
+  (no self-report).
+suite_version: 1
+turns:
+  - prompt: >-
+      Read `test_cases.txt` and `runner.py` in this workspace. In one short
+      paragraph, summarize: (a) how many YES cases and how many NO cases
+      there are, (b) which YES cases require handling a country-code prefix,
+      and (c) which NO cases would slip past a naive `\d{3}-\d{3}-\d{4}`
+      style pattern. Do not write any code yet.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 6
+      contains_substring: "+1"
+  - prompt: >-
+      Write `solution.py` exporting `PHONE_REGEX` (either a `str` or a
+      compiled `re.Pattern`) that matches every YES case in `test_cases.txt`
+      under `re.fullmatch` and rejects every NO case. Walk through every
+      case in your head before writing. You must write the regex correctly
+      on the first try: in the next turn you will run the test runner
+      exactly once and cannot edit `solution.py` afterwards. Don't change
+      `runner.py` or `test_cases.txt`. Don't add extra files.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 3
+  - prompt: >-
+      Run `python runner.py` from the workspace root exactly once and report
+      the exact final line of the output verbatim. Do not edit `solution.py`
+      or re-run the runner.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 1
+      contains_substring: "PASS 16/16"
+expect:
+  max_total_cost_usd: 0.50
+  min_llm_calls: 3
+  max_hard_failures: 0
+evaluate:
+  rubric: heuristic
+  expect_substring_in_final_response: "PASS 16/16"

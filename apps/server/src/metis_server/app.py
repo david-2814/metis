@@ -157,6 +157,7 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         Route("/analytics/sessions", analytics_handlers.sessions, methods=["GET"]),
         Route("/analytics/turns/{turn_id}", analytics_handlers.turn, methods=["GET"]),
         Route("/analytics/savings", analytics_handlers.savings, methods=["GET"]),
+        Route("/analytics/quality", analytics_handlers.quality, methods=["GET"]),
         WebSocketRoute("/sessions/{session_id}/stream", _stream),
         # Dashboard SPA — vanilla HTML + JS, served as static files from
         # `metis_server/static/`. Mounted last so API/WS routes take priority.

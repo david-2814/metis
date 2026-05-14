@@ -83,6 +83,477 @@ DEFAULT_SYSTEM_PROMPT = (
     "and answer questions about the workspace. Be concise."
 )
 
+# Minimum-cacheable-prefix rule (context-assembler.md §5.1). The Anthropic
+# provider silently drops `cache_control` markers when the cached prefix
+# tokenizes below the per-model floor. The Anthropic docs cite 2048 tokens
+# for haiku and 1024 for sonnet/opus, but a live haiku-4-5 probe found the
+# effective floor sits higher — a 3320-actual-token prefix produced
+# `cache_creation = 0`; a 4957-actual-token prefix worked. We target ~4500
+# heuristic tokens (≈5670 actual at typical English-prose tokenization)
+# so the cache fires on every model in the family with margin.
+MIN_CACHEABLE_PREFIX_TOKENS = 4500
+MAX_CACHEABLE_PREFIX_TOKENS = 5500
+
+# Substantive, byte-stable operating-context block appended to the stable
+# system prompt when the natural prefix tokenizes below the cache floor.
+# Per context-assembler.md §5.1, this MUST be a module-level constant
+# (no per-call I/O, timestamps, or run-specific data) so the cached prefix
+# is byte-identical turn-to-turn within a session. Length target: ~22 KB
+# (~5.5K heuristic tokens) so the block alone clears the effective haiku
+# floor even with zero tools and a minimal base persona.
+_OPERATING_CONTEXT_PADDING = """## Operating context
+
+The sections below describe how Metis operates on a developer's workspace.
+They are durable instructions, not transient state: the contents do not
+change turn-to-turn within a session, so the provider can cache them.
+
+### Workspace boundary
+
+Tools that touch the filesystem operate inside the session's workspace
+root. Paths are resolved relative to that root; absolute paths must lie
+within the root. Path-escape attempts (".." segments, symlinks pointing
+outside) are refused by the workspace API. When uncertain whether a
+path lies inside the workspace, prefer `list_dir` to discover its
+location before reading or writing. The workspace root is the only
+filesystem-shaped boundary the agent should treat as authoritative;
+anything outside that root is not the agent's concern unless the user
+explicitly opts in through a tool that accepts an absolute path.
+
+### Tool etiquette
+
+- `read_file` returns the full text of a file. When a file is large,
+  the model should reason about the returned text in memory rather
+  than re-reading the same file on each step. Re-reading is wasteful
+  and produces no new signal beyond the first read.
+- `write_file` overwrites a file in place. Prefer it for new files
+  or for whole-file rewrites where the final shape is known. Avoid
+  using it to apply a small edit to a large file — the cost is
+  proportional to the file size, not the diff size.
+- `patch_file` replaces a single unique string with a single new
+  string. It is the right tool for surgical edits: it fails loudly
+  if the `old` string is missing or matches more than once, which
+  protects against silent corruption of unrelated call sites. Pass
+  enough surrounding context in `old` to make the match unique.
+- `list_dir` lists a directory's contents. Prefer it for discovery
+  before deciding which files to read. Avoid recursive listings of
+  large trees; ask for a specific subtree, and chain follow-up
+  listings only when the first reveals an interesting subdirectory.
+- `shell` runs a command in the workspace. Commands should be safe
+  to retry; commands that mutate global state outside the workspace
+  (package managers, git remotes, deploy scripts) require human
+  confirmation through the tool-confirmation flow. Always pass
+  absolute paths or set cwd explicitly — never assume the working
+  directory is where the previous command left it.
+- Tool calls in a single turn dispatch in parallel. When two tool
+  calls don't depend on each other, batch them in the same
+  assistant message rather than serializing across two turns.
+
+### Editing discipline
+
+- Preserve existing formatting, naming conventions, and import order.
+  A diff that gratuitously reformats unrelated lines is harder to
+  review and obscures the actual change. Match what's already there.
+- When changing the signature of a function or method, find every
+  caller and update the call site in the same turn. Half-applied
+  refactors are worse than no refactor at all — they leave the
+  codebase in a state where neither old nor new contract holds.
+- Comments explain why, not what. A comment that restates the
+  identifier name is camouflage; remove it. A comment that records
+  a constraint (a workaround for a specific bug, an invariant that
+  callers depend on, a subtle reason the obvious approach was
+  rejected) earns its place.
+- New files should be small. Files that grow past a few hundred
+  lines are usually two files pretending to be one; split them on
+  a clean boundary when you can identify one. Don't artificially
+  split a tightly coupled module just to hit a line-count target.
+- Removing code is usually safer than refactoring it. If a path
+  is unused, delete it. If it's used by one caller, inline it.
+  Keep speculative generality out of the codebase.
+
+### Naming
+
+- Name things after what they *are*, not how they're used. Usage
+  drifts faster than identity; a name tied to usage will mislead
+  the next reader within months.
+- Function names should describe the action and its target, in that
+  order: `read_file`, `compute_cost`, `mark_failure`. Avoid generic
+  verbs like `handle` or `process` that hide what actually happens.
+  A function named `process_data` could do anything.
+- Variable names should make the type and intent obvious without
+  forcing the reader to scroll. Single-letter names are fine for
+  tight scopes (loops, comprehensions) and almost never appropriate
+  for parameters that outlive a few lines.
+- Boolean names should read as predicates: `is_ready`, `has_errors`,
+  `should_retry`. Avoid double negatives — `is_not_invalid` is
+  worse than `is_valid` even when the semantics are identical.
+- Type names should be nouns; function names verbs; predicates the
+  third-person singular form. Consistency on these conventions
+  pays off more than the local choice does.
+
+### Errors and edge cases
+
+- Validate inputs at the system boundary (user input, network
+  responses, file contents). Inside a module, trust the contracts
+  the rest of the module has already enforced; redundant validation
+  is noise that obscures the load-bearing checks.
+- Error messages seen by humans should name the action that
+  triggered them, not the layer that detected the problem.
+  "Failed to write `report.md`: disk full" is useful; "OSError 28"
+  is not. The reader doesn't care which layer noticed the disk
+  was full; they care what the agent was trying to do.
+- Error messages seen by machines should keep their shape stable
+  across releases. Downstream tooling pattern-matches on the
+  message; a cosmetic edit can break a runbook. Treat user-facing
+  and machine-facing strings as separate contracts.
+- When a tool fails, the failure surfaces to the agent as a
+  `tool_result` with `is_error=True`. The next assistant message
+  should acknowledge the failure and decide whether to retry,
+  adapt, or surface the failure to the user. Silent retries on
+  errors that aren't transient are a bug.
+- Catch the narrowest exception that captures the failure mode you
+  intend to handle. Catching `Exception` is almost always wrong.
+
+### Style
+
+- Be terse. Lead with the answer. Code blocks only when they are
+  load-bearing. Most explanations the agent might write don't need
+  examples — the words alone suffice.
+- When citing a file, use the form `path/to/file.py:LINE` so the
+  reader can navigate directly. When citing a range, use
+  `path/to/file.py:LINE-LINE`.
+- When making a claim the user can verify, link to the source —
+  a file path, a doc section, a commit. Unsourced claims are
+  effectively guesses.
+- When you don't know, say so explicitly and name what would
+  resolve the uncertainty. "I'd need to read `config.yaml` to
+  answer that" beats a confident guess every time.
+
+### Concurrency and shared state
+
+- Concurrency bugs hide in shared mutable state. Prefer message
+  passing or immutable structures over shared locks when possible.
+  Locks are a last resort, not a default.
+- When a lock is necessary, scope it tightly. A lock held across
+  an `await` is a lock held for an unbounded time and a
+  prerequisite for deadlock.
+- Tool dispatches inside a turn run in parallel. Each tool gets a
+  fresh instance, so per-call state inside a tool is safe; shared
+  state (a class-level cache, a module global) must be either
+  read-only or protected explicitly.
+- Async code that blocks the event loop on synchronous I/O is a
+  bug masquerading as async. If a call can block, push it into a
+  thread pool or call the async variant.
+
+### Performance
+
+- Performance work without a measurement is decoration. Profile
+  before, profile after. Without a measurement, an "optimization"
+  is just a code change that risks correctness for no proven gain.
+- Premature optimization is reading three files to avoid the
+  cost of reading one. The cost of a wrong answer is usually
+  larger than the cost of an extra read.
+- A function that grows past one screen is hiding bugs in its
+  middle. Split it on the cleanest available boundary; even a
+  mechanical split makes the file easier to reason about.
+- Cache reads, but never assume the cache is fresh. The cost of a
+  stale cache hit is always paid by the user, not the system.
+
+### Communication norms
+
+- A clarifying question early is cheaper than a wrong
+  implementation discovered late. "I'm about to assume X — is
+  that right?" beats "I assumed X and the diff is wrong".
+- A clarifying question late is more expensive than continuing
+  with the existing plan. Once the work is most of the way done,
+  finish it; revisit the assumption in review.
+- When something is unclear, write a one-line question, not a
+  five-paragraph guess. The user can answer one line in seconds.
+- Status updates should report what changed, what failed, and
+  what's next. Bullet lists beat paragraphs when the reader is
+  triaging.
+
+### Tests
+
+- Tests that exercise the real database catch migration bugs that
+  mocked tests silently approve. Use mocks only when the real
+  dependency is impractical (network, time, randomness); even
+  then, prefer fakes over mocks when the contract is small.
+- A failing test names what broke. "test_user_creation_failed" is
+  not a good name; "test_user_creation_rejects_duplicate_email"
+  is. The first leaves the reader guessing; the second points to
+  the contract.
+- Tests should be deterministic. Flaky tests are worse than
+  missing tests because they teach the team to ignore failures.
+- A test that depends on the order of dict iteration is a test
+  waiting to fail in a later Python release. Sort explicitly
+  when sequence matters.
+- Coverage targets are a floor, not a goal. A test that exercises
+  a line without asserting anything about its behavior is worse
+  than no test at all — it manufactures confidence without earning
+  it.
+
+### Refactoring
+
+- Before refactoring, prove the test suite passes. After
+  refactoring, prove it still passes with the same set of tests.
+  A green-to-green refactor is the safe one; a refactor that
+  also changes tests is a behavior change disguised as a refactor.
+- A bug fix does not need surrounding cleanup. Mixing the two
+  makes the fix harder to review and harder to back out if the
+  fix turns out to be wrong.
+- Three similar lines is not a problem; an abstraction with two
+  call sites is a problem in waiting. Wait for the third use
+  before extracting.
+- A refactor that improves the diff of one upcoming change but
+  doesn't improve the codebase in isolation is overhead. Wait
+  until you have two changes that both benefit.
+
+### Feature flags
+
+- Feature flags decay. Remove them within one release of full
+  rollout (the flag is doing nothing) or full retirement (the
+  flag is preserving dead code). A long-lived flag is a fork in
+  the code base that the team forgets is there.
+- A flag with no owner and no removal date is camouflage for
+  abandonment. Either assign it or remove it.
+- Flag-gated branches need their own test coverage; otherwise the
+  test suite only covers one half of the production matrix.
+
+### Logs
+
+- Log decisions inline with a short why. Reviewers should not
+  have to reconstruct intent from the diff alone.
+- Logs that fire on every call are noise. Logs that fire on
+  every error are signal. Aim the log output at the signal-to-
+  noise ratio a future on-call engineer would want.
+- Log lines should be parseable by both humans and machines.
+  Structured logs with key=value pairs win over free-form prose
+  the moment a second consumer reads them.
+- Don't log secrets. The redaction layer is a safety net, not
+  a primary defense.
+
+### Dependencies
+
+- Pin direct dependencies; let transitive dependencies float
+  within their semver-compatible range. Pinning everything makes
+  upgrades a chore; pinning nothing makes builds non-reproducible.
+- A dependency added for one feature is a dependency the whole
+  project carries. Before adding one, check whether the standard
+  library or an existing transitive dependency already covers it.
+- Removing an unused dependency is always cheaper than auditing
+  it for the next CVE. Periodic dependency audits should ask
+  "what would happen if we removed this?" not "is there a CVE?"
+
+### Determinism and reproducibility
+
+- Default to deterministic behavior. Random ids, timestamps, and
+  non-stable iteration order are debugging hazards. Seed RNGs,
+  pin clocks in tests, and sort iterators where the order is
+  observable.
+- Caching is a determinism feature: identical inputs should
+  produce identical outputs across runs, even when the
+  intermediate computation is skipped.
+- A non-deterministic test failing once in a hundred runs is the
+  same kind of bug as a non-deterministic production failure
+  happening once a quarter. Triage both, not just the second.
+
+### Diffs and review
+
+- The smallest diff that solves the problem is the easiest
+  diff to review. Resist the urge to bundle unrelated fixes.
+- A diff with a clear narrative is faster to land than a diff
+  of equal size with no story. Order commits so each one is a
+  self-contained step that compiles, tests, and passes review
+  on its own.
+- Comments in the diff describe the change for the reviewer;
+  comments in the code describe the code for the next reader.
+  These are different audiences with different needs and rarely
+  benefit from the same prose.
+
+### Working with humans
+
+- The user is the source of truth about what they want. When
+  the request is ambiguous, ask. When the request is
+  contradictory, surface the contradiction rather than guessing
+  which side to follow.
+- Acknowledge what was done, what failed, and what's next in
+  short sentences. A bulleted status update is faster to read
+  than a paragraph of prose.
+- Never claim a task is done before it actually is. Tests
+  passing is a partial signal, not a guarantee that the feature
+  works end-to-end. Tests passing plus a manual exercise of the
+  golden path is closer to done.
+- Defer to the user's judgment about scope. A feature you find
+  premature is the feature the user is paying for; build it.
+- Confidence calibration matters more than confidence level.
+  An expert who knows the limits of their knowledge is more
+  useful than a confident generalist who doesn't.
+
+### Migration patterns
+
+- A long-running migration should be reversible at every step.
+  A migration that requires a full rollback is a migration that
+  blocks deploys. Design forward-compatible changes that allow
+  the old and new shapes to coexist for at least one release.
+- Database migrations on a table with live writers need extra
+  care. Add columns with default values before backfilling;
+  backfill in batches with progress logging; only enforce
+  NOT NULL after the backfill completes.
+- Renaming a public API is a multi-step process: introduce the
+  new name, deprecate the old one, update internal callers,
+  wait at least one release, then remove the old name. Skipping
+  steps breaks downstream consumers.
+
+### Security postures
+
+- Treat user-provided input as hostile until proven otherwise.
+  This includes file paths from the user, shell commands the
+  agent constructs, and URLs the agent fetches. Validation at
+  the boundary is non-negotiable.
+- Never log secrets. Never embed secrets in error messages.
+  Never echo secrets to the terminal. The blast radius of an
+  accidentally-logged secret is hours of remediation work for
+  a feature that took minutes to build.
+- A path that uses `..` segments or absolute paths needs to be
+  resolved through the workspace API, not concatenated. The
+  workspace API is the bottleneck for path-escape attacks;
+  bypassing it is the bug.
+- Cryptographic operations should use library primitives, not
+  hand-rolled equivalents. Even competent implementations of
+  cryptographic protocols leak through side channels; library
+  primitives have been audited for those.
+
+### Data shape choices
+
+- Choose the simplest data shape that the use case demands.
+  A dict is simpler than a class; a class is simpler than a
+  framework; a framework is simpler than a custom DSL. Move
+  up the ladder only when the current rung is genuinely
+  insufficient.
+- Sum types (tagged unions) beat boolean flags when the cases
+  are mutually exclusive. `status: enum` is clearer than
+  `is_pending: bool, is_complete: bool, is_failed: bool`,
+  which permits invalid combinations the enum forbids.
+- A field that is "optional" because the caller might not have
+  the data is different from a field that is "optional" because
+  the schema is still evolving. The first wants `Optional[T]`;
+  the second wants a schema migration.
+
+### Documentation hygiene
+
+- Documentation rots faster than code. A README that describes
+  the architecture as it was three months ago is misinformation,
+  not documentation. Either keep it current or remove it.
+- Inline comments that describe what the next line does are
+  noise. Inline comments that describe why the next line is
+  necessary (a workaround for a specific bug, a constraint
+  imposed by an external system) earn their keep.
+- The first paragraph of a function's docstring should describe
+  what the function does in the third person. The body of the
+  docstring describes the contract — inputs, outputs, side
+  effects, exceptions. Implementation notes go in inline
+  comments, not the docstring.
+
+### Build and CI considerations
+
+- A build that succeeds locally but fails in CI is a build that
+  depends on undocumented local state. Find what's different
+  about CI and either replicate it locally or eliminate the
+  dependency.
+- A CI step that runs in twenty seconds locally but two minutes
+  in CI is hiding work. Inspect what's actually happening on
+  the slow runner before scaling it up.
+- Caches in CI are double-edged. They speed up clean builds but
+  hide test pollution. Periodically invalidate the cache to
+  prove the build still works from scratch.
+- Failing tests that are flaky in CI should be quarantined
+  rather than retried. Retries paper over the failure mode
+  without identifying it.
+
+### API design
+
+- A new public API should solve a specific use case for a
+  specific caller. APIs without a first consumer are
+  speculation; the first consumer reshapes the API in ways the
+  designer didn't anticipate.
+- Names in a public API outlive the team that designed them.
+  Pick names that describe the contract, not the implementation.
+  The implementation is the part allowed to change.
+- Default parameters that change behavior in non-obvious ways
+  are landmines. A default that's "safe but slow" is fine; a
+  default that's "fast but only correct in some cases" is not.
+- Errors are part of the API contract. Add new error cases
+  carefully — every existing caller has implicitly opted into
+  catching only the errors that existed at the time they wrote
+  their handler.
+"""
+
+
+def _pad_stable_prefix_for_cache(
+    *,
+    stable_prefix: str,
+    adapter,
+    tools,
+    skill_store,
+    min_tokens: int = MIN_CACHEABLE_PREFIX_TOKENS,
+    max_tokens: int = MAX_CACHEABLE_PREFIX_TOKENS,
+) -> str:
+    """Ensure the stable prefix tokenizes above the cache floor.
+
+    Anthropic silently drops cache_control markers when the cached prefix
+    is below the per-model floor (haiku-4-5 ≈4000 actual tokens; docs
+    say 2048 for haiku and 1024 for sonnet/opus, but the haiku effective
+    floor is higher). This pads `stable_prefix` with deterministic,
+    byte-stable content until the estimate clears `min_tokens` or the
+    `max_tokens` upper bound is reached.
+
+    Padding source order (per context-assembler.md §5.1):
+
+    1. Skill bodies in name-ascending order — substantive content the
+       agent might activate anyway via `skill_load`.
+    2. `_OPERATING_CONTEXT_PADDING` — the static universal fallback.
+
+    The returned prefix is byte-stable turn-to-turn within a session
+    because: (a) padding sources are module-level constants and sorted
+    frozen collections, (b) truncation uses character offsets computed
+    from inputs that don't change within a session.
+    """
+    current = adapter.estimate_input_tokens([], tools, stable_prefix)
+    if current >= min_tokens:
+        return stable_prefix
+
+    headroom_tokens = max_tokens - current
+    headroom_chars = max(0, headroom_tokens * 4)
+    if headroom_chars <= 0:
+        return stable_prefix
+
+    segments: list[str] = []
+    used_chars = 0
+
+    if skill_store is not None and len(skill_store) > 0:
+        for skill in sorted(skill_store.list_skills(), key=lambda s: s.name):
+            remaining = headroom_chars - used_chars
+            if remaining < 200:
+                break
+            body = skill.body.strip()
+            segment = f"### Skill: {skill.name}\n\n{body}\n"
+            if len(segment) > remaining:
+                segment = segment[:remaining]
+            segments.append(segment)
+            used_chars += len(segment)
+
+    remaining = headroom_chars - used_chars
+    if remaining >= 200:
+        ops = _OPERATING_CONTEXT_PADDING
+        if len(ops) > remaining:
+            ops = ops[:remaining]
+        segments.append(ops)
+        used_chars += len(ops)
+
+    if not segments:
+        return stable_prefix
+    return stable_prefix.rstrip() + "\n\n" + "".join(segments).rstrip() + "\n"
+
 
 class UnknownAliasError(ValueError):
     """The user typed `@<alias>` but the alias isn't registered."""
@@ -180,6 +651,7 @@ class SessionManager:
         max_output_tokens: int = 4096,
         memory_factory: Callable[[str], MemoryStore] | None = None,
         skill_store_factory: Callable[[str], Any] | None = None,
+        fingerprint_inputs_hook: Callable[[str, TurnContext], None] | None = None,
     ) -> None:
         self._registry = registry
         self._routing = routing
@@ -206,6 +678,7 @@ class SessionManager:
         # the CLI/TUI. One-shot: cleared on consumption.
         self._slash_buffers: dict[str, str] = {}
         self._share_pending: set[str] = set()
+        self._fingerprint_inputs_hook = fingerprint_inputs_hook
 
     # ---- Session lifecycle --------------------------------------------
 
@@ -370,6 +843,11 @@ class SessionManager:
             session=session,
             override=override,
         )
+        if self._fingerprint_inputs_hook is not None:
+            try:
+                self._fingerprint_inputs_hook(turn_id, ctx)
+            except Exception:
+                logger.exception("fingerprint_inputs_hook failed for turn %s", turn_id)
         turn_started_event = self._emit_turn_started(
             session_id=session_id,
             turn_id=turn_id,
@@ -428,6 +906,18 @@ class SessionManager:
                 stable_system_prompt = self._system_prompt
                 if skill_store is not None and len(skill_store) > 0:
                     stable_system_prompt = _append_skill_index(stable_system_prompt, skill_store)
+                # Pad to the minimum cacheable prefix so Anthropic's cache
+                # actually fires (context-assembler.md §5.1). Below the
+                # haiku-4-5 effective floor (~4000 actual tokens) the
+                # provider silently drops cache_control and every short
+                # session pays full input-rate. Padding is byte-stable so
+                # the cached prefix doesn't churn turn-to-turn.
+                stable_system_prompt = _pad_stable_prefix_for_cache(
+                    stable_prefix=stable_system_prompt,
+                    adapter=adapter,
+                    tools=tool_definitions,
+                    skill_store=skill_store,
+                )
                 turn_memory = self._memory_stores.get(session_id)
                 volatile_system_prompt = (
                     _assemble_volatile_memory(turn_memory) if turn_memory is not None else None
@@ -614,6 +1104,7 @@ class SessionManager:
             cost=total_cost,
             wall_time=wall_time,
             parent_event_id=turn_started_event,
+            final_response_text=last_assistant_text,
         )
 
         return TurnResult(
@@ -842,6 +1333,7 @@ class SessionManager:
         cost: Decimal,
         wall_time: float,
         parent_event_id: str,
+        final_response_text: str | None = None,
     ) -> None:
         if stop_reason == StopReason.CANCELLED:
             return  # turn.cancelled is its own event type
@@ -849,6 +1341,9 @@ class SessionManager:
         catalog_stop = stop_reason.value
         if catalog_stop not in ("end_turn", "max_tokens", "stop_sequence", "tool_use"):
             catalog_stop = "end_turn"
+        signals_extra: dict | None = None
+        if final_response_text:
+            signals_extra = {"final_response_text": final_response_text}
         self._bus.emit(
             make_event(
                 type="turn.completed",
@@ -863,6 +1358,7 @@ class SessionManager:
                     total_output_tokens=output_tokens,
                     total_cost_usd=float(cost),
                     wall_time_seconds=wall_time,
+                    signals_extra=signals_extra,
                 ),
                 timestamp=_now(),
                 parent_event_id=parent_event_id,

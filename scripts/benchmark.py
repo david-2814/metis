@@ -669,9 +669,7 @@ async def amain() -> int:
     pattern_save_dir = Path(args.pattern_save_dir).expanduser() if args.pattern_save_dir else None
     if pattern_save_dir is not None:
         pattern_save_dir.mkdir(parents=True, exist_ok=True)
-    shared_patterns_db = (
-        Path(args.patterns_db_path).expanduser() if args.patterns_db_path else None
-    )
+    shared_patterns_db = Path(args.patterns_db_path).expanduser() if args.patterns_db_path else None
     if shared_patterns_db is not None:
         shared_patterns_db.parent.mkdir(parents=True, exist_ok=True)
 

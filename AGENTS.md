@@ -6,9 +6,9 @@ Shared context for any AI agent working in this repo (Claude Code, Cursor, Codex
 
 A local-first AI dev agent server. Provider-agnostic via a canonical message format, with a layered routing engine (manual / configured rules / learned patterns), bounded portable memory, and an event bus that feeds a trace store. Python core server; thin clients (CLI first, TUI/Tauri later).
 
-**Status:** Phase 1 + Phase 2 + Phase 2.5 shipped (pattern store wired into routing slot 4; evaluator heuristic tier live on the bus). The CLI (`metis chat <workspace>`) drives end-to-end turns across Anthropic / OpenAI / OpenRouter with tool use, streaming, cost tracking, and event tracing. Bounded MEMORY.md / USER.md gives the agent cross-session continuity. `metis serve` exposes an HTTP/WebSocket surface for external clients with live token-delta streaming. 968 tests passing.
+**Status:** Phase 1 + Phase 2 + Phase 2.5 shipped (pattern store wired into routing slot 4; evaluator heuristic + LLM + hybrid tiers live on the bus, `/analytics/quality` endpoint exposed). Phase 3 in flight: the transparent HTTP gateway is wired end-to-end (OpenAI + Anthropic inbound shapes, sync + SSE, gateway-key auth, `gateway_key_id` stamped on trace events) and live-smoked at ~$0.0002 / 4 calls on 2026-05-14, but the per-key analytics roll-up surface (`/analytics/cost?group_by=gateway_key`) is not wired yet. The CLI (`metis chat <workspace>`) drives end-to-end turns across Anthropic / OpenAI / OpenRouter with tool use, streaming, cost tracking, and event tracing. Bounded MEMORY.md / USER.md gives the agent cross-session continuity. `metis serve` exposes an HTTP/WebSocket surface for external clients with live token-delta streaming; `metis gateway` exposes a provider-API-shaped HTTP surface for unmodified OpenAI/Anthropic clients with per-key cost attribution. 1096 tests passing.
 
-**Repo shape.** uv-workspace monorepo: `packages/metis-core/` (the library — canonical types, events, adapters, routing, tools, memory, sessions, pricing, skills, trace), `apps/server/` (HTTP/WS server), `apps/cli/` (chat / tui / serve entry point). One `metis` console-script is shipped by `metis-cli`; it depends on both `metis-core` and `metis-server`.
+**Repo shape.** uv-workspace monorepo: `packages/metis-core/` (the library — canonical types, events, adapters, routing, tools, memory, sessions, pricing, skills, trace), `apps/server/` (HTTP/WS server), `apps/gateway/` (transparent provider-shape HTTP proxy), `apps/cli/` (chat / tui / serve / gateway entry point). One `metis` console-script is shipped by `metis-cli`; it depends on `metis-core`, `metis-server`, and `metis-gateway`.
 
 ## Implementation status
 
@@ -23,25 +23,28 @@ A local-first AI dev agent server. Provider-agnostic via a canonical message for
 - **Bounded memory** ([packages/metis-core/src/metis_core/memory/](packages/metis-core/src/metis_core/memory/)) — per-workspace `MEMORY.md` (~2 KB) and `USER.md` (~1.5 KB) under `.metis/`. Soft cap → `memory.eviction` event; hard cap → write rejected. `memory_add`/`memory_replace`/`memory_consolidate` tools mutate them. `SessionManager` composes USER.md + MEMORY.md into the system prompt fresh each LLM call.
 - **Session message persistence** ([packages/metis-core/src/metis_core/sessions/sqlite_store.py](packages/metis-core/src/metis_core/sessions/sqlite_store.py)) — SQLite-backed session/message store per `canonical-message-format.md §9.1`. Wired by default in the CLI runtime; `InMemorySessionStore` remains for tests.
 - **HTTP/WebSocket server** ([apps/server/src/metis_server/](apps/server/src/metis_server/)) — Starlette + uvicorn ASGI app. REST endpoints for sessions/turns/messages/models/health; WebSocket `/sessions/{id}/stream` with single-use attach tokens, snapshot+live, `preset:chat`/`preset:full` filters, cancel-via-WS, ping/pong. Streaming-only events (`message.*`, `text.delta`, `tool.use_*`) flow through a per-session `StreamingHub` and reach connected clients live; bus catalog events flow through the normal Subscription path. Loopback-only bind in v1.
-- **CLI** ([apps/cli/src/metis_cli/](apps/cli/src/metis_cli/)) — `metis chat <workspace>` (line REPL), `metis tui <workspace>` (Textual TUI), `metis serve <workspace>` (HTTP/WS server). Slash commands `/model`, `/cost`, `/models`, `/help`. Per-message `@alias` override syntax.
+- **CLI** ([apps/cli/src/metis_cli/](apps/cli/src/metis_cli/)) — `metis chat <workspace>` (line REPL), `metis tui <workspace>` (Textual TUI), `metis serve <workspace>` (HTTP/WS server), `metis gateway` (transparent gateway server) and `metis gateway issue-key --name … --workspace …` (key issuance). Slash commands `/model`, `/cost`, `/models`, `/help`. Per-message `@alias` override syntax.
+- **Transparent HTTP gateway** ([apps/gateway/src/metis_gateway/](apps/gateway/src/metis_gateway/)) — Starlette ASGI app exposing `POST /v1/chat/completions` (OpenAI shape) and `POST /v1/messages` (Anthropic shape), each in sync + SSE flavors. Authenticates per-request via `Authorization: Bearer gw_…` (or `x-api-key` for Anthropic clients), maps the bearer hash to a `GatewayKey` scoped to one workspace, routes via `metis_core.routing.RoutingEngine`, and writes `route.decided` / `llm.call_started` / `llm.call_completed` / `turn.completed` events with `gateway_key_id` + `inbound_shape` stamped on the LLM/turn payloads. Per-request stateless — no session manager, no tool dispatcher, no memory store (gateway.md §2). Loopback-only bind. Keys live in `~/.metis/gateway/keys.json` (default); the plaintext token is printed once by `metis gateway issue-key` and only the SHA-256 hash is persisted.
 - **Smoke harnesses** ([scripts/smoke.py](scripts/smoke.py), [scripts/smoke_cross_provider.py](scripts/smoke_cross_provider.py), [scripts/smoke_cache.py](scripts/smoke_cache.py)) — drive the loop against real APIs; cross-provider test passes at ~$0.007.
 - **Configured routing rules** ([packages/metis-core/src/metis_core/routing/policy.py](packages/metis-core/src/metis_core/routing/policy.py)) — per-workspace YAML rule file at `<workspace>/.metis/routing.yaml`; matches turn inputs against rule predicates and emits a real verdict in the `rule` slot of `route.decided.chain` (shipped commit `e71fedd`).
 - **Tool-confirmation REST endpoint** — `POST /turns/{id}/confirmations/{request_id}` wired against a per-turn request registry bridged to the `tool.confirmation_requested` event stream (shipped commit `e71fedd`).
+- **CLI confirmation handler** ([packages/metis-core/src/metis_core/tools/cli_confirmation.py](packages/metis-core/src/metis_core/tools/cli_confirmation.py)) — terminal-prompting handler wired as the default for `metis chat` / `metis tui`. NONE/READ side effects auto-approve; WRITE/EXECUTE/NETWORK consult `<workspace>/.metis/trust.yaml` (`always_allow` / `always_deny` lists) and otherwise prompt the user, with "always" / "never" answers persisting back to the file. `--auto-allow` reverts to the old `AutoAllowHandler`.
 - **Persisted skills** — `SkillStore` and the `skill_load` tool, agentskills.io-compatible (shipped commit `e71fedd`).
-- **Savings benchmark suite** ([scripts/benchmark.py](scripts/benchmark.py), [benchmarks/workloads/](benchmarks/workloads/)) — versioned workload bundle + harness; first reproducible result captured in [benchmarks/RESULTS.md](benchmarks/RESULTS.md). Spec at `docs/specs/benchmark.md`.
-- **Prompt caching (live-validated)** — Anthropic `cache_control` breakpoints attached to the stable prefix (tools + system); v1 of the context assembler. Spec at `docs/specs/context-assembler.md`. Two-segment `system_prompt` field on `CanonicalRequest` separates stable vs mutating instructions. Provider-side hit verified end-to-end against the live Anthropic API: in `scripts/smoke_cache.py` run-2 (see [benchmarks/RESULTS.md §Anomalies → Resolved](benchmarks/RESULTS.md)), turn 1 wrote 4957 cache-creation tokens and turn 2 read 4957 cached-input tokens for a total run cost of $0.007502. The earlier null result on commit `c9465d3` was a padding shortfall in the smoke script (cached prefix tokenized below haiku's 2048-token floor), not the wire shape.
+- **Savings benchmark suite** ([scripts/benchmark.py](scripts/benchmark.py), [benchmarks/workloads/](benchmarks/workloads/)) — versioned workload bundle + harness; six workloads in suite v1 (`fix-a-bug-small`, `multi-turn-refactor`, `write-a-doc-from-notes`, `intentionally-failing-task`, plus diversity-wave additions `regex-with-edge-cases` and `multi-file-refactor-with-shared-types`). The two diversity workloads are deliberately failure-prone in the haiku case so per-workload quality scores discriminate models. Run 3 captured in [benchmarks/RESULTS.md](benchmarks/RESULTS.md). Spec at `docs/specs/benchmark.md`.
+- **Prompt caching (universal, live-validated)** — Anthropic `cache_control` breakpoints attached to the stable prefix (tools + system); v2 of the context assembler adds a minimum-cacheable-prefix rule that pads the prefix above the effective haiku-4-5 cache floor (`MIN_CACHEABLE_PREFIX_TOKENS = 4500`, `MAX_CACHEABLE_PREFIX_TOKENS = 5500` heuristic tokens; padding sources are loaded skills first, then a deterministic `_OPERATING_CONTEXT_PADDING` block). Spec at `docs/specs/context-assembler.md §5.1`. Two-segment `system_prompt` field on `CanonicalRequest` separates stable vs mutating instructions. Benchmark Run 3 (see [benchmarks/RESULTS.md §Run 3](benchmarks/RESULTS.md)): cache fires on **49 of 49 LLM calls (100%)** in the 6-workload suite vs Run 2 cold's **10 of 30 (33%)**; same-3-workload aggregate cost dropped 22.8%.
 - **Analytics + dashboard** — `AnalyticsStore.savings()` and the metric dashboard surface ([apps/server/src/metis_server/](apps/server/src/metis_server/)); spec at `docs/specs/analytics-api.md`.
 - **Pattern store** ([packages/metis-core/src/metis_core/patterns/](packages/metis-core/src/metis_core/patterns/)) — per-workspace, bounded SQLite store of structural fingerprints + Welford-accumulated outcomes (cost, latency, success score). Wires routing slot 4 (`PATTERN_RECOMMENDATION`) when a `pattern_store_resolver` + `fingerprint_inputs_builder` are injected; emits `pattern.recorded` / `pattern.matched` / `pattern.evicted`. Spec at `docs/specs/pattern-store.md`.
-- **Evaluator (heuristic tier)** ([packages/metis-core/src/metis_core/eval/](packages/metis-core/src/metis_core/eval/)) — bus subscriber + `HeuristicJudge` for turn / tool-cycle / session / workload subjects. Subscribes to `turn.completed` / `tool.completed` / `tool.failed` / `session.ended` and emits `eval.started` / `eval.completed` / `eval.failed` per `docs/specs/evaluator.md`. `metis evaluate --db-path … --subject turn` re-runs the judge over a window for batch re-evaluation; `workload.yaml.evaluate` feeds the benchmark suite's quality column. `BudgetTracker` is structural — heuristic tier costs $0, the per-session / per-day caps are wired so the future LLM-as-judge tier can drop in.
+- **Evaluator (heuristic + LLM + hybrid tiers)** ([packages/metis-core/src/metis_core/eval/](packages/metis-core/src/metis_core/eval/)) — bus subscriber + `HeuristicJudge` / `LLMJudge` / `HybridJudge` for turn / tool-cycle / session / workload subjects. Subscribes to `turn.completed` / `tool.completed` / `tool.failed` / `session.ended` and emits `eval.started` / `eval.completed` / `eval.failed` per `docs/specs/evaluator.md`. `metis evaluate --db-path … --subject turn` re-runs the judge over a window for batch re-evaluation; `workload.yaml.evaluate` feeds the benchmark suite's quality column. `BudgetTracker` (per-session $0.10 / per-day $1.00 defaults) is shared across LLM-eligible judges; over-budget calls land a `signals.budget_exhausted=True` verdict and HybridJudge falls back to its heuristic verdict. `HybridJudge(escalation_threshold=0.7)` is the default — heuristic confidence at or above the threshold short-circuits the LLM call. Tool-cycle and session subjects remain heuristic-only in v1 (evaluator.md §5.5 / §5.6).
+- **Quality analytics** — `/analytics/quality` endpoint projects `eval.completed` over a time window with `group_by` ∈ {model, judge_kind, rubric_id, none} and `min_confidence` filter. The `chosen_model` field joins via `route.decided` so the per-model rollup shows which *judged* model scored best, not the judge's own model. Spec at [docs/specs/evaluator.md §9.2](docs/specs/evaluator.md).
 
 **What's NOT built (next-up):**
 
-- **Evaluator LLM-as-judge / hybrid tiers** — `docs/specs/evaluator.md §5.2-5.3`. The heuristic floor is shipped; LLM/hybrid are pending provider-availability and the budget-tracker LLM-cost path.
-- **Skill format** — agentskills.io-compatible on-disk skill packaging beyond the current `SkillStore` substrate. Spec drafted at `docs/specs/skill-format.md`; loader extensions deferred.
-- **Gateway HTTP surface** — transparent-proxy front door per `docs/specs/deployment-shape.md §1`. v0 skeleton at `docs/specs/gateway.md`; field-level schema + implementation pending deployment-shape recommendation sign-off.
 - **Delegation** — Phase 4. The `delegate_request` slot in `route.decided.chain` still reports `not_applicable`; `include_worker_sessions` in the WS subscribe filter is accepted but no workers are spawned in v1.
+- **Per-key analytics roll-up** — `gateway_key_id` is stamped on every `llm.call_completed` and `turn.completed`, but `/analytics/cost` does not yet accept `group_by=gateway_key` and there is no `/analytics/by_key` endpoint. Verified during Wave-5 smoke that the data is present and a direct SQL roll-up by `gateway_key_id` returns the correct per-shape cost; the HTTP surface is the missing piece. Tracked against `gateway.md §V` ("Add a `group_by=gateway_key` dimension to `/analytics/cost` in a follow-up spec change").
+- **Multi-user / team-level rollups** — gateway v1 is single-tenant in shape (one workspace per key); analytics has no `team_id` or `tenant_id` concept yet. Multi-workspace per key and team aggregations are Phase 3 follow-on per `gateway.md §11`.
+- **Pattern store v2 (embedding fingerprint)** — v1 fingerprint is structural (intent tags from regex matches against `user_message_text` + tool-use signals + length bucket). An embedding-based fingerprint would lift K-NN selectivity further; deferred until v1 K-NN data shows a concrete shortfall.
+- **Skill format loader extensions** — agentskills.io-compatible on-disk skill packaging beyond the current `SkillStore` substrate. Spec drafted at `docs/specs/skill-format.md`; loader extensions deferred.
 - **Routing policy version surfacing** — `GET /sessions/{id}` returns the rule-file version when one is loaded; remains `null` for workspaces without `.metis/routing.yaml`.
-- **`AutoAllowHandler` is the default confirmation handler** — auto-approves *everything* including WRITE/EXECUTE/NETWORK. Fine for single-user dev, unsafe for production / shared use. The REST confirmation endpoint exists; wiring a non-auto handler is configuration, not code.
 
 ## Read before reasoning about the system
 
@@ -61,13 +64,16 @@ For competitive landscape and prior art: [docs/market-research/synthesis.md](doc
 
 ## Architecture and package layering
 
-The repo is a uv workspace with three Python packages:
+The repo is a uv workspace with four Python packages:
 
 ```
-metis-core    (packages/metis-core/src/metis_core/)
-metis-server  (apps/server/src/metis_server/)         depends on metis-core
-metis-cli     (apps/cli/src/metis_cli/)               depends on metis-core, metis-server
+metis-core     (packages/metis-core/src/metis_core/)
+metis-server   (apps/server/src/metis_server/)         depends on metis-core
+metis-gateway  (apps/gateway/src/metis_gateway/)       depends on metis-core
+metis-cli      (apps/cli/src/metis_cli/)               depends on metis-core, metis-server, metis-gateway
 ```
+
+`metis-server` and `metis-gateway` are independent siblings — neither imports the other. Both consume `metis-core` building blocks (registry, routing engine, adapters, pricing, event bus, trace store) and expose their own Starlette ASGI surface. `metis-server` is the agent-mode surface (sessions, tools, memory, streaming); `metis-gateway` is the transparent-proxy surface (per-request stateless, no agent loop).
 
 Within `metis-core`, the internal layering is unchanged from the pre-split shape (lower can be imported by higher, never the other way):
 
@@ -138,10 +144,12 @@ sessions       ←  (nothing else in core)
 - **Per-(provider, model) availability.** A 401 or capability mismatch on one model no longer marks the whole provider unavailable; routing tracks availability per `(provider, model)` pair. The routing-engine.md §11 deferred-behavior note is resolved.
 - **Memory is per-session, not per-process.** Each `SessionManager.create_session` builds a fresh `MemoryStore` via the injected `memory_factory`. The on-disk files (`<workspace>/.metis/{MEMORY.md,USER.md}`) are shared across sessions in the same workspace, but each session's store reads them fresh.
 - **Memory writes don't auto-truncate.** Soft-cap overflow emits `memory.eviction` as a signal; hard-cap overflow rejects the write so the agent has to `memory_consolidate`. The eviction is the spec's intended user-visible action, not silent garbage collection.
-- **`AutoAllowHandler` auto-approves everything** including writes and shell. Phase 1 single-user is fine; do not ship to anywhere shared without swapping in a real confirmation handler.
+- **`CLIConfirmationHandler` is the default confirmation handler** for `metis chat` and `metis tui`. NONE/READ side effects auto-approve; WRITE/EXECUTE/NETWORK prompt at the terminal unless the tool name is in `<workspace>/.metis/trust.yaml`'s `always_allow` (the prompt's "always" answer appends there; "never" appends to `always_deny`). The prompt has a 60-second timeout; on timeout the call is denied. Pass `--auto-allow` to `metis chat` / `metis tui` to revert to the old `AutoAllowHandler` behavior. `metis serve` is unaffected — the server installs `RemoteConfirmationHandler` on top of whatever the CLI set.
 - **PARTIAL message bypass.** `validate_message()` skips invariant checks when `metadata.status == PARTIAL` (canonical-format §5.1.5). Mid-stream messages are intentionally allowed to violate role-content rules.
-- **Server binds loopback-only in v1.** `metis serve --host 0.0.0.0` is silently rewritten to `127.0.0.1`. This is a v1 safety guarantee per server-api.md §3.1.
+- **Server binds loopback-only in v1.** `metis serve --host 0.0.0.0` is silently rewritten to `127.0.0.1`. This is a v1 safety guarantee per server-api.md §3.1. Same applies to `metis gateway` per gateway.md §3.2 — production binds require a TLS terminator in front and are gated behind future hardening.
 - **Attach tokens are single-use, 60-second TTL.** Each `GET /sessions/{id}` mints fresh; the WebSocket consumes it on upgrade. Reconnects need a new HTTP roundtrip.
+- **Gateway clients passing `model` in the request body win the routing chain at slot 1.** OpenAI / Anthropic SDKs always include `model`, so `route.decided.chain` reports `policy=per_message_override` with `verdict=chose` on every gateway request. The `rule`, `pattern`, `workspace_default`, and `global_default` slots are not exercised unless the client omits `model`. This is correct (gateway.md §V interprets the inbound `model` as a per-message override) but worth knowing when reading gateway traces — you won't see other slot wins until a client deliberately omits `model`.
+- **Gateway is per-request stateless.** No session manager, no tool dispatcher, no memory store, no skill loader. A turn is one HTTP request. This is the documented gateway-mode boundary (gateway.md §2), not a TODO. Clients owning conversation history is the point.
 
 ## Non-obvious external context
 
@@ -163,10 +171,10 @@ sessions       ←  (nothing else in core)
 ## Running things
 
 ```bash
-# Sync the workspace (resolves all three members).
+# Sync the workspace (resolves all four members).
 uv sync
 
-# Tests (968 currently — collected from all three workspace members).
+# Tests (1096 currently — collected from all four workspace members including apps/gateway/tests).
 uv run pytest
 
 # Lint + format
@@ -178,6 +186,11 @@ uv run metis chat .
 uv run metis chat /path/to/workspace --model haiku
 uv run metis tui /path/to/workspace
 uv run metis serve /path/to/workspace --port 8421
+
+# Transparent gateway: issue a key (printed once), then run the server.
+# Clients hit http://127.0.0.1:8422/v1/chat/completions (OpenAI) or /v1/messages (Anthropic).
+uv run metis gateway issue-key --name "my-client" --workspace /path/to/workspace
+uv run metis gateway --port 8422
 
 # Re-run the heuristic evaluator over a window of trace events (evaluator.md §6.2)
 uv run metis evaluate --db-path ~/.metis/metis.db --subject turn
@@ -218,11 +231,15 @@ metis/
 │       │   └── skills/            # SkillStore + skill_load tool (agentskills.io-compatible)
 │       └── tests/                 # mirrors the package layout
 ├── apps/
-│   ├── server/                    # HTTP/WS surface; depends on metis-core
+│   ├── server/                    # HTTP/WS agent surface; depends on metis-core
 │   │   ├── pyproject.toml
 │   │   ├── src/metis_server/      # Starlette app + StreamingHub + token registry + TurnExecutor
 │   │   └── tests/
-│   └── cli/                       # CLI + Textual TUI + serve entry; depends on metis-core + metis-server
+│   ├── gateway/                   # Transparent OpenAI/Anthropic-shape HTTP proxy; depends on metis-core
+│   │   ├── pyproject.toml
+│   │   ├── src/metis_gateway/     # Starlette app + Keystore + GatewayHarness + per-shape translators + issue-key
+│   │   └── tests/
+│   └── cli/                       # CLI + Textual TUI + serve + gateway entry; depends on metis-core + metis-server + metis-gateway
 │       ├── pyproject.toml
 │       ├── src/metis_cli/
 │       │   ├── chat.py main.py runtime.py serve.py models_display.py

@@ -38,6 +38,7 @@ def build_turn_completed(
     stop_reason: str = "end_turn",
     tool_call_count: int = 0,
     llm_call_count: int = 1,
+    signals_extra: dict | None = None,
 ) -> Event:
     return make_event(
         type="turn.completed",
@@ -53,6 +54,7 @@ def build_turn_completed(
             total_output_tokens=50,
             total_cost_usd=0.001,
             wall_time_seconds=1.5,
+            signals_extra=signals_extra,
         ),
     )
 
