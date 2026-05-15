@@ -14,13 +14,14 @@ provider quirk in one shape can't bleed into the other.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Literal
 
 import msgspec
 from metis_core.adapters.tool_id_map import ToolIdMap
+from metis_core.observability import METRICS_CONTENT_TYPE, MetricsCollector
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
@@ -48,6 +49,7 @@ from metis_gateway.harness import (
     UpstreamProviderError,
     make_disconnect_probe,
 )
+from metis_gateway.middleware_ratelimit import RateLimitConfig, RateLimitMiddleware
 from metis_gateway.middleware_versioning import VersioningMiddleware
 from metis_gateway.quotas import (
     QuotaExceeded,
@@ -72,17 +74,34 @@ DEFAULT_PORT = 8422
 class GatewayConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    # gateway-hardening.md §3 — opt-in until Wave 12+ promotes to default.
+    rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
 
 
 @dataclass
 class _AppState:
     runtime: GatewayRuntime
     started_at: datetime
+    metrics: MetricsCollector
 
 
-def build_app(runtime: GatewayRuntime) -> Starlette:
-    """Build the Starlette ASGI app bound to a fully-wired GatewayRuntime."""
-    state = _AppState(runtime=runtime, started_at=datetime.now(UTC))
+def build_app(
+    runtime: GatewayRuntime,
+    *,
+    rate_limit: RateLimitConfig | None = None,
+) -> Starlette:
+    """Build the Starlette ASGI app bound to a fully-wired GatewayRuntime.
+
+    `rate_limit` follows gateway-hardening.md §3 — off by default; pass
+    `RateLimitConfig(enabled=True, ...)` to engage the per-key / per-IP
+    buckets in front of the provider-shape paths.
+    """
+    metrics = MetricsCollector(
+        bus=runtime.bus,
+        gateway_keys_getter=lambda: _count_gateway_keys(runtime),
+    )
+    metrics.attach()
+    state = _AppState(runtime=runtime, started_at=datetime.now(UTC), metrics=metrics)
 
     async def _err_handler(_request: Request, exc: Exception) -> Response:
         if isinstance(exc, HTTPException):
@@ -92,13 +111,17 @@ def build_app(runtime: GatewayRuntime) -> Starlette:
 
     routes = [
         Route("/healthz", _health, methods=["GET"]),
+        Route("/metrics", _metrics, methods=["GET"]),
         Route("/v1/chat/completions", chat_completions, methods=["POST"]),
         Route("/v1/messages", messages, methods=["POST"]),
     ]
+    middleware_stack: list[Middleware] = [Middleware(VersioningMiddleware)]
+    if rate_limit is not None and rate_limit.enabled:
+        middleware_stack.append(Middleware(RateLimitMiddleware, config=rate_limit))
     app = Starlette(
         routes=routes,
         exception_handlers={Exception: _err_handler},
-        middleware=[Middleware(VersioningMiddleware)],
+        middleware=middleware_stack,
     )
     app.state.app_state = state
     return app
@@ -112,6 +135,36 @@ async def _health(request: Request) -> Response:
     st = _state(request)
     uptime = (datetime.now(UTC) - st.started_at).total_seconds()
     return _json({"status": "ok", "uptime_seconds": round(uptime, 3)})
+
+
+async def _metrics(request: Request) -> Response:
+    """GET /metrics — Prometheus exposition for in-cluster scrapers.
+
+    Loopback-only by virtue of the gateway's bind posture (see
+    `run_gateway`); production scrape goes through the proxy sidecar
+    + ServiceMonitor (helm chart `monitoring.enabled`).
+    """
+    st = _state(request)
+    body = st.metrics.expose()
+    return Response(content=body, media_type=METRICS_CONTENT_TYPE)
+
+
+def _count_gateway_keys(runtime: GatewayRuntime) -> tuple[int, int]:
+    """Tally `(active, revoked)` for the keystore at scrape time.
+
+    Grace-period-expired keys are still on disk as `status="active"`
+    but `is_active(now=…)` returns False until the next admin sweep
+    persists the revocation; the gauge reflects the auth-time view.
+    """
+    now = datetime.now(UTC)
+    active = 0
+    revoked = 0
+    for key in runtime.keystore.keys():
+        if key.is_active(now=now):
+            active += 1
+        else:
+            revoked += 1
+    return active, revoked
 
 
 async def chat_completions(request: Request) -> Response:
@@ -510,7 +563,7 @@ async def run_gateway(runtime: GatewayRuntime, config: GatewayConfig | None = No
             cfg.host,
         )
         cfg.host = "127.0.0.1"
-    app = build_app(runtime)
+    app = build_app(runtime, rate_limit=cfg.rate_limit)
     server = uvicorn.Server(
         uvicorn.Config(
             app,

@@ -243,6 +243,29 @@ persistence:
   mountPath: /var/lib/metis
   dbFile: /var/lib/metis/metis.db
 
+# Rate limiting (gateway-hardening.md §3). OFF by default in v1 — the
+# in-process token-bucket limiter is opt-in until Wave 12+ promotes it to
+# the recommended default. The buyer's perimeter (Caddy / nginx-ingress /
+# cloud LB) is the first line of defense; this limiter enforces per-key
+# fairness *inside* the perimeter so a leaked key can't drain its daily
+# spend cap before the operator can rotate it.
+rateLimit:
+  enabled: false
+  perKey:
+    # -- Requests per minute per gateway key. Default 60 (sustained 1 RPS,
+    # burst-capacity also 60). gateway-hardening.md §3.1.
+    rpm: 60
+  perIp:
+    # -- Requests per minute per source IP. Default 1000. The buyer's edge
+    # WAF / CDN handles volumetric DDoS — this limit catches a casual
+    # scraper that bypasses the WAF.
+    rpm: 1000
+  # -- CIDRs the middleware treats as forwarders when parsing
+  # X-Forwarded-For. Set this to your ingress controller's pod CIDR so
+  # spoofed XFF headers can't bypass the per-IP bucket. Default empty:
+  # only the immediate ASGI peer is trusted.
+  trustedProxies: []
+
 # Global default model — slot 7 of the routing chain, only consulted when
 # clients omit `model` (rare; SDKs always pass one — see gateway.md §V).
 globalDefaultModel: anthropic:claude-sonnet-4-6
@@ -285,6 +308,41 @@ serviceAccount:
   create: true
   name: ""
   annotations: {}
+
+# Prometheus monitoring. Renders a `monitoring.coreos.com/v1.ServiceMonitor`
+# (Prometheus operator shape) targeting the same Service port the LLM
+# endpoints ride on. The gateway exposes `/metrics` unconditionally on
+# 127.0.0.1; the proxy sidecar bridges it to pod-IP:proxy.listenPort the
+# same way it does the LLM endpoints, so the ServiceMonitor scrape just
+# rides the existing Service.
+#
+# The chart does NOT install Prometheus or the operator. Set
+# `monitoring.enabled` to true only after `monitoring.coreos.com/v1`
+# CRDs are installed in the cluster (typically via kube-prometheus-stack).
+# For clusters without the operator, hand-roll a Prometheus scrape job
+# pointing at <fullname>:<service.port>/metrics.
+#
+# See docs/specs/observability.md for the metric surface.
+monitoring:
+  enabled: false
+  serviceMonitor:
+    # -- Scrape interval. Prometheus default is 1m; 30s gives sub-minute
+    # latency on counter deltas without hammering the gateway.
+    interval: 30s
+    # -- Per-scrape timeout. Must be < interval.
+    scrapeTimeout: 10s
+    # -- Namespace for the ServiceMonitor. Empty = release namespace.
+    # Set to the namespace your Prometheus operator scrapes from if it
+    # differs from the gateway's.
+    namespace: ""
+    # -- Extra labels for the operator's ServiceMonitor selector. Match
+    # whatever your `Prometheus` resource's `serviceMonitorSelector` looks
+    # for (kube-prometheus-stack default: `release: prometheus`).
+    labels: {}
+    # -- Per-target relabeling rules (drop noisy labels, rename, etc.).
+    relabelings: []
+    # -- Per-metric relabeling (drop high-cardinality series, etc.).
+    metricRelabelings: []
 
 # -- Extra environment variables (e.g. METIS_LOG_LEVEL).
 extraEnv: []

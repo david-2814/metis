@@ -58,6 +58,22 @@ to the gateway URL, hand over a `gw_…` key, and every turn is cost-stamped per
 dev, per project — no client code changes. End-to-end recipe (Claude Code,
 Cursor, raw curl/SDK) at [`docs/gateway-client-quickstart.md`](docs/gateway-client-quickstart.md).
 
+> **v1 binds loopback-only.** The gateway refuses any non-`127.0.0.1` bind
+> per [`gateway.md §3.2`](docs/specs/gateway.md); do not expose it to the
+> public internet directly. Front it with Caddy / nginx-ingress / a cloud LB
+> that terminates TLS. The layered defenses (TLS, rate limiting, leak
+> detection) are documented in
+> [`docs/specs/gateway-hardening.md`](docs/specs/gateway-hardening.md).
+
+## Operations
+
+The operational docs a buyer's SRE will read before signing. All three
+sit under [`docs/operations/`](docs/operations/):
+
+- [`incident-response.md`](docs/operations/incident-response.md) — SEV1-SEV4 criteria, on-call alert paths (PagerDuty / Opsgenie / email), first-hour playbook, post-mortem template, and per-failure-mode playbooks for upstream LLM outage, trace-DB corruption, gateway-key compromise, and quota runaway.
+- [`status-page.md`](docs/operations/status-page.md) — two-tier recipe (external UptimeRobot / Statuspage.io / Better Stack against `/healthz`, plus self-hosted Uptime Kuma in-cluster), publish/redact guidelines, and incident comm templates.
+- [`sla-template.md`](docs/operations/sla-template.md) — 99.5% single-region template the buyer can customize for their own downstream-user SLA: service-credit math, exclusions, force-majeure stub (legal-counsel-deferred).
+
 ## What it is
 
 Metis is a developer-oriented AI assistant that runs as a small Python server on your localhost, with thin clients (terminal first; desktop and web later). It sits between Claude Desktop (chat) and Cursor (editor-coupled) in scope — a workspace-aware agent that:

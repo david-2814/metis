@@ -1,0 +1,86 @@
+name: multi-step-with-delegation
+description: >-
+  Planner-driven delegation exercise. The workspace ships a small auth
+  module with three providers (PasswordAuth, OAuthAuth, ApiKeyAuth) that
+  share duplicated validation + logging boilerplate; the refactor target
+  is to extract a shared `AuthProvider` Protocol or base class. The
+  workspace's `.metis/routing.yaml` pins `global_default` to sonnet as
+  a safety backstop. Run with `--model sonnet --delegation-policy
+  sonnet-planner-haiku-worker` so the session's active model is sonnet
+  (delegation.md §5.6 requires a non-None active model for the
+  `delegate` tool to be visible — `--no-active-model` would silently
+  hide it). `_enable_delegation` re-registers sonnet with
+  `can_delegate=True` + haiku with `delegation_tier=fast`, so the
+  planner sees `delegate(tier="fast", ...)` and the slot-5 worker
+  re-entry picks haiku. The §A3-rev4 Pass D finding identified that
+  no benchmark workload exercised this planner-driven path; this
+  workload closes that gap.
+suite_version: 1
+turns:
+  - prompt: >-
+      Read the files under `auth/` in this workspace. Each file
+      (password.py, oauth.py, apikey.py) defines a provider class with
+      an `authenticate(credentials)` method, and each one duplicates
+      the same validation boilerplate (credentials-shape check,
+      required-fields check, type check) plus a `_log(msg)` method.
+
+      Plan a refactor that extracts a shared `AuthProvider` Protocol
+      (or abstract base class) so the duplicated structure lives in
+      one place. Sketch the plan first — which file gets the new
+      Protocol, what its methods are, and what each provider has to
+      change. Don't write any code yet.
+    expect:
+      min_tool_calls: 3
+      max_tool_calls: 15
+      contains_substring: "Protocol"
+  - prompt: >-
+      Now implement the refactor. Do the planning work yourself, then
+      hand the mechanical per-file edits to fast workers:
+
+      1. YOU: add the shared `AuthProvider` Protocol/base + the shared
+         `AuthResult` to a new file under `auth/` (or a sensible
+         existing one). Do this step inline — it requires judgement
+         about the right shape.
+      2. DELEGATE: use the `delegate(tier="fast", task=..., context=...)`
+         tool to spawn a worker that updates `auth/password.py` to
+         import and use the shared symbols. Pass the worker the file
+         path and the specific edits.
+      3. DELEGATE: same as step 2, for `auth/oauth.py`.
+      4. DELEGATE: same as step 2, for `auth/apikey.py`.
+
+      Use one `delegate()` call per file (three total) so each worker
+      has a focused, mechanical task. After all three workers return,
+      run `python -m pytest test_auth.py -v` from the workspace root
+      and report the result. If anything fails, fix it (either inline
+      or via another `delegate()` call) and re-run pytest until every
+      test passes.
+    expect:
+      min_tool_calls: 3
+      max_tool_calls: 30
+      contains_substring: "passed"
+expect:
+  max_total_cost_usd: 0.50
+  min_llm_calls: 2
+  max_hard_failures: 0
+  # Wave 10 delegation assertion — slot 5 fires inside worker re-entry,
+  # but the planner has to emit at least one delegate() call for any
+  # worker to spawn. ≥3 calls exercises per-file fan-out (one worker
+  # per provider) per delegation.md §6.1.
+  min_delegate_calls: 3
+evaluate:
+  rubric: heuristic
+  # Real symbols the agent should mention to count as grounded. Mix of
+  # design vocabulary the refactor brief asks for ("Protocol",
+  # "AuthProvider") and the verification signal ("passed" from pytest).
+  grounding_tokens:
+    - "AuthProvider"
+    - "Protocol"
+    - "authenticate"
+    - "passed"
+  # Plausible-but-fabricated identifiers a hallucinating agent would
+  # invent without reading the files. Presence is positive evidence of
+  # fabrication, not paraphrase.
+  forbidden_grounding:
+    - "BaseAuthenticator"
+    - "AuthService"
+    - "AuthFactory"

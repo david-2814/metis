@@ -78,6 +78,7 @@ _ALLOWED_AGG_EXPECT = {
     "max_total_cost_usd",
     "min_llm_calls",
     "max_hard_failures",
+    "min_delegate_calls",
 }
 _ALLOWED_TOP = {"name", "description", "suite_version", "turns", "expect", "evaluate"}
 
@@ -239,6 +240,7 @@ class WorkloadResult:
     assertion_failures: list[str] = field(default_factory=list)
     quality_score: float | None = None
     quality_confidence: float | None = None
+    delegate_call_count: int = 0
     error: str | None = None
 
 
@@ -317,8 +319,15 @@ def _check_assertions(
     total_cost_usd: Decimal,
     total_llm_calls: int,
     hard_failures: int,
+    delegate_call_count: int = 0,
 ) -> list[str]:
-    """Apply soft-floor / hard-ceiling assertions per benchmark.md §3.1."""
+    """Apply soft-floor / hard-ceiling assertions per benchmark.md §3.1.
+
+    `delegate_call_count` is the number of `delegate.started` events emitted
+    against the workload's session (delegation.md §9). Workloads that need
+    to exercise the planner-driven delegation path can set
+    `expect.min_delegate_calls` to gate on it.
+    """
     failures: list[str] = []
     for i, (turn, metrics) in enumerate(zip(workload.turns, per_turn_metrics, strict=False)):
         exp = turn.expect
@@ -346,6 +355,11 @@ def _check_assertions(
     if "max_hard_failures" in agg and hard_failures > agg["max_hard_failures"]:
         failures.append(
             f"hard_failures={hard_failures} > max_hard_failures={agg['max_hard_failures']}"
+        )
+    if "min_delegate_calls" in agg and delegate_call_count < agg["min_delegate_calls"]:
+        failures.append(
+            f"delegate_call_count={delegate_call_count} < "
+            f"min_delegate_calls={agg['min_delegate_calls']}"
         )
     return failures
 
@@ -400,27 +414,43 @@ async def run_workload(
             seed_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(pattern_seed_path, seed_dst)
             print(f"  [{workload.name}] seeded pattern store from {pattern_seed_path}")
-        # When v2 fingerprint is requested, materialize a workspace-local
-        # routing.yaml so the engine reads the new PatternConfig fields.
-        # Without this, setup_runtime falls back to `~/.metis/routing.yaml`
-        # or EMPTY_POLICY, and PatternConfig stays at v1.
+        # Routing-policy resolution. Three paths:
+        #   1. Workload ships `.metis/routing.yaml` (copied via shutil.copytree
+        #      above) — used as-is. The new `multi-step-with-delegation`
+        #      workload uses this to pin sonnet as global_default.
+        #   2. `--fingerprint-version v2` — synthesize a routing.yaml with
+        #      the v2 pattern fields. Conflicts with #1 are rejected so the
+        #      workload's intent isn't silently clobbered.
+        #   3. Neither — fall back to setup_runtime's default
+        #      (`~/.metis/routing.yaml` or EMPTY_POLICY).
         routing_policy_path: str | None = None
+        shipped_policy = ws / ".metis" / "routing.yaml"
         if fingerprint_version == "v2":
             if not embedding_provider:
                 raise RuntimeError(
                     "--fingerprint-version v2 requires --embedding-provider "
                     "(e.g. openai:text-embedding-3-small)"
                 )
-            policy_path = ws / ".metis" / "routing.yaml"
-            policy_path.parent.mkdir(parents=True, exist_ok=True)
-            policy_path.write_text(
+            if shipped_policy.is_file():
+                raise RuntimeError(
+                    f"{workload.name}: --fingerprint-version v2 would overwrite "
+                    f"the workload's shipped routing.yaml at {shipped_policy}. "
+                    "Pick one or extend the harness to merge."
+                )
+            shipped_policy.parent.mkdir(parents=True, exist_ok=True)
+            shipped_policy.write_text(
                 "schema_version: 1\n"
                 "pattern:\n"
                 "  fingerprint_version: v2\n"
                 f"  embedding_provider: {embedding_provider}\n",
                 encoding="utf-8",
             )
-            routing_policy_path = str(policy_path)
+            routing_policy_path = str(shipped_policy)
+        elif shipped_policy.is_file():
+            routing_policy_path = str(shipped_policy)
+            print(
+                f"  [{workload.name}] using workload-shipped routing.yaml at {shipped_policy}"
+            )
         runtime = await setup_runtime(
             workspace_path=str(ws),
             db_path=str(db_path),
@@ -958,12 +988,30 @@ async def amain() -> int:
             finally:
                 store.close()
 
+            # Count delegate.started events on the workload's planner
+            # session (delegation.md §9). Workers emit their own events
+            # under their own session id; the planner-scoped count is
+            # what the `min_delegate_calls` assertion cares about.
+            from metis_core.trace.store import TraceStore
+
+            trace_ro = TraceStore(db_path)
+            try:
+                session_events = trace_ro.events_for_session(session_id)
+                delegate_call_count = sum(
+                    1 for e in session_events if e.type == "delegate.started"
+                )
+            finally:
+                trace_ro.close()
+            if delegate_call_count:
+                print(f"  [{workload.name}] delegate.started count = {delegate_call_count}")
+
             assertion_failures = _check_assertions(
                 workload,
                 per_turn,
                 cost,
                 llm,
                 hard_failures=0,  # populated after analytics routing call below
+                delegate_call_count=delegate_call_count,
             )
             quality_score, quality_confidence = await evaluate_workload_quality(
                 workload,
@@ -997,6 +1045,7 @@ async def amain() -> int:
                     assertion_failures=assertion_failures,
                     quality_score=quality_score,
                     quality_confidence=quality_confidence,
+                    delegate_call_count=delegate_call_count,
                 )
             )
 

@@ -1,3 +1,27 @@
+{{- /*
+  gateway-hardening.md §3 / §7 — edge-layer rate limit annotations.
+
+  The gateway's in-process middleware (values.yaml::rateLimit.enabled)
+  enforces per-key + per-IP buckets behind the ingress. A buyer can add a
+  second backstop at the controller by adding ONE of the annotation
+  blocks below to values.yaml::ingress.annotations. Pick the one that
+  matches your ingress class — mixing them renders invalid YAML on a
+  controller that doesn't recognize the annotation.
+
+  nginx-ingress (kubernetes/ingress-nginx):
+    annotations:
+      nginx.ingress.kubernetes.io/limit-rpm: "60"
+      nginx.ingress.kubernetes.io/limit-connections: "20"
+      nginx.ingress.kubernetes.io/limit-rps: "5"
+
+  Caddy (caddy-ingress-controller):
+    annotations:
+      caddy.ingress.kubernetes.io/rate-limit: "60r/m"
+
+  Traefik (annotations vary by version; confirm against your CRD):
+    annotations:
+      traefik.ingress.kubernetes.io/router.middlewares: <ns>-ratelimit@kubernetescrd
+*/ -}}
 {{- if .Values.ingress.enabled -}}
 {{- $fullName := include "metis-gateway.fullname" . -}}
 {{- $svcPort := .Values.service.port -}}

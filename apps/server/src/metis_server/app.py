@@ -35,6 +35,7 @@ from metis_core.canonical.ids import new_message_id
 from metis_core.canonical.messages import Message
 from metis_core.events.envelope import Actor
 from metis_core.events.payloads import SessionEnded, make_event
+from metis_core.observability import METRICS_CONTENT_TYPE, MetricsCollector
 from metis_core.sessions.manager import UnknownAliasError
 from metis_core.tools.confirmation import ConfirmationDecision
 from starlette.applications import Starlette
@@ -86,6 +87,7 @@ class _AppState:
     executor: TurnExecutor
     confirmation_handler: RemoteConfirmationHandler
     analytics: AnalyticsStore
+    metrics: MetricsCollector
     started_at: datetime
 
 
@@ -100,6 +102,11 @@ def build_app(runtime: ChatRuntime) -> Starlette:
     hub = StreamingHub()
     confirmation = RemoteConfirmationHandler()
     runtime.dispatcher.set_confirmation_handler(confirmation)
+    metrics = MetricsCollector(
+        bus=runtime.bus,
+        session_count_getter=lambda: len(runtime.session_store.list_sessions()),
+    )
+    metrics.attach()
     state = _AppState(
         runtime=runtime,
         tokens=AttachTokenRegistry(),
@@ -107,6 +114,7 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         executor=TurnExecutor(runtime.manager, hub=hub),
         confirmation_handler=confirmation,
         analytics=AnalyticsStore(runtime.db_file),
+        metrics=metrics,
         started_at=datetime.now(UTC),
     )
 
@@ -124,6 +132,7 @@ def build_app(runtime: ChatRuntime) -> Starlette:
 
     routes = [
         Route("/health", _health, methods=["GET"]),
+        Route("/metrics", _metrics, methods=["GET"]),
         Route("/server/version", _server_version, methods=["GET"]),
         Route("/sessions", _post_session, methods=["POST"]),
         Route("/sessions", _list_sessions, methods=["GET"]),
@@ -203,6 +212,18 @@ async def _health(request: Request) -> Response:
             ),
         }
     )
+
+
+async def _metrics(request: Request) -> Response:
+    """GET /metrics — Prometheus exposition for in-cluster scrapers.
+
+    Loopback-only by virtue of `metis serve`'s bind posture
+    (server-api.md §3.1). Production scrape goes through a
+    ServiceMonitor (helm chart `monitoring.enabled`).
+    """
+    st = _state(request)
+    body = st.metrics.expose()
+    return Response(content=body, media_type=METRICS_CONTENT_TYPE)
 
 
 async def _server_version(_request: Request) -> Response:

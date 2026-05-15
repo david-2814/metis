@@ -56,10 +56,13 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_created
     ON messages(session_id, created_at);
-
-CREATE INDEX IF NOT EXISTS idx_sessions_parent
-    ON sessions(parent_session_id) WHERE parent_session_id IS NOT NULL;
 """
+
+# `idx_sessions_parent` is created by `_migrate_sessions_table()` after the
+# delegation columns have been backfilled. It cannot live in `_SCHEMA` above
+# because `executescript(_SCHEMA)` runs before the migration, and a
+# pre-Wave-10 db has a `sessions` table without `parent_session_id` —
+# creating the partial index against a missing column raises here.
 
 # Additive columns that must be backfilled on existing DBs (delegation.md
 # §5.1). The migration is run unconditionally; PRAGMA `table_info` tells us

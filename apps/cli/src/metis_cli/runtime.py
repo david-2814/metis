@@ -24,7 +24,10 @@ from metis_core.events.payloads import RoutingPolicyInvalid, make_event
 from metis_core.memory import MemoryStore, register_memory_tools
 from metis_core.patterns import PatternEventSubscriber, PatternStore
 from metis_core.patterns.embeddings import resolve_embedding_provider
-from metis_core.patterns.fingerprint import FingerprintInputs
+from metis_core.patterns.fingerprint import (
+    FingerprintInputs,
+    attach_embedding_for_recording,
+)
 from metis_core.pricing import DEFAULT_PRICE_TABLE, PriceTable
 from metis_core.routing import (
     EMPTY_POLICY,
@@ -275,12 +278,44 @@ async def setup_runtime(
         store_factory=_store_factory,
         workspace_resolver=_workspace_resolver,
         bus=bus,
-        embedder=embedder,
     )
     pattern_subscriber.attach()
 
-    def _on_turn_fingerprint_inputs(turn_id: str, ctx) -> None:
-        pattern_subscriber.set_fingerprint_inputs(turn_id, _routing_fingerprint_inputs(ctx))
+    async def _on_turn_fingerprint_inputs(turn_id: str, ctx) -> None:
+        """Precompute the embedding at turn start so:
+
+        1. Routing slot 4 (sync cache-only lookup) hits the cache for v2 K-NN.
+        2. The pattern subscriber records a HYBRID fingerprint (the recorded
+           row carries `embedding_blob`), not STRUCTURAL with the embedding
+           orphaned in the cache.
+
+        Per `pattern-store.md §16` and benchmarks/RESULTS.md §A3-rev4 Q1: the
+        Wave-10 post-record warm-up populated the cache but left the
+        recorded row STRUCTURAL. Computing the embedding HERE — before
+        `turn.started`, before `route.decided`, before `turn.completed` —
+        means it lands in inputs.embedding for the eventual record() call,
+        without yielding inside the per-turn eval cascade.
+        """
+        inputs = _routing_fingerprint_inputs(ctx)
+        if (
+            embedder is not None
+            and pattern_cfg.fingerprint_version == "v2"
+            and inputs.user_message_text
+            and ctx.workspace_path
+        ):
+            store = _pattern_store_resolver(ctx.workspace_path)
+            if store is not None:
+                try:
+                    inputs = await attach_embedding_for_recording(
+                        inputs, store=store, embedder=embedder
+                    )
+                except Exception:
+                    logger.exception(
+                        "turn-start embedding precompute failed for turn %s; "
+                        "falling back to STRUCTURAL fingerprint",
+                        turn_id,
+                    )
+        pattern_subscriber.set_fingerprint_inputs(turn_id, inputs)
 
     manager = SessionManager(
         registry=registry,
