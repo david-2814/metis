@@ -100,6 +100,12 @@ class MessageMetadata(msgspec.Struct, frozen=True, eq=False):
     # Excluded from __eq__ / __hash__ per canonical-message-format.md §6.5.
     provider_raw: dict | None = None
 
+    # Multi-user identity dimensions (multi-user.md §3, §4.4). Stable
+    # principal ids resolved from the gateway key; `None` for agent-loop
+    # traffic and pre-multi-user gateway keys.
+    user_id: str | None = None
+    team_id: str | None = None
+
     def _identity(self) -> tuple:
         return (
             self.model,
@@ -108,6 +114,8 @@ class MessageMetadata(msgspec.Struct, frozen=True, eq=False):
             self.usage,
             self.parent_tool_use_id,
             self.status,
+            self.user_id,
+            self.team_id,
         )
 
     def __eq__(self, other: object) -> bool:

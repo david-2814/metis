@@ -69,6 +69,13 @@ class TurnCompleted(msgspec.Struct, frozen=True):
     # §5.1. Bus emitters set fields they have; subscribers treat missing
     # keys as "no signal," not as an error.
     signals_extra: dict | None = None
+    # Multi-user identity dimensions (multi-user.md §3, §4.4). Mirrors the
+    # `LLMCallCompleted` stamping so the analytics surface can roll up by
+    # user/team at the turn grain (matches the pattern of `gateway_key_id`).
+    # `None` for agent-loop traffic and pre-multi-user gateway keys; rolls up
+    # under the null bucket per multi-user.md §3.4.
+    user_id: str | None = None
+    team_id: str | None = None
 
 
 class TurnCancelled(msgspec.Struct, frozen=True):
@@ -107,6 +114,14 @@ class LLMCallCompleted(msgspec.Struct, frozen=True):
     # key and inbound translator.
     gateway_key_id: str | None = None
     inbound_shape: Literal["openai", "anthropic"] | None = None
+    # Multi-user identity dimensions (multi-user.md §3, §4.4). Stable
+    # principal ids resolved from the gateway key at request entry; agent-loop
+    # traffic and pre-multi-user gateway keys leave both as `None` and roll up
+    # under the null bucket per multi-user.md §3.4. Both are pseudonymous
+    # identifiers — no plaintext PII; emails live in `users.json` only
+    # (multi-user.md §3.3).
+    user_id: str | None = None
+    team_id: str | None = None
 
 
 # 8-value error_class enum per provider-adapter §6.1.

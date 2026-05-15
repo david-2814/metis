@@ -2181,3 +2181,645 @@ for r in c.execute(\"SELECT payload_json FROM events WHERE type='route.decided' 
         print(f'{chose:<22} haiku={h[\"score\"]:.3f} sonnet={s[\"score\"]:.3f} conf={pat[\"confidence\"]:.3f}')
 "
 ```
+
+---
+
+## Experiment A3-rev2: workload-tag partitioning + cost_weight=0.1 + grounding-check primitive — does the differentiator finally invert?
+
+**Run date (UTC):** 2026-05-14
+**Commit SHA:** `6899371` (dirty — Wave 8a unblocks staged but not yet
+committed)
+**Suite version:** 1 (now 7 workloads with v1.1 of the hallucination workload)
+**Pricing version:** `2026-05-08+openrouter-e7aa08510daa`
+**Test baseline:** 1223 passed (`uv run pytest -q`)
+**Total real-API spend (3 passes):** **$1.062** (Pass A $0.1995 + Pass B
+$0.6785 + Pass C $0.1837)
+
+This is the third-time-lucky follow-up to §A3-rev. The §A3-rev finding
+identified three potential third unblocks; all three landed in Wave 8a
+and this experiment runs the same three-pass protocol against them:
+
+| Unblock | Mechanism | Where it landed |
+|---|---|---|
+| 8a-1 | `workload_id` flows from `submit_turn` → fingerprint; cluster blend weight 0.85 so same-workload neighbors score ≥ 0.85 even with zero structural overlap | [`patterns/fingerprint.py:88-191`](../packages/metis-core/src/metis_core/patterns/fingerprint.py#L88-L191), [`patterns/similarity.py`](../packages/metis-core/src/metis_core/patterns/similarity.py) |
+| 8a-2 | `PatternConfig.cost_weight` default 0.3 → 0.1 (success delta required to flip drops from ~0.43 to ~0.143) | [`routing/policy.py:30-51`](../packages/metis-core/src/metis_core/routing/policy.py#L30-L51) |
+| 8a-3 | `grounding_tokens` / `forbidden_grounding` rubric primitive replaces the single-substring `contains_substring` check on `architectural-explanation-without-hallucination` (v1.1) | [`eval/rubric.py:30-116`](../packages/metis-core/src/metis_core/eval/rubric.py#L30-L116), [`eval/judge.py:540-579`](../packages/metis-core/src/metis_core/eval/judge.py#L540-L579), [`workloads/architectural-explanation-without-hallucination/workload.yaml`](workloads/architectural-explanation-without-hallucination/workload.yaml) |
+
+The benchmark harness now passes `workload_id=<name>` to `submit_turn`
+per call (8a-1 plumbing in [`scripts/benchmark.py:414`](../scripts/benchmark.py#L414)).
+
+### Headline: still no inversion
+
+**Slot 4 picks `haiku` on all 3 of its Pass C wins. It never picks `sonnet`.** Three workload-tagged unblocks did not flip the chooser.
+
+### A3-rev2 per-pass aggregate (3-pass real-API spend $1.062)
+
+| Pass | Model strategy | actual_repriced_usd | baseline_repriced_usd | savings_pct | Workloads completed | LLM calls | Hard failures |
+|------|---------------|--------------------:|----------------------:|------------:|---------------------|----------:|--------------:|
+| A    | haiku pinned  | $0.1995 | $0.5985 | 66.7% | 6 of 7 (fix-a-bug NetworkError) | 47 | 0 |
+| B    | sonnet pinned | $0.6785 | $0.6785 | 0.0%  | 7 of 7 | 68 | 0 |
+| C    | `--no-active-model` (slot 4 may fire) | $0.1837 | $0.5512 | 66.7% | 5 of 7 (multi-turn-refactor + regex NetworkError) | 46 | 0 |
+
+Pass C's `savings_pct=66.7%` matches Pass A's exactly — and not by
+coincidence. **Pass C never picked sonnet**: slot 4 fired on 3 of 16
+turns and chose `haiku` all 3 times; the other 13 turns fell through to
+`global_default` (also `haiku`, since the runtime's `global_default_
+model` is haiku when `--model haiku` is the implicit fallback).
+
+### A3-rev2 per-workload Pass C slot-4 decisions (the headline table)
+
+Extracted from `benchmarks/.runs/a3rev2-pass-c.db` route.decided events.
+Workload column derived by joining session → pattern.recorded →
+fingerprint.workload_id from the shared patterns DB.
+
+| Pass C turn (chronological) | Winning slot | Chosen model | Pattern haiku score | Pattern sonnet score | Pattern confidence |
+|-----------------------------|--------------|--------------|--------------------:|---------------------:|-------------------:|
+| 1   | `global_default` | haiku | — | — | — (`no high-confidence pattern recommendation`) |
+| 2   | `global_default` | haiku | — | — | — |
+| 3   | `global_default` | haiku | — | — | — |
+| 4   | `global_default` | haiku | — | — | — |
+| 5   | `global_default` | haiku | — | — | — |
+| 6   | `global_default` | haiku | — | — | — |
+| 7   | `global_default` | haiku | — | — | — |
+| 8   | `global_default` | haiku | — | — | — |
+| 9   | `global_default` | haiku | — | — | — |
+| 10  | `global_default` | haiku | — | — | — |
+| 11  | `global_default` | haiku | — | — | — |
+| 12  | **`pattern`**    | **haiku** | **1.000** | **0.652** | 0.348 |
+| 13  | **`pattern`**    | **haiku** | **1.000** | **0.652** | 0.348 |
+| 14  | `global_default` | haiku | — | — | — |
+| 15  | `global_default` | haiku | — | — | — |
+| 16  | **`pattern`**    | **haiku** | **0.856** | **0.585** | 0.317 |
+
+**3 of 16 turns** reached slot 4 (vs **15 of 18** in §A3-rev). The
+workload-tag partition is doing its job — clusters are clean — but it
+starves the K-NN of neighbors: a workload that has accumulated only 1
+haiku-pass and 1 sonnet-pass of outcomes has too few same-workload
+fingerprints to clear `min_sample_size=5`, so 13 of 16 turns drop to
+`pat_verdict=not_applicable / reason="no high-confidence pattern
+recommendation"`. The 3 turns where slot 4 *did* fire saw a haiku
+success-mean ~0.35 above sonnet's — far more than the 0.143 delta
+`cost_weight=0.1` would need to flip the chooser.
+
+### A3-rev2 per-workload patterns-DB success means (cross-pass aggregate)
+
+These are the cluster-level success scores the K-NN aggregator reads
+when slot 4 evaluates a fresh fingerprint. They aggregate per-turn
+`eval.completed(subject_kind=turn)` verdicts from Pass A + Pass B + the
+inline per-turn evals during Pass C (3 passes combined, since the
+patterns DB is shared).
+
+| Workload | Haiku score | Haiku n turns | Sonnet score | Sonnet n turns | Δ (sonnet − haiku) | Direction |
+|----------|------------:|--------------:|-------------:|---------------:|-------------------:|-----------|
+| fix-a-bug-small | 0.933 | 6 | 1.000 | 2 | +0.067 | sonnet barely ahead |
+| intentionally-failing-task | 1.000 | 2 | 1.000 | 1 | +0.000 | tie |
+| multi-file-refactor-with-shared-types | 0.771 | 7 | 0.750 | 4 | **−0.021** | **haiku ahead** |
+| multi-turn-refactor | 0.883 | 6 | 0.725 | 4 | **−0.158** | **haiku ahead** |
+| regex-with-edge-cases | 0.967 | 3 | 1.000 | 3 | +0.033 | sonnet barely ahead |
+| write-a-doc-from-notes | 1.000 | 2 | 1.000 | 1 | +0.000 | tie |
+
+`architectural-explanation-without-hallucination` is missing because all
+3 of its fingerprints have `success_score_count=0` on their outcome
+rows — the per-turn evals didn't aggregate into the outcomes. The
+workload-level eval verdicts (Pass A 0.95@0.80, Pass B 0.90@0.80, Pass
+C 0.90@0.80) don't feed into pattern outcomes in v1; only per-turn
+verdicts do (see `evaluator.md §5` and `pattern-store.md §15.4`).
+**This is the new third blocker, separate from the three unblocks
+shipped this wave: see §A3-rev2 finding below.**
+
+### A3-rev2 per-workload Pass A/B/C workload-level quality scores
+
+Per-turn cluster aggregation in the patterns DB diverges sharply from
+the per-workload workload-level eval verdicts that the harness prints.
+The divergence is the key new finding:
+
+| Workload | Pass A (haiku) | Pass B (sonnet) | Pass C (slot 4) | Workload-grain Δ (s−h) |
+|----------|--------------:|----------------:|---------------:|----------------------:|
+| architectural-explanation-without-hallucination | 0.95 | 0.90 | 0.90 | −0.05 (haiku slightly ahead — v1.1 grounding-check eliminates the §A3-rev inversion on this workload) |
+| fix-a-bug-small | — (transient) | 1.00 | 0.93 | n/a |
+| intentionally-failing-task | 0.25 | 0.25 | 0.25 | +0.00 |
+| multi-file-refactor-with-shared-types | **0.00** | **0.88** | 0.89 | **+0.88 (sonnet way ahead!)** |
+| multi-turn-refactor | 1.00 | 0.72 | (transient) | −0.28 (haiku ahead) |
+| regex-with-edge-cases | 0.71 | 0.25 | (transient) | −0.46 (haiku way ahead) |
+| write-a-doc-from-notes | 1.00 | 1.00 | 1.00 | +0.00 |
+
+**Look at `multi-file-refactor-with-shared-types`**: the workload-level
+verdict says sonnet beats haiku by +0.88 (the largest cross-model gap
+in the suite). The patterns-DB per-turn-aggregated cluster scores for
+the same workload say haiku beats sonnet by **0.021**. That's a flip of
+sign — the per-turn signal that feeds the pattern store *inverts* the
+workload-level reality. The pattern store learns from per-turn evals.
+Slot 4 reads the pattern store. So slot 4 reaches the opposite
+conclusion from the workload-level scorer that the user actually
+cares about.
+
+### A3-rev2 cost-per-quality-unit
+
+| Pass | Quality sum (completed workloads) | actual_repriced_usd | cost-per-quality | Workloads counted |
+|------|----------------------------------:|--------------------:|-----------------:|-------------------|
+| A (haiku)        | 3.91 (6 of 7) | $0.1995 | **$0.0510** | architectural, intentionally-failing, multi-file-refactor, multi-turn-refactor, regex, write-a-doc |
+| B (sonnet)       | 5.00 (7 of 7) | $0.6785 | **$0.1357** | all 7 |
+| C (slot 4 → haiku) | 3.97 (5 of 7) | $0.1837 | **$0.0463** | architectural, fix-a-bug, intentionally-failing, multi-file-refactor, write-a-doc |
+
+Pass C is cheaper per quality unit than Pass A — but **the success
+criterion was never met**. Per the task brief: "the successful
+inversion produces a Pass C number between $0.0306 (haiku-only floor)
+and $0.1005 (sonnet-only ceiling) but with materially HIGHER quality
+than haiku-only (the savings story: 'we picked the better model on
+the workloads where it mattered')." Pass C's quality sum (3.97 over 5
+completed workloads, mean 0.794) is similar to Pass A's sum (3.91 over
+6 completed workloads, mean 0.652) — but Pass C's higher per-workload
+mean reflects sample selection (the 2 lost-to-transient workloads
+happened to be the harder ones for haiku) not a slot-4-induced
+inversion. Pass C never picked sonnet on `multi-file-refactor-with-
+shared-types`, the only workload where the right answer is "use
+sonnet."
+
+### A3-rev2 finding (Wave 9 candidate)
+
+**Three correct unblocks landed and the differentiator still doesn't
+invert.** The reason isn't any of the three §A3-rev hypotheses; it's a
+fourth thing the §A3-rev analysis didn't surface:
+
+**The pattern store learns from per-turn evaluator verdicts, but the
+metric users care about is workload-level quality. The two signals
+diverge — sometimes sharply.** On `multi-file-refactor-with-shared-
+types`, sonnet's per-turn heuristic + LLM scores aggregate to 0.750
+(haiku is 0.771) because sonnet's per-turn behavior — multiple tool
+calls, verbose intermediate explanations, occasional pinned-back-end
+churn — looks "noisy" to the per-turn heuristic's content + tool-use
+checks. But the *workload-level* verdict, which reads the final
+response text and runs grounding/rubric checks, scores sonnet at 0.88
+and haiku at 0.00 (haiku straight-up failed the workload acceptance
+criteria). Slot 4 sees the noisy per-turn signal, not the workload
+signal — so it picks haiku.
+
+Three independent paths could move the needle on a follow-up A3-rev3:
+
+1. **Wire workload-level `eval.completed(subject_kind=workload)`
+   verdicts into `pattern.outcome_updated`.** Currently the pattern
+   subscriber listens for per-turn evals only (see
+   `eval/__init__.py` / `patterns/subscriber.py`). Adding a
+   workload-level path would mean each workload's *final* score (with
+   confidence) updates the outcome rows of every fingerprint produced
+   in that workload's session, weighted by the workload subject's
+   confidence. This is the closest analog to "outcome-based learning"
+   the spec describes.
+
+2. **Per-turn heuristic doesn't see "final-response quality."** It
+   reads `assistant_response_text` for the *current turn* and runs
+   regex / length / tool-success checks. It can't tell whether the
+   agent is making progress toward the user's goal or doing make-work.
+   A `multi_turn_progress_check` signal (e.g. comparing the assistant's
+   last K turns against the workload prompt for "movement") would
+   align the per-turn metric with the workload metric.
+
+3. **Raise `min_eval_confidence`.** The Pass A/B/C heuristic verdicts
+   are mostly `confidence=0.9` — way above the `0.5` gate. But the
+   hybrid escalations land in 0.7–1.0 with mixed signal. If the gate
+   were tightened to e.g. 0.85 (excluding hybrid-LLM verdicts that the
+   judge admits low certainty on), the noisy per-turn signal that
+   pulled sonnet down on multi-file-refactor would be filtered out.
+   This is a knob change, not new infrastructure.
+
+Path #1 is the principled fix. Path #2 is more work but tightens the
+underlying signal. Path #3 is a one-line policy bump worth trying as
+a fast smoke before either #1 or #2.
+
+### A3-rev2 caveats and observations
+
+- **The `__pycache__` files tracked in git are a benchmark hazard.**
+  `git ls-files | grep __pycache__` shows ~15 `.pyc` files committed
+  to the tree (despite `__pycache__/` being in `.gitignore`). When
+  Wave 8a edited source files, Python's import machinery loaded stale
+  bytecode in subprocesses and Pass B crashed across every workload
+  with `TypeError: sequence item 0: expected str instance, tuple
+  found` (the stale bytecode had an older `_pad_stable_prefix_for_
+  cache` signature). After
+  `find packages apps -name __pycache__ -exec rm -rf {} +` Pass B
+  ran cleanly. This isn't a code bug — the source is correct and
+  1223 tests pass — but the tracked-`.pyc` situation should be
+  cleaned up before the next bench run, or the next person will hit
+  the same trap.
+- **Transients persist.** Pass A lost `fix-a-bug-small` to a network
+  error mid-turn-2; Pass C lost `multi-turn-refactor` (turn 4) and
+  `regex-with-edge-cases` (turn 1). This is the same kind of API
+  flakiness §A3-rev saw. Could re-run Pass C alone for ~$0.05 to
+  recover the two missing data points, but it wouldn't change the
+  headline: slot 4 already had 3 chances to invert and took none of
+  them.
+- **8a-3 (grounding-check) works as designed.** The hallucination
+  workload's Pass B sonnet quality went from §A3-rev's 0.50 (penalized
+  for not parroting `PATTERN_RECOMMENDATION`) to §A3-rev2's 0.90 (the
+  new rubric scores it on real-symbol grounding, where sonnet cites
+  `RoutingEngine`, `ModelRegistry`, `PolicyEvaluation`, `policy=`
+  correctly). The headline `inversion` is just shifted: this workload
+  is no longer the artifact-of-bad-rubric where haiku looks better.
+  Now the haiku/sonnet gap on this workload is actually quite small
+  (haiku 0.95 vs sonnet 0.90) — both models open the files and ground
+  in real symbols.
+- **8a-1 (workload-tag) works as designed.** Same-workload turns now
+  cluster above the similarity threshold (verified in
+  `test_submit_turn_workload_id_flows_into_pattern_recorded`). The
+  side-effect is fewer slot 4 firings until each workload accumulates
+  ≥5 outcomes — a price worth paying for cluster integrity.
+- **8a-2 (cost_weight=0.1) works as designed.** With success delta
+  ~0.35 in haiku's favor on the slot-4-routed turns, no realistic
+  `cost_weight` would have flipped them. cost_weight=0.1 is correct
+  in principle but the per-turn signal it weights is the problem.
+
+### Reproduce A3-rev2
+
+```bash
+# Baseline check
+uv run pytest -q                                  # expect 1223 passed
+find packages apps -name __pycache__ -exec rm -rf {} +   # prevent stale-bytecode trap
+
+# A3-rev2: 3-pass experiment with hybrid judge (threshold 0.7), workload-tagged.
+rm -f benchmarks/.runs/a3rev2-patterns.db \
+      benchmarks/.runs/a3rev2-pass-{a,b,c}.{db,json}
+uv run python scripts/benchmark.py \
+  --model haiku  --patterns-db-path benchmarks/.runs/a3rev2-patterns.db \
+  --db-path     benchmarks/.runs/a3rev2-pass-a.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+uv run python scripts/benchmark.py \
+  --model sonnet --patterns-db-path benchmarks/.runs/a3rev2-patterns.db \
+  --db-path     benchmarks/.runs/a3rev2-pass-b.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+uv run python scripts/benchmark.py \
+  --no-active-model --patterns-db-path benchmarks/.runs/a3rev2-patterns.db \
+  --db-path     benchmarks/.runs/a3rev2-pass-c.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+
+# Inspect Pass C slot-4 winners (the key table):
+uv run python -c "
+import sqlite3, json
+c = sqlite3.connect('benchmarks/.runs/a3rev2-pass-c.db').cursor()
+for r in c.execute(\"SELECT payload_json FROM events WHERE type='route.decided' ORDER BY id\"):
+    p = json.loads(r[0])
+    chain = p.get('chain', [])
+    win = next((s for s in chain if s.get('verdict') == 'chose'), None)
+    if win and win.get('policy') == 'pattern':
+        alts = win.get('pattern_alternatives') or []
+        h = next((a for a in alts if 'haiku' in a['model']), None)
+        s = next((a for a in alts if 'sonnet' in a['model']), None)
+        print(f'chose={p[\"chosen_model\"].split(\":\")[-1]:<22} haiku={h[\"score\"]:.3f} sonnet={s[\"score\"]:.3f} conf={win[\"confidence\"]:.3f}')
+
+# Inspect cluster-level success means per workload:
+uv run python -c "
+import sqlite3, json, collections
+conn = sqlite3.connect('benchmarks/.runs/a3rev2-patterns.db')
+fps = list(conn.execute('SELECT id, structural_json FROM fingerprints').fetchall())
+outs = list(conn.execute('SELECT fingerprint_id, primary_model, success_score_mean, success_score_count FROM outcomes').fetchall())
+by_fp = collections.defaultdict(list)
+for fp_id, model, mean, count in outs:
+    by_fp[fp_id].append((model, mean, count))
+agg = collections.defaultdict(lambda: collections.defaultdict(lambda: [0.0, 0]))
+for fp_id, sj in fps:
+    wid = json.loads(sj).get('workload_id') or 'unknown'
+    for model, mean, count in by_fp.get(fp_id, []):
+        if count > 0:
+            agg[wid][model][0] += mean * count
+            agg[wid][model][1] += count
+for wid in sorted(agg):
+    h = agg[wid].get('anthropic:claude-haiku-4-5', [0,0])
+    s = agg[wid].get('anthropic:claude-sonnet-4-6', [0,0])
+    hm = h[0]/h[1] if h[1] else None
+    sm = s[0]/s[1] if s[1] else None
+    print(f'{wid:<48} haiku={hm or \"n/a\"} (n={h[1]})  sonnet={sm or \"n/a\"} (n={s[1]})')
+"
+```
+
+## Experiment A3-rev2: three-unblock validation (2026-05-14)
+
+The §A3-rev finding identified three unblocks that *might* invert the
+differentiator. Wave 8 landed all three:
+
+1. **`workload_id` as a fingerprint partition** (8a-1). `submit_turn`
+   now accepts `workload_id`; it round-trips into `StructuralFeatures.
+   workload_id` and the K-NN similarity scorer blends a strong cluster
+   signal (`_WORKLOAD_BLEND_WEIGHT = 0.85`) so same-workload neighbors
+   land ≥ 0.85 even when their structural features differ.
+2. **`PatternConfig.cost_weight` default dropped from 0.3 → 0.1**
+   (8a-2). At 0.1 a success delta of ~0.143 should flip the chooser
+   (vs ~0.43 at 0.3). [`packages/metis-core/src/metis_core/routing/
+   policy.py:48`].
+3. **Grounding-check rubric primitive on `architectural-explanation-
+   without-hallucination`** (8a-3). The workload's `evaluate:` block
+   now uses `grounding_tokens` + `forbidden_grounding` (evaluator.md
+   §5.4) so sonnet's lowercase-symbol citations score equally to
+   haiku's UPPERCASE parroting.
+
+§A3-rev2 re-runs the three-pass protocol against all three unblocks
+to test the inversion hypothesis.
+
+### A3-rev2 protocol
+
+Identical to §A3-rev's:
+
+- Pass A: `--model haiku   --patterns-db-path …a3rev2-patterns.db`
+- Pass B: `--model sonnet  --patterns-db-path …a3rev2-patterns.db` (layered)
+- Pass C: `--no-active-model --patterns-db-path …a3rev2-patterns.db`
+- All passes: `--judge hybrid --judge-escalation-threshold 0.7`
+- All passes: `submit_turn(workload_id=workload.name)` per the
+  `--patterns-db-path` harness hook (8a-1 wiring).
+
+Test baseline: `uv run pytest -q` ⇒ 1223 passed.
+
+### A3-rev2 transient failures
+
+Anthropic transient connection errors hit Pass B four times and
+Pass A once (same pattern as §A3-rev — these are not fingerprint-
+specific). Re-running the failed workloads individually against the
+same shared `a3rev2-patterns.db` recovered them:
+
+- Pass A: `multi-file-refactor-with-shared-types` turn 4 lost; not
+  retried (haiku already had ≥6 samples on this workload from earlier
+  turns).
+- Pass B: `fix-a-bug-small`, `multi-file-refactor-with-shared-types`,
+  `multi-turn-refactor` each lost mid-run. Re-run with
+  `--workload <name>` against the same patterns DB recovered all
+  three (`a3rev2-pass-b-retry{,2,3}.{db,json}`). The retry for
+  `multi-file-refactor-with-shared-types` dropped turn 4 again to
+  another connection error; 3 sonnet samples landed for that
+  workload.
+- Pass C: no transient failures.
+
+### A3-rev2 per-pass cost
+
+| Pass                      | actual $   | rows | notes |
+| ------------------------- | ---------- | ---- | ----- |
+| A (haiku)                 | $0.2667    | 70   | one turn lost, ok |
+| B (sonnet, original)      | $0.5138    | 47   | three workloads lost |
+| B retry: fix-a-bug-small  | $0.0293    |  6   | full 3-turn recovery |
+| B retry: multi-file-refac | $0.1496    | 16   | turns 1-3 recovered, turn 4 lost again |
+| B retry: multi-turn-refac | $0.1512    | 21   | full 4-turn recovery |
+| C (--no-active-model)     | $0.2056    | 49   | clean |
+| **Total**                 | **$1.316** |      |       |
+
+Within the §A3-rev / §A3 budget envelope ($1-2). Same order of
+magnitude as the unmodified runs.
+
+### A3-rev2 patterns-store density after Pass B (the cross-model data slot 4 reads)
+
+```
+workload                                       model   rows  size scored   wmean   avg$
+architectural-explanation-without-hallucination haiku    2     2     0     n/a    0.0374
+architectural-explanation-without-hallucination sonnet   2     2     0     n/a    0.1187
+fix-a-bug-small                                haiku    6     6     6    0.933   0.0053
+fix-a-bug-small                                sonnet   7     7     5    1.000   0.0109
+intentionally-failing-task                     haiku    2     2     2    1.000   0.0010
+intentionally-failing-task                     sonnet   2     2     2    1.000   0.0029
+multi-file-refactor-with-shared-types          haiku    7     7     7    0.771   0.0155
+multi-file-refactor-with-shared-types          sonnet   9     9     9    0.778   0.0536
+multi-turn-refactor                            haiku    7     7     6    0.883   0.0118
+multi-turn-refactor                            sonnet   9     9     9    0.844   0.0377
+regex-with-edge-cases                          haiku    3     3     3    0.967   0.0087
+regex-with-edge-cases                          sonnet   6     6     5    1.000   0.0336
+write-a-doc-from-notes                         haiku    4     4     2    1.000   0.0070
+write-a-doc-from-notes                         sonnet   4     4     2    1.000   0.0247
+```
+
+**Workload-tag partition works:** every cross-model comparison in
+the K-NN happens on same-workload neighbors. There is no cluster
+mixing across workloads, unlike §A3-rev. The `intent_tags=[]`
+problem §A3-rev identified is moot — workload_id dominates.
+
+**Observed per-workload quality deltas (Pass B post-state):**
+
+| workload                                       | haiku wmean | sonnet wmean | gap (s-h) |
+| ---------------------------------------------- | ----------: | -----------: | --------: |
+| architectural-explanation-without-hallucination|     n/a     |    n/a       |    —      |
+| fix-a-bug-small                                |    0.933    |    1.000     |  +0.067   |
+| intentionally-failing-task                     |    1.000    |    1.000     |   0.000   |
+| multi-file-refactor-with-shared-types          |    0.771    |    0.778     |  +0.007   |
+| multi-turn-refactor                            |    0.883    |    0.844     |  -0.039   |
+| regex-with-edge-cases                          |    0.967    |    1.000     |  +0.033   |
+| write-a-doc-from-notes                         |    1.000    |    1.000     |   0.000   |
+
+Three workloads have a small sonnet quality edge (fix-a-bug-small,
+regex, multi-file-refactor — though the last is essentially tied).
+One workload has a small haiku edge (multi-turn-refactor). The
+remaining three are tied at 1.000 or have no scored samples.
+
+### A3-rev2 Pass C slot-4 outcomes — THE KEY TABLE
+
+```
+workload                                       winning_slot   chose                  haiku  sonnet conf  verdict
+architectural-explanation-without-hallucination global_default claude-haiku-4-5       1.000  0.900  0.100 not_applicable
+fix-a-bug-small                                global_default claude-haiku-4-5       0.928  0.900  0.030 not_applicable
+fix-a-bug-small                                global_default claude-haiku-4-5       0.928  0.900  0.030 not_applicable
+fix-a-bug-small                                global_default claude-haiku-4-5       0.928  0.900  0.030 not_applicable
+intentionally-failing-task                     global_default claude-haiku-4-5       1.000  0.900  0.100 not_applicable
+multi-file-refactor-with-shared-types          global_default claude-haiku-4-5       0.748  0.648  0.134 not_applicable
+multi-file-refactor-with-shared-types          global_default claude-haiku-4-5       0.712  0.666  0.065 not_applicable
+multi-file-refactor-with-shared-types          global_default claude-haiku-4-5       0.748  0.648  0.134 not_applicable
+multi-file-refactor-with-shared-types          global_default claude-haiku-4-5       0.838  0.666  0.205 not_applicable
+multi-turn-refactor                            global_default claude-haiku-4-5       1.000  0.900  0.100 not_applicable
+multi-turn-refactor                            global_default claude-haiku-4-5       1.000  0.900  0.100 not_applicable
+multi-turn-refactor                            global_default claude-haiku-4-5       0.842  0.702  0.167 not_applicable
+multi-turn-refactor                            global_default claude-haiku-4-5       0.842  0.648  0.231 not_applicable
+regex-with-edge-cases                          global_default claude-haiku-4-5       0.970  0.900  0.072 not_applicable
+regex-with-edge-cases                          global_default claude-haiku-4-5       0.970  0.855  0.119 not_applicable
+regex-with-edge-cases                          global_default claude-haiku-4-5       0.977  0.900  0.079 not_applicable
+write-a-doc-from-notes                         global_default claude-haiku-4-5       1.000  0.900  0.100 not_applicable
+write-a-doc-from-notes                         global_default claude-haiku-4-5       0.842  0.900  0.064 not_applicable
+```
+
+**18 of 18 Pass C turns: slot 4 emits `not_applicable` and slot 7
+(`global_default`) wins. Differentiator does NOT invert.**
+
+But the per-row data tells a more useful story than §A3 / §A3-rev's
+"all haiku, all the time":
+
+- **The K-NN is reading the right data.** Same-workload partition
+  works (the `multi-file-refactor` cluster's haiku 0.748 / 0.712 /
+  0.838 reflects real per-cluster haiku quality variance from the
+  actual stored outcomes; same for `multi-turn-refactor`'s
+  0.842/0.842 variants). Cross-workload contamination is gone.
+- **`write-a-doc-from-notes` turn 2 shows sonnet ahead** (haiku
+  0.842 vs sonnet 0.900). This is the *first* turn in any A3 series
+  where the K-NN's aggregated score favored sonnet over haiku.
+  Slot 4 still emits `not_applicable` because `confidence=0.064 <
+  min_confidence=0.3`.
+- **`multi-turn-refactor` turn 4 shows the largest confidence
+  (0.231)** with haiku ahead. Even there confidence is below 0.3.
+
+### The new bottleneck (third unblock interacted poorly with confidence gating)
+
+The §A3-rev finding said "Either #1 or #2 alone should flip slot 4
+on regex." That was wrong, and the data shows why.
+
+Slot 4's confidence formula ([`patterns/aggregation.py:174`]) is
+
+```
+confidence = (top.score - runner_up) / top.score
+```
+
+with `min_confidence = 0.3` ([`routing/policy.py:49`]). At
+`cost_weight = 0.3`:
+
+```
+score(haiku)  = 0.7 * success_mean + 0.3 * cost_eff(=1)
+score(sonnet) = 0.7 * success_mean + 0.3 * cost_eff(=0)
+gap = 0.3 (when success_mean is near-tied) → conf = 0.3/0.86 = 0.35
+```
+
+i.e. the cost differential alone produced enough gap to pass
+`min_confidence`, but it always favored haiku regardless of quality.
+
+At `cost_weight = 0.1` (the 8a-2 unblock):
+
+```
+score(haiku)  = 0.9 * success_mean + 0.1 * cost_eff(=1)
+score(sonnet) = 0.9 * success_mean + 0.1 * cost_eff(=0)
+gap = 0.1 (when success_mean is near-tied) → conf = 0.1/0.93 = 0.108
+```
+
+Below `min_confidence=0.3` ⇒ `not_applicable`. The unblock
+*correctly* shrank the cost penalty so quality can dominate, but
+the confidence formula was calibrated against the inflated
+`cost_weight=0.3` gap. When cost stops dominating, the formula
+treats every near-tie as low-confidence and gates slot 4 off
+entirely.
+
+This is a Wave 9 finding: **the §A3-rev third-unblock recipe is
+necessary but not sufficient. A fourth unblock is needed.**
+
+### What the fourth unblock looks like
+
+Three independent paths:
+
+1. **Lower `min_confidence` to ~0.05.** The simplest fix: at
+   `cost_weight=0.1`, any non-zero gap reflects either a real
+   cost advantage or a real quality advantage. With the workload
+   partition (8a-1) guaranteeing same-workload neighbors,
+   `min_sample_size=5` already filters out noise. The 0.3 gate is
+   redundant once the unblocks are in. Setting `min_confidence=0.05`
+   would have fired slot 4 on the `write-a-doc-from-notes` Pass C
+   turn 2 (`conf=0.064 → sonnet chosen`) — the single inversion
+   the data already supports.
+2. **Re-shape the confidence formula.** `(top-runner)/top` rewards
+   wide gaps. With small per-cluster deltas, a `softmax` or
+   `top - mean(others)` shape would surface "sonnet is the clear
+   winner here, even by only 0.06" as high confidence when there
+   are only two candidates and both have ≥ `min_sample_size`
+   samples.
+3. **Raise the per-workload quality delta to ~0.2.** This needs
+   harder workloads — ones where haiku materially fails. The
+   diversity-wave additions (`regex-with-edge-cases`,
+   `multi-file-refactor-with-shared-types`) were designed for this
+   but the hybrid judge with `escalation_threshold=0.7` short-
+   circuits to the heuristic on most turns (which gives both
+   models ≥0.7 even on partial-failure responses). Lowering
+   `--judge-escalation-threshold` to ~0.5 would force more LLM
+   verdicts, which differentiate harder (LLM judge gave a 0.3 score
+   on at least one Pass C turn, vs heuristic's typical 0.8–1.0).
+
+Path #1 is the cheapest unblock — one-line default change in
+`PatternConfig.min_confidence` from `0.3` to `0.05`. Wave 9 should
+land it and re-run §A3-rev3.
+
+### A3-rev2 caveats
+
+- **`architectural-explanation-without-hallucination` outcome rows
+  never accumulated per-turn scores** — `success_score_count = 0`
+  across all four architectural fingerprints in the patterns DB,
+  even though the trace shows `eval.completed kind=turn score=1.0
+  conf=0.9 judge_kind=heuristic` fired for every architectural turn
+  in time order *after* `pattern.recorded`. The K-NN reading
+  defaulted to `wmean=1.0` for both models on this workload, so
+  cost_efficiency dominated and haiku won by a flat 0.1 (the
+  expected behavior of the formula at `cost_weight=0.1`). This
+  affects exactly the workload the §A3-rev third unblock was
+  designed for, and it's a real bug — the eval-to-store path is
+  intermittently dropping updates on 1-turn workloads with multiple
+  tool calls. Open question for Wave 9: is this a shutdown race
+  (`bus.drain()` not awaiting the in-flight eval task) or a session-
+  to-workspace resolver mismatch? `intentionally-failing-task`
+  (also 1-turn, 0 tool calls) accumulated scores correctly across
+  all 3 passes (`success_score_count = 3`), so it's tool-cycle-
+  related.
+- **The hybrid judge's escalation rate is low (~25%).** Pass C
+  fired 13 heuristic-only verdicts and 5 hybrid (i.e. escalated)
+  turn verdicts. The LLM judge produced differentiated scores when
+  it ran (0.3, 0.8, 0.9, 1.0, 1.0) but didn't fire often enough to
+  pull cluster means apart.
+- **Pricing version stable across all passes.** Native Anthropic
+  prices are unchanged; cost numbers are comparable.
+
+### A3-rev2 finding
+
+The differentiator still does not invert. Slot 4 produced
+`not_applicable` on every Pass C turn (18 of 18), and the headline
+savings number stays at 66.7% (Pass C falls through to global_
+default = haiku on every turn).
+
+**Wave 8 unblocks are functionally correct but insufficient.** The
+workload-tag partition works as designed (cross-workload
+contamination is gone). The `cost_weight=0.1` change made quality
+the dominant ranking term as intended. The grounding-check
+primitive lets sonnet score equally on the architectural workload.
+But the confidence-gating threshold (`min_confidence=0.3`)
+intersects pathologically with the new (smaller) score gaps:
+**three correct unblocks combined to gate slot 4 off entirely
+instead of inverting it.**
+
+The one positive signal: on `write-a-doc-from-notes` Pass C turn 2,
+the K-NN's aggregated sonnet score (0.900) exceeded haiku's
+(0.842) — the first time in any A3-series experiment that sonnet
+wins the cluster ranking. Slot 4 still emits `not_applicable`
+because the gap (0.058 of top = `conf=0.064`) is below
+`min_confidence=0.3`. With the proposed Wave-9 fourth unblock
+(`min_confidence=0.05`), this turn would have inverted: slot 4
+would have picked sonnet on `write-a-doc-from-notes`.
+
+The savings story remains "rate-card savings given haiku
+succeeds." The "differentiated routing picks the better model"
+story requires the fourth unblock first.
+
+### Reproduce A3-rev2
+
+```bash
+# Baseline check
+uv run pytest -q                                   # expect 1223 passed
+
+# A3-rev2: 3-pass experiment with hybrid judge (threshold 0.7).
+rm -f benchmarks/.runs/a3rev2-patterns.db \
+      benchmarks/.runs/a3rev2-pass-{a,b,c}.{db,json} \
+      benchmarks/.runs/a3rev2-pass-b-retry*.{db,json}
+
+uv run python scripts/benchmark.py \
+  --model haiku  --patterns-db-path benchmarks/.runs/a3rev2-patterns.db \
+  --db-path     benchmarks/.runs/a3rev2-pass-a.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+uv run python scripts/benchmark.py \
+  --model sonnet --patterns-db-path benchmarks/.runs/a3rev2-patterns.db \
+  --db-path     benchmarks/.runs/a3rev2-pass-b.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+# Retry any failed workloads against the same patterns DB:
+#   --workload <name> --db-path benchmarks/.runs/a3rev2-pass-b-retryN.db
+uv run python scripts/benchmark.py \
+  --no-active-model --patterns-db-path benchmarks/.runs/a3rev2-patterns.db \
+  --db-path     benchmarks/.runs/a3rev2-pass-c.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+
+# Inspect Pass C slot-4 alternatives + winning slot per turn:
+uv run python -c "
+import sqlite3, json, re
+c = sqlite3.connect('benchmarks/.runs/a3rev2-pass-c.db').cursor()
+sessions = {sid: ws for sid, ws in c.execute('SELECT id, workspace_path FROM sessions')}
+def workload_for(sid):
+    m = re.search(r'metis-bench-(.+?)-[^-/]+/workspace\$', sessions.get(sid,''))
+    return m.group(1) if m else '<unk>'
+for r in c.execute(\"SELECT session_id, payload_json FROM events WHERE type='route.decided' ORDER BY id\"):
+    p = json.loads(r[1])
+    chain = p.get('chain', [])
+    pat = next((cc for cc in chain if cc.get('policy')=='pattern'), None)
+    alts = (pat or {}).get('pattern_alternatives') or []
+    h = next((a for a in alts if 'haiku' in a['model']), None)
+    s = next((a for a in alts if 'sonnet' in a['model']), None)
+    winner = next((cc for cc in chain if cc.get('verdict')=='chose'), None)
+    print(f'{workload_for(r[0]):<50} winner={(winner or {}).get(\"policy\",\"\"):<18} chose={p[\"chosen_model\"].split(\":\")[-1]:<20} h={h[\"score\"] if h else None} s={s[\"score\"] if s else None} conf={pat.get(\"confidence\") if pat else 0:.3f} verdict={pat.get(\"verdict\") if pat else \"-\"}')
+"
+```

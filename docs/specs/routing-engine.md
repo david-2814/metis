@@ -291,7 +291,7 @@ tiers:
 
 # Pattern store weighting (§5.5)
 pattern:
-  cost_weight: 0.3        # 0.0 = pure quality, 1.0 = pure cost
+  cost_weight: 0.1        # 0.0 = pure quality, 1.0 = pure cost (default 0.1)
   min_confidence: 0.3
   min_sample_size: 5
 
@@ -420,7 +420,7 @@ score_M = (1 - cost_weight) × normalized_success_M
 
 The degenerate case (all candidate models in the cluster have identical average cost) zeroes out the cost-efficiency term entirely, making the score reduce to `(1 - cost_weight) × normalized_success_M` — i.e., the decision falls to pure quality. This is the right behavior: there is no cost differentiation to weight.
 
-`cost_weight` is configurable per workspace (default `0.3`). `cost_weight = 0` means "pure quality, ignore cost"; `cost_weight = 1` means "pure cost, ignore quality"; values in between blend.
+`cost_weight` is configurable per workspace (default `0.1`, lowered from `0.3` on 2026-05-14 per the §A3-rev benchmark finding — see "Default rationale" below). `cost_weight = 0` means "pure quality, ignore cost"; `cost_weight = 1` means "pure cost, ignore quality"; values in between blend.
 
 The model with the highest aggregate score is the recommendation. The runner-up appears in `alternatives`.
 
@@ -430,7 +430,9 @@ confidence = (top_score - runner_up_score) / top_score
 
 If `top_score == 0`, confidence is 0. The pattern policy returns `None` if `confidence < pattern.min_confidence` or `sample_size < pattern.min_sample_size`. Both are configurable.
 
-The `cost_weight` default of 0.3 is itself a value judgment — but a documented one. A user prototyping wants higher; a user shipping production code may want lower (closer to pure quality). The point is that the tradeoff is *visible*, not hidden, and the user can see and override it.
+**Default rationale.** The `cost_weight` default of 0.1 (was 0.3 prior to 2026-05-14) is itself a value judgment — but a documented one. A user prototyping wants higher; a user shipping production code may want lower (closer to pure quality). The point is that the tradeoff is *visible*, not hidden, and the user can see and override it.
+
+The default was lowered from 0.3 → 0.1 after the §A3-rev benchmark run (see `benchmarks/RESULTS.md`). At 0.3 the cost-efficiency term required a success delta of ~0.43 to flip the chooser when the cheapest model also scored 1.0 on cost_efficiency — larger than the 0.15–0.30 cluster-level quality deltas the LLM judge produced in real data. The result was slot 4 picking the cheaper model on every routed turn regardless of evidence. At 0.1 a quality delta of ~0.143 is enough to invert the ranking, which the observed deltas do clear. The scoring formula is unchanged — only the default of the blend constant moved. Workspaces that depended on the prior cost-bias must restate `cost_weight: 0.3` in their `routing.yaml`.
 
 ### 5.6 Tie-breaking against configured rules
 
@@ -1175,6 +1177,7 @@ Tracked here, deferred to later revisions:
 | 2026-05-08 | Worker sessions hidden from `/history` by default                     | A planner can spawn many workers; flat listing clutters the user's view.                   |
 | 2026-05-08 | `insufficient_context` returns a structured `InsufficientContextRequest` | Planner can programmatically retry with targeted references rather than re-prompting itself. |
 | 2026-05-08 | Cost-efficiency degenerate case (all costs equal) zeros the term      | Decision falls cleanly to pure quality when there's no cost differentiation.               |
+| 2026-05-14 | `cost_weight` default lowered from 0.3 → 0.1                          | §A3-rev showed 0.3 required a ~0.43 quality delta to flip the chooser, swamping the 0.15–0.30 cluster-level deltas the LLM judge actually produces. 0.1 needs ~0.143, which observed deltas clear. |
 | 2026-05-08 | Tier upgrade exhausts at `deep`; no escape above it                   | Explicit failure mode rather than implicit infinite loop.                                  |
 | 2026-05-08 | Pattern override emits `route.overridden`, not `pattern.override_accepted` | Aligns with event-bus catalog; preserves one-`route.decided`-per-turn invariant.       |
 | 2026-05-08 | Delegation slot in Phase 1; `delegate()` tool in Phase 4              | Chain shape is fixed; fills stub later rather than refactoring the pipeline.               |

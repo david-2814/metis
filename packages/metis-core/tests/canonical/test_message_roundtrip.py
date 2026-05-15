@@ -114,3 +114,29 @@ def test_provider_raw_opaque_roundtrip():
     encoded = msgspec.json.encode(md)
     decoded = msgspec.json.decode(encoded, type=MessageMetadata)
     assert decoded.provider_raw == {"stop_reason_raw": "end_turn", "thinking_sig": "abc"}
+
+
+def test_user_team_metadata_roundtrip():
+    """multi-user.md §3 / §4.4: user_id and team_id round-trip on metadata."""
+    md = MessageMetadata(
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        user_id="usr_01HZALICE",
+        team_id="team_01HZENG",
+    )
+    encoded = msgspec.json.encode(md)
+    decoded = msgspec.json.decode(encoded, type=MessageMetadata)
+    assert decoded.user_id == "usr_01HZALICE"
+    assert decoded.team_id == "team_01HZENG"
+
+
+def test_legacy_metadata_decodes_with_user_team_none():
+    """Pre-multi-user persisted metadata omits user_id / team_id; decode cleanly."""
+    legacy_wire = {
+        "model": "anthropic:claude-sonnet-4-6",
+        "provider": "anthropic",
+        "status": "complete",
+    }
+    decoded = msgspec.convert(legacy_wire, MessageMetadata)
+    assert decoded.user_id is None
+    assert decoded.team_id is None

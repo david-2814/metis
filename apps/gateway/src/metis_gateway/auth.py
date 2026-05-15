@@ -7,15 +7,47 @@ attribution), and the workspace the key is scoped to.
 
 v1 maps each key to exactly one workspace. Multi-workspace per key is
 Phase 3 (gateway.md §11).
+
+Keys may optionally carry `user_id` and `team_id` strings (multi-user.md §4)
+so that trace stamping and analytics can roll up cost by developer or team.
+Existing keys issued without those fields keep working — they auth exactly
+as before and their traffic rolls up under the `null` bucket.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# multi-user.md §3.4 — stable id format for `--user` / `--team` flags.
+# Matches the shipped `^[A-Za-z0-9_-]{1,200}$` defense used by analytics-api
+# filters, but tightened to lowercase per the spec's CLI examples (`alice`,
+# `eng`) so trace dumps stay normalized.
+_IDENTITY_TAG_RE = re.compile(r"^[a-z0-9_-]+$")
+_MAX_IDENTITY_TAG_LEN = 200
+
+
+def validate_identity_tag(value: str, *, field_name: str) -> str:
+    """Validate a `user_id` / `team_id` tag per multi-user.md §3.4.
+
+    Returns the value unchanged on success; raises `ValueError` with a
+    deterministic message on failure so CLI and keystore loaders share the
+    same rejection text.
+    """
+    if not value:
+        raise ValueError(f"{field_name} must be non-empty")
+    if len(value) > _MAX_IDENTITY_TAG_LEN:
+        raise ValueError(f"{field_name} must be at most {_MAX_IDENTITY_TAG_LEN} characters")
+    if not _IDENTITY_TAG_RE.match(value):
+        raise ValueError(
+            f"{field_name} must match {_IDENTITY_TAG_RE.pattern} "
+            "(lowercase alphanumerics, underscore, hyphen)"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -25,6 +57,9 @@ class GatewayKey:
     `secret_hash` is the SHA-256 hex digest of the full bearer token (the
     `gw_<ulid>` string the client sends in `Authorization: Bearer ...`).
     The plaintext token is never stored.
+
+    `user_id` / `team_id` are the optional identity tags from multi-user.md
+    §4.2; both default to `None` for v1 keys issued before the field landed.
     """
 
     key_id: str
@@ -33,6 +68,26 @@ class GatewayKey:
     workspace_path: str
     allowed_models: tuple[str, ...] | None = None
     daily_cap_usd: float | None = None
+    user_id: str | None = None
+    team_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Identity:
+    """Request-scoped principal resolved from the keystore at auth time.
+
+    multi-user.md §3.2 calls this `Principal`; the v1 name is `Identity` so
+    the harness/auth surface reads naturally. The fields match: the gateway
+    key is the auth artifact; `(user_id, team_id, workspace_path)` is what
+    the request bills to. `user_id` / `team_id` are `None` for keys issued
+    without `--user` / `--team`, matching the null-bucket convention used
+    by `gateway_key_id` for agent-loop traffic.
+    """
+
+    gateway_key_id: str
+    workspace_path: str
+    user_id: str | None = None
+    team_id: str | None = None
 
 
 class KeystoreError(Exception):
@@ -93,6 +148,8 @@ class Keystore:
             daily_cap = entry.get("daily_cap_usd")
             if daily_cap is not None and not isinstance(daily_cap, (int, float)):
                 raise KeystoreError(f"keystore keys[{index}].daily_cap_usd must be numeric")
+            user_id = _parse_identity_field(entry, index=index, field_name="user_id")
+            team_id = _parse_identity_field(entry, index=index, field_name="team_id")
             keys.append(
                 GatewayKey(
                     key_id=key_id,
@@ -101,6 +158,8 @@ class Keystore:
                     workspace_path=workspace_path,
                     allowed_models=allowed_tuple,
                     daily_cap_usd=float(daily_cap) if daily_cap is not None else None,
+                    user_id=user_id,
+                    team_id=team_id,
                 )
             )
         return cls(keys)
@@ -111,11 +170,55 @@ class Keystore:
         digest = hashlib.sha256(bearer_token.encode("utf-8")).hexdigest()
         return self._by_hash.get(digest)
 
+    def identify(self, bearer_token: str) -> Identity | None:
+        """Authenticate and return the request-scoped `Identity`.
+
+        Returns `None` when the token does not match a known key. Callers
+        that need the raw `GatewayKey` (e.g. to read `allowed_models` /
+        `daily_cap_usd`) can still call `authenticate()` directly.
+        """
+        key = self.authenticate(bearer_token)
+        if key is None:
+            return None
+        return Identity(
+            gateway_key_id=key.key_id,
+            workspace_path=key.workspace_path,
+            user_id=key.user_id,
+            team_id=key.team_id,
+        )
+
     def get_by_id(self, key_id: str) -> GatewayKey | None:
         return self._by_id.get(key_id)
 
     def __len__(self) -> int:
         return len(self._by_hash)
+
+
+def _parse_identity_field(entry: dict[str, Any], *, index: int, field_name: str) -> str | None:
+    raw_value = entry.get(field_name)
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, str):
+        raise KeystoreError(f"keystore keys[{index}].{field_name} must be a string")
+    try:
+        return validate_identity_tag(raw_value, field_name=f"keys[{index}].{field_name}")
+    except ValueError as exc:
+        raise KeystoreError(str(exc)) from exc
+
+
+def identity_from_key(key: GatewayKey) -> Identity:
+    """Project a `GatewayKey` onto the request-scoped `Identity`.
+
+    Exposed for the harness and tests so they don't have to reconstruct the
+    projection manually. multi-user.md §3.2 — `Identity` is the per-request
+    view of the keystore; the key remains the durable record.
+    """
+    return Identity(
+        gateway_key_id=key.key_id,
+        workspace_path=key.workspace_path,
+        user_id=key.user_id,
+        team_id=key.team_id,
+    )
 
 
 def hash_bearer_token(token: str) -> str:

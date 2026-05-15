@@ -31,13 +31,21 @@ class TierMap:
 class PatternConfig:
     """Pattern store knobs (routing-engine §5.5).
 
+    `cost_weight` defaults to `0.1` (was `0.3` before 2026-05-14). The §A3-rev
+    benchmark run found 0.3 over-rewards cost when the LLM judge produces
+    real cluster-level quality deltas of 0.15-0.30: the cost-efficiency term
+    required a ~0.43 success delta to flip the chooser, so slot 4 picked
+    haiku on every routed turn. At 0.1 a success delta of ~0.143 inverts
+    the ranking, which the observed deltas do clear. See routing-engine.md
+    §5.5 and benchmarks/RESULTS.md §A3-rev unblock #2.
+
     `min_eval_confidence` is the consumer-side confidence gate from
     `pattern-store.md §15.4`: verdicts with `confidence < min_eval_confidence`
     are recorded but excluded from K-cluster success aggregation. Default
     `0.5` matches `evaluator.md §4.3`.
     """
 
-    cost_weight: float = 0.3
+    cost_weight: float = 0.1
     min_confidence: float = 0.3
     min_sample_size: int = 5
     min_eval_confidence: float = 0.5

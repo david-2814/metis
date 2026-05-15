@@ -37,6 +37,8 @@ _COST_GROUP_BY_ALLOWED: tuple[str, ...] = (
     "day",
     "hour",
     "gateway_key",
+    "user",
+    "team",
     "none",
 )
 _SESSIONS_ORDER_ALLOWED: tuple[str, ...] = ("cost", "recency")
@@ -122,6 +124,8 @@ class AnalyticsStore:
         group_by: str,
         *,
         gateway_key: str | None = None,
+        user: str | None = None,
+        team: str | None = None,
     ) -> dict | list[dict]:
         """Aggregate cost / tokens / latency over the window.
 
@@ -131,9 +135,12 @@ class AnalyticsStore:
         SQL aggregation with `SUM()` would drift via float at the 12th decimal,
         below display precision but outside the spec contract.
 
-        `gateway_key` is an optional exact-match filter on the payload's
-        `gateway_key_id`. Like `/analytics/by_key`, it's bound through a SQL
-        placeholder; the HTTP handler additionally pre-validates the shape.
+        `gateway_key` / `user` / `team` are optional exact-match filters on
+        the payload's `gateway_key_id` / `user_id` / `team_id`. Each is
+        bound through a SQL placeholder; the HTTP handler additionally
+        pre-validates the shape. Combinations AND together (per
+        multi-user.md §5.3 — a key carries at most one (user, team) tuple,
+        so the combo is typically a no-op refinement).
         """
         if group_by not in _COST_GROUP_BY_ALLOWED:
             raise InvalidGroupByError(group_by, _COST_GROUP_BY_ALLOWED)
@@ -144,8 +151,14 @@ class AnalyticsStore:
         params: list = [window.start_us, window.end_us]
         where_extra = ""
         if gateway_key is not None:
-            where_extra = " AND json_extract(payload_json, '$.gateway_key_id') = ?"
+            where_extra += " AND json_extract(payload_json, '$.gateway_key_id') = ?"
             params.append(gateway_key)
+        if user is not None:
+            where_extra += " AND json_extract(payload_json, '$.user_id') = ?"
+            params.append(user)
+        if team is not None:
+            where_extra += " AND json_extract(payload_json, '$.team_id') = ?"
+            params.append(team)
         sql = (
             f"SELECT {prefix}"
             "  json_extract(payload_json, '$.cost_usd') AS cost_usd, "
@@ -585,6 +598,113 @@ class AnalyticsStore:
         results.sort(key=lambda r: r["cost_usd"], reverse=True)
         return results
 
+    # ---- /analytics/by_team -----------------------------------------------
+
+    def by_team(
+        self,
+        window: TimeWindow,
+        *,
+        team: str | None = None,
+    ) -> list[dict]:
+        """Aggregate cost / tokens / call_count per `team_id`, with a per-user sub-array.
+
+        Mirrors `by_key`: rolls up `llm.call_completed` events by their
+        stamped `team_id` (multi-user.md §5.2). Rows whose stamp is null
+        — agent-loop traffic, or pre-v1 keys issued without `--team` —
+        appear under `team_id: null` / `user_id: null`. Each row carries
+        a `by_user` sub-array sorted by `cost_usd` DESC, plus `user_count`
+        (distinct non-null users in the team).
+
+        `team` is an optional exact-match filter passed via SQL parameter
+        (never interpolated); the HTTP layer additionally validates the
+        shape and rejects malformed values with a 400 before this method
+        is called.
+        """
+        params: list = [window.start_us, window.end_us]
+        where_extra = ""
+        if team is not None:
+            where_extra = " AND json_extract(payload_json, '$.team_id') = ?"
+            params.append(team)
+        sql = (
+            "SELECT "
+            "  json_extract(payload_json, '$.team_id') AS team_id, "
+            "  json_extract(payload_json, '$.user_id') AS user_id, "
+            "  json_extract(payload_json, '$.cost_usd') AS cost_usd, "
+            "  json_extract(payload_json, '$.input_tokens') AS input_tokens, "
+            "  json_extract(payload_json, '$.output_tokens') AS output_tokens, "
+            "  json_extract(payload_json, '$.cached_input_tokens') AS cached_input_tokens, "
+            "  json_extract(payload_json, '$.cache_creation_input_tokens') "
+            "    AS cache_creation_input_tokens "
+            "FROM events "
+            "WHERE type = 'llm.call_completed' "
+            "  AND timestamp_us >= ? AND timestamp_us < ?"
+            f"{where_extra}"
+        )
+        aggregates: dict[str | None, dict] = {}
+        for row in self._conn.execute(sql, params):
+            team_id = row["team_id"]
+            agg = aggregates.get(team_id)
+            if agg is None:
+                agg = {
+                    "team_id": team_id,
+                    "cost_usd": Decimal("0"),
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cached_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "call_count": 0,
+                    "_by_user": {},  # user_id → {"cost_usd": Decimal, "call_count": int}
+                }
+                aggregates[team_id] = agg
+            cost = _coerce_decimal(row["cost_usd"])
+            agg["cost_usd"] += cost
+            agg["input_tokens"] += int(row["input_tokens"] or 0)
+            agg["output_tokens"] += int(row["output_tokens"] or 0)
+            agg["cached_input_tokens"] += int(row["cached_input_tokens"] or 0)
+            agg["cache_creation_input_tokens"] += int(row["cache_creation_input_tokens"] or 0)
+            agg["call_count"] += 1
+            user_id = row["user_id"]
+            by_user = agg["_by_user"]
+            user_agg = by_user.get(user_id)
+            if user_agg is None:
+                user_agg = {"cost_usd": Decimal("0"), "call_count": 0}
+                by_user[user_id] = user_agg
+            user_agg["cost_usd"] += cost
+            user_agg["call_count"] += 1
+
+        results: list[dict] = []
+        for agg in aggregates.values():
+            by_user_out = sorted(
+                (
+                    {
+                        "user_id": uid,
+                        "cost_usd": _dec_to_json(sub["cost_usd"]),
+                        "call_count": sub["call_count"],
+                    }
+                    for uid, sub in agg["_by_user"].items()
+                ),
+                key=lambda r: r["cost_usd"],
+                reverse=True,
+            )
+            # `user_count` counts only non-null user ids — the null bucket
+            # represents un-tagged traffic, not a distinct identity.
+            user_count = sum(1 for uid in agg["_by_user"] if uid is not None)
+            results.append(
+                {
+                    "team_id": agg["team_id"],
+                    "cost_usd": _dec_to_json(agg["cost_usd"]),
+                    "input_tokens": agg["input_tokens"],
+                    "output_tokens": agg["output_tokens"],
+                    "cached_input_tokens": agg["cached_input_tokens"],
+                    "cache_creation_input_tokens": agg["cache_creation_input_tokens"],
+                    "call_count": agg["call_count"],
+                    "user_count": user_count,
+                    "by_user": by_user_out,
+                }
+            )
+        results.sort(key=lambda r: r["cost_usd"], reverse=True)
+        return results
+
     # ---- /analytics/quality -----------------------------------------------
 
     def quality(
@@ -734,6 +854,18 @@ def _cost_key_shape(group_by: str) -> tuple[str, tuple[str, ...], bool]:
         return (
             "json_extract(payload_json, '$.gateway_key_id') AS gateway_key_id",
             ("gateway_key_id",),
+            False,
+        )
+    if group_by == "user":
+        return (
+            "json_extract(payload_json, '$.user_id') AS user_id",
+            ("user_id",),
+            False,
+        )
+    if group_by == "team":
+        return (
+            "json_extract(payload_json, '$.team_id') AS team_id",
+            ("team_id",),
             False,
         )
     if group_by == "day":

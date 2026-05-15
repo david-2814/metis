@@ -454,6 +454,8 @@ evaluate:
   expect_substring_in_final_response: "..."   # passthrough to heuristic signals
   llm_judge_model: anthropic:claude-haiku-4-5  # only when rubric != heuristic
   weight_per_turn: 1.0                           # how turns in the workload aggregate
+  grounding_tokens: ["RoutingEngine", "policy=", "PolicyEvaluation"]   # v1.1
+  forbidden_grounding: ["PATTERN_LOOKUP", "RouterChain", "ModelSelector"] # v1.1
 ```
 
 The benchmark harness ([`benchmark.md §9`](benchmark.md)) calls the
@@ -478,6 +480,55 @@ refusal (lifecycle is fine; substring isn't asserted). The
 `intentionally-failing-task` workload under `benchmarks/workloads/` is
 the control case that exercises this — it scores < 0.8 when the agent
 refuses or returns nothing.
+
+#### Grounding-check primitive (v1.1)
+
+`grounding_tokens` and `forbidden_grounding` are the rubric inputs for
+workloads that probe **hallucination / source-grounding** rather than
+task completion. The motivating case is documented in
+[`benchmarks/RESULTS.md §A3-rev`](../../benchmarks/RESULTS.md): the
+`architectural-explanation-without-hallucination` workload used a single
+`expect_substring_in_final_response="PATTERN_RECOMMENDATION"` assertion;
+sonnet's response cited the real `PolicyEvaluation` / `RoutingDecision`
+dataclasses and lowercase `policy=` literals — strictly more grounded than
+haiku — but scored 0.50 because it didn't parrot the UPPERCASE
+`PATTERN_RECOMMENDATION` label from the engine.py module docstring. The
+substring check rewarded **stylistic mimicry** over **real grounding**.
+
+Semantics:
+
+- `grounding_tokens`: a list of substrings that **should** appear in the
+  final response. Each one is a real symbol the agent must cite to count
+  as grounded — class names, function names, real string-literal values
+  the source uses. The heuristic awards `present / total` as a positive
+  score component.
+- `forbidden_grounding`: a list of substrings that **should not** appear.
+  Each one is a plausible-but-fabricated name a hallucinating agent would
+  invent. The heuristic awards `1 - (present / total)` as a positive
+  score component (i.e. it pays for *absence*).
+- The two lists are independent. A workload may set either, both, or
+  neither. When both are set, the heuristic averages the two components.
+
+The rubric exposes a workload-level signal `workload_grounding_score`
+(plus `grounding_tokens_present`, `grounding_tokens_missing`,
+`forbidden_grounding_present` for the audit trail). The composed
+workload score averages this with the substring/assertion-derived score
+when grounding is configured — so a workload that fully grounds in real
+symbols and avoids fabricated ones is unaffected, and one that misses
+all expected symbols and contains forbidden ones is halved.
+
+LLM tier escalation: when `rubric: llm` or `rubric: hybrid` is set, the
+configured `grounding_tokens` and `forbidden_grounding` lists are
+surfaced to the judge LLM in the user message (under a "GROUNDING HINTS"
+section). The LLM tier can recognize *paraphrased* grounding (citing a
+real symbol with different capitalization or via a synonym) and *partial*
+fabrications (a real prefix joined to a fake suffix) that the heuristic
+substring match would miss. The LLM judge's score remains a single
+[0, 1] number; the grounding hints are inputs, not a separate axis.
+
+Cost discipline: heuristic-tier grounding is $0; LLM-tier grounding
+escalation is one judge call per workload, governed by the same
+`BudgetTracker` caps as the per-turn LLM judge.
 
 ### 5.5 Tool-cycle rubric
 

@@ -183,6 +183,7 @@ class ToolDispatcher:
         parent_event_id: str | None = None,
         memory: object | None = None,
         skills: object | None = None,
+        skill_activations: object | None = None,
     ) -> ToolResultBlock:
         """Run a tool_use end-to-end. Always returns a ToolResultBlock; never
         raises for tool failures (errors come back as is_error result blocks).
@@ -310,6 +311,7 @@ class ToolDispatcher:
             workspace_files=workspace,  # type: ignore[arg-type]
             memory=memory,
             skills=skills,
+            skill_activations=skill_activations,
             bus=self._bus,
         )
         in_flight = _InFlight(tool=tool, context=context)

@@ -137,3 +137,11 @@ def unknown_baseline_model(model: str) -> APIError:
 
 def invalid_gateway_key(message: str) -> APIError:
     return APIError("invalid_gateway_key", 400, message)
+
+
+def invalid_user(message: str) -> APIError:
+    return APIError("invalid_user", 400, message)
+
+
+def invalid_team(message: str) -> APIError:
+    return APIError("invalid_team", 400, message)

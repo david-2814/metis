@@ -16,6 +16,11 @@ and `turn.completed` payload dicts as additive fields per `gateway.md §6`.
 `LLMCallCompleted` now carries these as typed catalog fields (defaulting to
 `None` for agent-loop traffic); `TurnCompleted` still gets a dict-envelope
 stamp until the typed extension lands there too.
+
+`user_id` / `team_id` (multi-user.md §4.4) are stamped onto both events as
+dict-envelope fields. They are typed extensions in the spec but currently
+land on the wire via the same envelope path until the typed extension on
+`LLMCallCompleted` / `TurnCompleted` ships (Agent 8a-4 in this wave).
 """
 
 from __future__ import annotations
@@ -51,6 +56,8 @@ from metis_core.events.payloads import (
 from metis_core.pricing import PriceTable
 from metis_core.routing import ModelRegistry, RoutingEngine, TurnContext
 from metis_core.routing.engine import RoutingError
+
+from metis_gateway.auth import Identity
 
 logger = logging.getLogger(__name__)
 
@@ -117,12 +124,12 @@ class GatewayHarness:
         stop_sequences: list[str],
         output_schema: dict | None,
         requested_model: str,
-        gateway_key_id: str,
-        workspace_path: str,
+        identity: Identity,
         allowed_models: tuple[str, ...] | None,
         is_disconnected: _DisconnectProbe | None = None,
         system_prompt_volatile: str | None = None,
     ) -> GatewayCallResult:
+        workspace_path = identity.workspace_path
         session_id = f"gw_{new_message_id()}"
         turn_id = f"gt_{new_message_id()}"
         loop_start = time.monotonic()
@@ -151,7 +158,7 @@ class GatewayHarness:
                 output_tokens=0,
                 cost=Decimal("0"),
                 wall_time=time.monotonic() - loop_start,
-                gateway_key_id=gateway_key_id,
+                identity=identity,
             )
             raise RoutingFailedError(str(exc), chain=exc.chain) from exc
 
@@ -222,7 +229,7 @@ class GatewayHarness:
                     output_tokens=0,
                     cost=Decimal("0"),
                     wall_time=time.monotonic() - loop_start,
-                    gateway_key_id=gateway_key_id,
+                    identity=identity,
                 )
                 raise ClientDisconnected("client disconnected") from exc
             raise UpstreamProviderError(exc) from exc
@@ -246,7 +253,7 @@ class GatewayHarness:
             response=response,
             cost=cost,
             parent_event_id=llm_started_event,
-            gateway_key_id=gateway_key_id,
+            identity=identity,
         )
         self._emit_turn_completed(
             session_id=session_id,
@@ -257,7 +264,7 @@ class GatewayHarness:
             output_tokens=response.usage.output_tokens,
             cost=cost,
             wall_time=time.monotonic() - loop_start,
-            gateway_key_id=gateway_key_id,
+            identity=identity,
         )
 
         return GatewayCallResult(
@@ -278,12 +285,12 @@ class GatewayHarness:
         stop_sequences: list[str],
         output_schema: dict | None,
         requested_model: str,
-        gateway_key_id: str,
-        workspace_path: str,
+        identity: Identity,
         allowed_models: tuple[str, ...] | None,
         is_disconnected: _DisconnectProbe | None = None,
         system_prompt_volatile: str | None = None,
     ) -> AsyncIterator[StreamingEvent]:
+        workspace_path = identity.workspace_path
         """Stream canonical StreamingEvents while emitting the same trace
         events as `call()`.
 
@@ -325,7 +332,7 @@ class GatewayHarness:
                 output_tokens=0,
                 cost=Decimal("0"),
                 wall_time=time.monotonic() - loop_start,
-                gateway_key_id=gateway_key_id,
+                identity=identity,
             )
             raise RoutingFailedError(str(exc), chain=exc.chain) from exc
 
@@ -395,7 +402,7 @@ class GatewayHarness:
                     output_tokens=0,
                     cost=Decimal("0"),
                     wall_time=time.monotonic() - loop_start,
-                    gateway_key_id=gateway_key_id,
+                    identity=identity,
                 )
                 raise ClientDisconnected("client disconnected") from exc
             raise UpstreamProviderError(exc) from exc
@@ -435,7 +442,7 @@ class GatewayHarness:
             response=synthetic_response,
             cost=cost,
             parent_event_id=llm_started_event,
-            gateway_key_id=gateway_key_id,
+            identity=identity,
         )
         self._emit_turn_completed(
             session_id=session_id,
@@ -446,7 +453,7 @@ class GatewayHarness:
             output_tokens=final_complete.usage.output_tokens,
             cost=cost,
             wall_time=time.monotonic() - loop_start,
-            gateway_key_id=gateway_key_id,
+            identity=identity,
         )
 
     # ---- TurnContext --------------------------------------------------
@@ -542,7 +549,7 @@ class GatewayHarness:
         response: CanonicalResponse,
         cost: Decimal,
         parent_event_id: str,
-        gateway_key_id: str,
+        identity: Identity,
     ) -> None:
         from metis_core.canonical.content import ThinkingBlock, ToolUseBlock
 
@@ -566,8 +573,10 @@ class GatewayHarness:
                 stop_reason=_stop_reason_to_catalog(response.stop_reason),  # type: ignore[arg-type]
                 produced_tool_calls=produced_tool_calls,
                 produced_thinking_blocks=produced_thinking,
-                gateway_key_id=gateway_key_id,
+                gateway_key_id=identity.gateway_key_id,
                 inbound_shape=self.inbound_shape,  # type: ignore[arg-type]
+                user_id=identity.user_id,
+                team_id=identity.team_id,
             ),
             timestamp=_now(),
             parent_event_id=parent_event_id,
@@ -614,7 +623,7 @@ class GatewayHarness:
         output_tokens: int,
         cost: Decimal,
         wall_time: float,
-        gateway_key_id: str,
+        identity: Identity,
     ) -> None:
         if stop_reason not in ("end_turn", "max_tokens", "stop_sequence", "tool_use"):
             stop_reason = "end_turn"
@@ -631,10 +640,17 @@ class GatewayHarness:
                 total_output_tokens=output_tokens,
                 total_cost_usd=float(cost),
                 wall_time_seconds=wall_time,
+                user_id=identity.user_id,
+                team_id=identity.team_id,
             ),
             timestamp=_now(),
         )
-        event.payload["gateway_key_id"] = gateway_key_id
+        # `gateway_key_id` / `inbound_shape` remain dict-envelope stamps on
+        # `TurnCompleted` until the typed extension lands (gateway.md §11
+        # follow-on). The identity fields above are typed because the spec
+        # (multi-user.md §4.4) and Agent 8a-4 landed them as typed catalog
+        # fields when `LLMCallCompleted` got the same dimensions.
+        event.payload["gateway_key_id"] = identity.gateway_key_id
         event.payload["inbound_shape"] = self.inbound_shape
         self.bus.emit(event)
 

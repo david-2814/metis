@@ -510,6 +510,11 @@ def _build_user_message(ctx: SubjectContext) -> str:
     text is pulled from `signals_extra` when the caller plumbed it
     (subscriber for online path; benchmark harness for workload path);
     when absent, we degrade gracefully to an event-only summary.
+
+    For workload subjects with grounding rubric inputs configured, the
+    expected and forbidden grounding tokens are also surfaced so the LLM
+    can judge paraphrased grounding (citing a real symbol differently)
+    that the heuristic substring match would miss.
     """
     extra = ctx.signals_extra or {}
     user_text = str(extra.get("user_prompt_text") or "").strip()
@@ -546,9 +551,47 @@ def _build_user_message(ctx: SubjectContext) -> str:
         lines.append("TURN LIFECYCLE:")
         lines.append(lifecycle)
 
+    # Grounding hints (workload only, when the rubric configured them). The
+    # heuristic matched substrings literally; the LLM tier can recognize
+    # paraphrased grounding (a real symbol named correctly without the
+    # exact substring) and fabricated symbols (plausible-but-wrong names).
+    grounding_hint = _grounding_hint(ctx)
+    if grounding_hint:
+        lines.append("---")
+        lines.append("GROUNDING HINTS (workload-rubric inputs):")
+        lines.append(grounding_hint)
+
     lines.append("---")
     lines.append('Respond with a JSON object: {"score": ..., "confidence": ..., "rationale": ...}')
     return "\n".join(lines)
+
+
+def _grounding_hint(ctx: SubjectContext) -> str:
+    """Render the workload rubric's grounding-token lists for the judge.
+
+    Returns "" when the subject isn't a workload or no grounding lists were
+    configured. The output is short (one line per list) so it doesn't blow
+    the judge's input estimate.
+    """
+    if ctx.subject_kind != "workload" or ctx.workload_rubric is None:
+        return ""
+    rubric = ctx.workload_rubric
+    expected = list(rubric.grounding_tokens)
+    forbidden = list(rubric.forbidden_grounding)
+    if not expected and not forbidden:
+        return ""
+    parts: list[str] = []
+    if expected:
+        parts.append(
+            "  expected grounding (real symbols the response should cite, "
+            "verbatim or paraphrased): " + ", ".join(expected)
+        )
+    if forbidden:
+        parts.append(
+            "  forbidden grounding (plausible-but-fabricated names; presence "
+            "is evidence of hallucination): " + ", ".join(forbidden)
+        )
+    return "\n".join(parts)
 
 
 def _truncate(text: str, *, limit: int) -> str:

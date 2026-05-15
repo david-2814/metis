@@ -352,6 +352,7 @@ The rationale for each field:
 | `estimated_input_tokens_bucket`  | Log-bucketed so a 50k-token turn matches a 70k-token turn (same regime), not a 1k-token turn. |
 | `intent_tags`                    | Mechanical regex over the user message: `commit`, `refactor`, `architecture`, `debug`, `doc`, `test`. Captures the strongest user-stated intent. |
 | `workspace_hash`                 | Provenance only; never participates in similarity (would force exact match). |
+| `workload_id`                    | Optional caller-supplied tag (`str \| None`, default `None`). When the caller is the benchmark harness (one workload per run) it's the workload name; agent-loop sessions leave it `None`. A near-keyed partition for K-NN — see §5.3. |
 
 **v2 hybrids** add an embedding vector over the user message text, with
 the structural features still used as a hard pre-filter (an "auth bug"
@@ -377,6 +378,24 @@ sim(A, B) =  0.30 * jaccard(A.intent_tags,         B.intent_tags)
 
 Empty sets on both sides match (Jaccard convention: `0/0 → 1`); empty
 on one side and not the other contributes 0. The weights sum to 1.
+
+`workload_id` (added 2026-05-14) acts as a **near-keyed partition** rather
+than as one tag among many. When both fingerprints carry a workload_id,
+the structural score above is blended with a strong cluster signal so
+same-workload neighbors land near 1.0 and different-workload neighbors
+collapse toward 0.0 even when their structural features happen to
+overlap:
+
+```
+sim_blended(A, B) = 0.85 * (1 if A.workload_id == B.workload_id else 0)
+                  + 0.15 * sim_structural(A, B)
+```
+
+When either side has `workload_id == None` the blend is skipped and the
+result is exactly the v1 weighted-Jaccard — non-benchmark callers (which
+never set it) see identical behavior. This closes the §A3-rev finding
+that K-NN was mixing workloads because `intent_tags` is empty on most
+turns, washing out the cluster signal.
 
 For v2 hybrid fingerprints, similarity blends structural Jaccard with
 cosine over the embedding vector (`α * jaccard_score + (1-α) * cosine`,

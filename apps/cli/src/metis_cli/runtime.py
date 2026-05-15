@@ -215,6 +215,7 @@ async def setup_runtime(
             estimated_input_tokens=ctx.estimated_input_tokens,
             has_images=ctx.has_images,
             has_tool_calls_in_history=ctx.has_tool_calls_in_history,
+            workload_id=getattr(ctx, "workload_id", None),
         )
 
     routing = RoutingEngine(

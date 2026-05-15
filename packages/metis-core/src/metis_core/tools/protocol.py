@@ -34,6 +34,11 @@ class ToolContext:
     memory: Any = None  # MemoryStore — Any to avoid an import cycle through tools
     # Per-session skill store. None means skill tools should refuse to run.
     skills: Any = None  # SkillStore — Any to avoid an import cycle
+    # Per-session activation registry tracking pre-activations + explicit
+    # activations + budget caps (context-assembler.md v3 §5.2). None means
+    # budget checks and pre-activation pointer-returns are disabled — the
+    # tool falls back to v1 behavior of always returning the body.
+    skill_activations: Any = None  # SkillActivationRegistry
     # Event bus reference for tools that emit their own catalog events
     # (e.g., skill_load emits skill.loaded). Optional — tools must handle None.
     bus: Any = None  # EventBus — Any to avoid the import dependency direction

@@ -964,6 +964,388 @@ def test_by_key_filter_uses_parameterized_sql(seeded_db, now, window):
     assert len(data) == 1
 
 
+# ---- /analytics/cost group_by user/team + filters (multi-user.md §5) -----
+
+
+def test_cost_group_by_user(seeded_db, now, window):
+    db_path, seeder = seeded_db
+    # alice has two calls, bob one, plus one un-tagged agent-loop call.
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.10",
+        user_id="usr_alice",
+        team_id="team_eng",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.05",
+        user_id="usr_alice",
+        team_id="team_eng",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.20",
+        user_id="usr_bob",
+        team_id="team_eng",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.02",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.cost(window, group_by="user")
+    by_user = {row["user_id"]: row for row in data}
+    assert by_user["usr_alice"]["cost_usd"] == pytest.approx(0.15)
+    assert by_user["usr_alice"]["call_count"] == 2
+    assert by_user["usr_bob"]["call_count"] == 1
+    assert None in by_user  # agent-loop traffic
+    assert by_user[None]["cost_usd"] == pytest.approx(0.02)
+    # Order: cost_usd DESC.
+    assert data[0]["user_id"] == "usr_bob"
+
+
+def test_cost_group_by_team(seeded_db, now, window):
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.10",
+        user_id="usr_alice",
+        team_id="team_eng",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.50",
+        user_id="usr_carol",
+        team_id="team_sales",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.03",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.cost(window, group_by="team")
+    by_team = {row["team_id"]: row for row in data}
+    assert by_team["team_sales"]["cost_usd"] == pytest.approx(0.50)
+    assert by_team["team_eng"]["cost_usd"] == pytest.approx(0.10)
+    assert None in by_team  # un-tagged traffic
+    assert by_team[None]["cost_usd"] == pytest.approx(0.03)
+    # Result ordered by cost DESC.
+    assert data[0]["team_id"] == "team_sales"
+
+
+def test_cost_filter_by_user(seeded_db, now, window):
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.10",
+        user_id="usr_alice",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.50",
+        user_id="usr_bob",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.cost(window, group_by="model", user="usr_alice")
+    assert len(data) == 1
+    assert data[0]["cost_usd"] == pytest.approx(0.10)
+
+
+def test_cost_filter_by_team(seeded_db, now, window):
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.10",
+        team_id="team_eng",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.50",
+        team_id="team_sales",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.cost(window, group_by="model", team="team_eng")
+    assert len(data) == 1
+    assert data[0]["cost_usd"] == pytest.approx(0.10)
+
+
+def test_cost_filter_user_and_team_combined(seeded_db, now, window):
+    """`?user=alice&team=eng` — AND filter; rows must match both stamps."""
+    db_path, seeder = seeded_db
+    # Match.
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.10",
+        user_id="usr_alice",
+        team_id="team_eng",
+    )
+    # Wrong team.
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.99",
+        user_id="usr_alice",
+        team_id="team_sales",
+    )
+    # Wrong user.
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.99",
+        user_id="usr_bob",
+        team_id="team_eng",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.cost(window, group_by="session", user="usr_alice", team="team_eng")
+    assert len(data) == 1
+    assert data[0]["cost_usd"] == pytest.approx(0.10)
+
+
+def test_cost_filter_by_user_with_session_group_by(seeded_db, now, window):
+    """Spec §5.3 example: `?user=alice&group_by=session` works."""
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.10",
+        user_id="usr_alice",
+        session_id="sess_a",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.05",
+        user_id="usr_alice",
+        session_id="sess_b",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.99",
+        user_id="usr_bob",
+        session_id="sess_c",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.cost(window, group_by="session", user="usr_alice")
+    sessions = {row["session_id"] for row in data}
+    assert sessions == {"sess_a", "sess_b"}
+
+
+def test_cost_filter_uses_parameterized_sql(seeded_db, now, window):
+    """Hostile filter values hit a SQL placeholder, never string-interp."""
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.10",
+        user_id="usr_alice",
+    )
+    with AnalyticsStore(db_path) as store:
+        # Store doesn't validate shape; that's the HTTP layer's job. Any
+        # string is passed through safely via parameterized SQL.
+        data = store.cost(window, group_by="model", user="DROP TABLE events")
+    assert data == []
+    # Original row is still present.
+    with AnalyticsStore(db_path) as store:
+        data = store.cost(window, group_by="model")
+    assert len(data) == 1
+
+
+# ---- /analytics/by_team --------------------------------------------------
+
+
+def test_by_team_rollup(seeded_db, now, window):
+    """Three users in two teams + one un-tagged call (multi-user.md §12.1.4)."""
+    db_path, seeder = seeded_db
+    # team_eng: alice 2 calls, bob 1 call.
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.10",
+        user_id="usr_alice",
+        team_id="team_eng",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.05",
+        user_id="usr_alice",
+        team_id="team_eng",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.20",
+        user_id="usr_bob",
+        team_id="team_eng",
+    )
+    # team_sales: carol alone.
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="1.00",
+        user_id="usr_carol",
+        team_id="team_sales",
+    )
+    # Un-tagged agent-loop traffic.
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.02",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.by_team(window)
+    by_team = {row["team_id"]: row for row in data}
+    # team_sales is most expensive → first.
+    assert data[0]["team_id"] == "team_sales"
+    sales = by_team["team_sales"]
+    assert sales["cost_usd"] == pytest.approx(1.00)
+    assert sales["call_count"] == 1
+    assert sales["user_count"] == 1
+    assert sales["by_user"][0]["user_id"] == "usr_carol"
+    # team_eng totals match sum-of-users.
+    eng = by_team["team_eng"]
+    assert eng["cost_usd"] == pytest.approx(0.35)
+    assert eng["call_count"] == 3
+    assert eng["user_count"] == 2
+    by_user = {row["user_id"]: row for row in eng["by_user"]}
+    assert by_user["usr_alice"]["cost_usd"] == pytest.approx(0.15)
+    assert by_user["usr_alice"]["call_count"] == 2
+    assert by_user["usr_bob"]["cost_usd"] == pytest.approx(0.20)
+    # bob spent more than alice → bob first in the sub-array.
+    assert eng["by_user"][0]["user_id"] == "usr_bob"
+    # Un-tagged null bucket present; user_count==0 (null is not an identity).
+    assert by_team[None]["cost_usd"] == pytest.approx(0.02)
+    assert by_team[None]["user_count"] == 0
+    assert by_team[None]["by_user"][0]["user_id"] is None
+
+
+def test_by_team_filter_exact_match(seeded_db, now, window):
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.10",
+        user_id="usr_alice",
+        team_id="team_eng",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.99",
+        user_id="usr_bob",
+        team_id="team_sales",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.by_team(window, team="team_eng")
+    assert len(data) == 1
+    assert data[0]["team_id"] == "team_eng"
+
+
+def test_by_team_filter_uses_parameterized_sql(seeded_db, now, window):
+    """Hostile filter passes safely through placeholders."""
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.10",
+        user_id="usr_alice",
+        team_id="team_eng",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.by_team(window, team="DROP TABLE events")
+    assert data == []
+    with AnalyticsStore(db_path) as store:
+        data = store.by_team(window)
+    assert len(data) == 1
+
+
+def test_by_team_sum_of_users_equals_team_total(seeded_db, now, window):
+    """Property test (multi-user.md §12.2): sum of by_user equals team total."""
+    db_path, seeder = seeded_db
+    for cost, user in [
+        ("0.1234", "usr_a"),
+        ("0.5678", "usr_b"),
+        ("0.9012", "usr_a"),
+        ("0.3456", "usr_c"),
+    ]:
+        seeder.insert_llm_call_completed(
+            timestamp=now,
+            model="x:y",
+            provider="x",
+            cost_usd=cost,
+            user_id=user,
+            team_id="team_eng",
+        )
+    with AnalyticsStore(db_path) as store:
+        data = store.by_team(window)
+    team = data[0]
+    user_sum = sum(u["cost_usd"] for u in team["by_user"])
+    assert team["cost_usd"] == pytest.approx(user_sum, abs=1e-9)
+
+
+def test_by_team_null_bucket_present_when_only_untagged(seeded_db, now, window):
+    """Pre-v1 keys + agent-loop traffic all fold into team_id=null."""
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.10",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="x:y",
+        provider="x",
+        cost_usd="0.05",
+        gateway_key_id="gk_legacy",  # pre-v1: no user_id/team_id.
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.by_team(window)
+    assert len(data) == 1
+    assert data[0]["team_id"] is None
+    assert data[0]["cost_usd"] == pytest.approx(0.15)
+    assert data[0]["user_count"] == 0
+
+
 # ---- Cross-cutting --------------------------------------------------------
 
 

@@ -6,7 +6,10 @@ token to stdout exactly once. The plaintext is never persisted — only the
 SHA-256 digest is stored.
 
 Per `gateway.md §V`: each key maps to one workspace (v1) and may optionally
-carry an `allowed_models` list and a `daily_cap_usd`.
+carry an `allowed_models` list and a `daily_cap_usd`. Per `multi-user.md §4`
+the key may also carry optional `user_id` / `team_id` identity tags; both
+are validated against the same `^[a-z0-9_-]+$` shape used elsewhere on the
+identity surface.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from typing import Any
 
 from metis_core.canonical.ids import next_monotonic_ulid
 
-from metis_gateway.auth import hash_bearer_token
+from metis_gateway.auth import hash_bearer_token, validate_identity_tag
 
 
 class IssueKeyError(Exception):
@@ -32,6 +35,8 @@ def issue_key(
     workspace_path: str,
     allowed_models: tuple[str, ...] | None = None,
     daily_cap_usd: float | None = None,
+    user_id: str | None = None,
+    team_id: str | None = None,
 ) -> tuple[str, str]:
     """Append a new key to the keystore and return `(key_id, plaintext_token)`.
 
@@ -42,6 +47,17 @@ def issue_key(
     workspace = str(Path(workspace_path).expanduser().resolve())
     if not workspace:
         raise IssueKeyError("--workspace is required")
+
+    if user_id is not None:
+        try:
+            user_id = validate_identity_tag(user_id, field_name="--user")
+        except ValueError as exc:
+            raise IssueKeyError(str(exc)) from exc
+    if team_id is not None:
+        try:
+            team_id = validate_identity_tag(team_id, field_name="--team")
+        except ValueError as exc:
+            raise IssueKeyError(str(exc)) from exc
 
     keystore_path = keystore_path.expanduser()
     keystore_path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,6 +91,10 @@ def issue_key(
         entry["allowed_models"] = list(allowed_models)
     if daily_cap_usd is not None:
         entry["daily_cap_usd"] = float(daily_cap_usd)
+    if user_id is not None:
+        entry["user_id"] = user_id
+    if team_id is not None:
+        entry["team_id"] = team_id
 
     keys_list = raw["keys"]
     assert isinstance(keys_list, list)
@@ -96,6 +116,8 @@ def issue_key_command(
     workspace_path: str,
     allowed_models: tuple[str, ...] | None = None,
     daily_cap_usd: float | None = None,
+    user_id: str | None = None,
+    team_id: str | None = None,
 ) -> int:
     """CLI shim: prints the plaintext token once and returns a Unix exit code."""
     try:
@@ -105,12 +127,18 @@ def issue_key_command(
             workspace_path=workspace_path,
             allowed_models=allowed_models,
             daily_cap_usd=daily_cap_usd,
+            user_id=user_id,
+            team_id=team_id,
         )
     except IssueKeyError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"key_id: {key_id}")
     print(f"token:  {plaintext}")
+    if user_id is not None:
+        print(f"user:   {user_id}")
+    if team_id is not None:
+        print(f"team:   {team_id}")
     print(
         "save the token now — only the hash is persisted, and it cannot be recovered.",
         file=sys.stderr,

@@ -139,6 +139,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional per-day spend cap (gateway.md §V; enforcement is informational in v1).",
     )
+    issue.add_argument(
+        "--user",
+        default=None,
+        help=(
+            "Optional user_id tag for per-developer cost attribution "
+            "(multi-user.md §4.2). Lowercase [a-z0-9_-]+."
+        ),
+    )
+    issue.add_argument(
+        "--team",
+        default=None,
+        help=(
+            "Optional team_id tag for per-team cost attribution "
+            "(multi-user.md §4.2). Lowercase [a-z0-9_-]+."
+        ),
+    )
 
     return parser
 
@@ -217,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
                     workspace_path=args.workspace,
                     allowed_models=allowed,
                     daily_cap_usd=args.daily_cap_usd,
+                    user_id=args.user,
+                    team_id=args.team,
                 )
             # Default: run the gateway server.
             from metis_gateway.cli import run_gateway_command

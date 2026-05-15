@@ -27,8 +27,11 @@ TOOL_CYCLE_HEURISTIC_RUBRIC_VERSION = "1.0.0"
 SESSION_AGGREGATE_RUBRIC_ID = "session-aggregate-v1"
 SESSION_AGGREGATE_RUBRIC_VERSION = "1.0.0"
 
+# Bumped to 1.1.0 with the addition of the `grounding_tokens` /
+# `forbidden_grounding` primitive (evaluator.md §5.4). New score series on
+# the dashboard rather than silent recalibration of prior verdicts.
 WORKLOAD_HEURISTIC_RUBRIC_ID = "workload-heuristic-v1"
-WORKLOAD_HEURISTIC_RUBRIC_VERSION = "1.0.0"
+WORKLOAD_HEURISTIC_RUBRIC_VERSION = "1.1.0"
 
 
 @dataclass(frozen=True)
@@ -38,12 +41,23 @@ class WorkloadRubric:
     `rubric` is the planned judge tier; only `heuristic` is implemented in
     v1, but the field is accepted so workloads written today don't churn
     when LLM/hybrid land.
+
+    `grounding_tokens` and `forbidden_grounding` are the v1.1 primitive for
+    workloads that probe hallucination / source-grounding (§A3-rev: the
+    original `expect_substring_in_final_response` rewards stylistic mimicry
+    over actual grounding). Each list is a small set of substrings; the
+    heuristic awards positive credit for grounding tokens present and
+    negative credit for forbidden ones present. The lists are **independent**
+    of `expect_substring_in_final_response` — workloads can use either, both,
+    or neither.
     """
 
     rubric: Literal["heuristic", "llm", "hybrid"] = "heuristic"
     expect_substring_in_final_response: str | None = None
     llm_judge_model: str | None = None
     weight_per_turn: float = 1.0
+    grounding_tokens: tuple[str, ...] = ()
+    forbidden_grounding: tuple[str, ...] = ()
 
 
 _ALLOWED_EVALUATE_KEYS = {
@@ -51,6 +65,8 @@ _ALLOWED_EVALUATE_KEYS = {
     "expect_substring_in_final_response",
     "llm_judge_model",
     "weight_per_turn",
+    "grounding_tokens",
+    "forbidden_grounding",
 }
 
 
@@ -87,12 +103,26 @@ def parse_workload_rubric(raw: Any) -> WorkloadRubric:
     llm_model = raw.get("llm_judge_model")
     if llm_model is not None and not isinstance(llm_model, str):
         raise WorkloadRubricError("evaluate.llm_judge_model must be a string")
+    grounding_tokens = _parse_string_list(raw.get("grounding_tokens"), key="grounding_tokens")
+    forbidden_grounding = _parse_string_list(
+        raw.get("forbidden_grounding"), key="forbidden_grounding"
+    )
     return WorkloadRubric(
         rubric=rubric_kind,
         expect_substring_in_final_response=substring,
         llm_judge_model=llm_model,
         weight_per_turn=float(weight),
+        grounding_tokens=grounding_tokens,
+        forbidden_grounding=forbidden_grounding,
     )
+
+
+def _parse_string_list(raw: Any, *, key: str) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not all(isinstance(s, str) and s for s in raw):
+        raise WorkloadRubricError(f"evaluate.{key} must be a list of non-empty strings")
+    return tuple(raw)
 
 
 @dataclass(frozen=True)

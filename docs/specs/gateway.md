@@ -76,7 +76,7 @@ Each inbound request carries a gateway-issued bearer token:
 - **OpenAI clients:** `Authorization: Bearer gw_<ulid>` (the standard OpenAI header).
 - **Anthropic clients:** `x-api-key: gw_<ulid>` (the standard Anthropic header). The handler also accepts `Authorization: Bearer ...` as a fallback so generic SDKs can hit `/v1/messages` without special-casing the auth header.
 
-Tokens are issued out-of-band via `metis gateway issue-key --name "<display>" --workspace "<path>" [--allow-models ...] [--daily-cap-usd ...]`. The plaintext is printed once; only the SHA-256 hex digest is persisted in the keystore (`~/.metis/gateway/keys.json` by default, mode `0o600`). The keystore records:
+Tokens are issued out-of-band via `metis gateway issue-key --name "<display>" --workspace "<path>" [--allow-models ...] [--daily-cap-usd ...] [--user <id>] [--team <id>]`. The plaintext is printed once; only the SHA-256 hex digest is persisted in the keystore (`~/.metis/gateway/keys.json` by default, mode `0o600`). The keystore records:
 
 | Field | Source | Notes |
 |---|---|---|
@@ -86,8 +86,10 @@ Tokens are issued out-of-band via `metis gateway issue-key --name "<display>" --
 | `workspace_path` | `--workspace` | Exactly one workspace per key in v1 (§11). |
 | `allowed_models` | `--allow-models` (optional) | Tuple of canonical model ids; non-conforming routing falls through. |
 | `daily_cap_usd` | `--daily-cap-usd` (optional) | Reserved; circuit breaker integration deferred. |
+| `user_id` | `--user` (optional) | Stable per-developer identity tag (see [`multi-user.md §4.2`](multi-user.md)). `^[a-z0-9_-]+$`. Existing keys with `None` keep working. |
+| `team_id` | `--team` (optional) | Stable team identity tag ([`multi-user.md §4.2`](multi-user.md)). `^[a-z0-9_-]+$`. |
 
-Authentication: the handler hashes the inbound token, looks it up in the keystore, and returns 401 on miss. The `gateway_key_id` is recorded on every outbound `llm.call_completed` and `turn.completed` event so [`analytics-api.md §4.8`](analytics-api.md) can roll up cost by key. No PII flows into the key record.
+Authentication: the handler hashes the inbound token, looks it up in the keystore, and returns 401 on miss. The handler then projects the resolved key onto a request-scoped `Identity` (`gateway_key_id`, `workspace_path`, `user_id`, `team_id` — multi-user.md §3.2 calls this the `Principal`); the harness reads only the `Identity`, never the raw `GatewayKey` for stamping. The `gateway_key_id`, `user_id`, and `team_id` are recorded on every outbound `llm.call_completed` and `turn.completed` event so [`analytics-api.md §4.8`](analytics-api.md) (and `/analytics/by_team`) can roll up cost by key / user / team. No PII flows into the key record — `users.json` carries plaintext (multi-user.md §3.3) and is a separate file; the keystore only references identity tags by id.
 
 ### 3.4 Compatibility with existing clients
 
@@ -233,13 +235,16 @@ Gateway requests emit the same catalog events as agent calls:
 - `llm.call_started`, `llm.call_completed`, `llm.call_failed` — one per provider call.
 - `turn.completed` — one per request (a gateway request is one "turn" from a tracing perspective, even though there's no session).
 
-Two additive payload fields (no new event types, no breaking changes):
+Additive payload fields (no new event types, no breaking changes):
 
 - `llm.call_completed.gateway_key_id: str | None` — typed field on `LLMCallCompleted` (`events/payloads.py`). `None` for agent-loop traffic; set for gateway calls.
 - `llm.call_completed.inbound_shape: Literal["openai", "anthropic"] | None` — same.
-- `turn.completed.gateway_key_id` and `inbound_shape` — currently stamped on the dict envelope at emit time (`harness.py::_emit_turn_completed`) until the typed extension on `TurnCompleted` lands. The fields read identically by the analytics SQL.
+- `llm.call_completed.user_id: str | None` — typed field; stable principal id resolved from the gateway key at request entry (see [`multi-user.md §4.4`](multi-user.md)). `None` for agent-loop traffic and pre-multi-user keys; rolls up under the null bucket in `/analytics/cost?group_by=user`.
+- `llm.call_completed.team_id: str | None` — typed field; same null-bucket convention; drives `/analytics/by_team` (multi-user.md §5.2).
+- `turn.completed.user_id` / `turn.completed.team_id` — typed fields on `TurnCompleted` (matching the `LLMCallCompleted` shape so analytics can roll up at either grain).
+- `turn.completed.gateway_key_id` and `inbound_shape` — still stamped on the dict envelope at emit time (`harness.py::_emit_turn_completed`) until the typed extension on `TurnCompleted` lands for them too (§11 follow-on). The fields read identically by the analytics SQL.
 
-These additive fields drive [`analytics-api.md`](analytics-api.md) §4.1 (`group_by=gateway_key`) and §4.8 (`/analytics/by_key`). Existing consumers ignore unknown fields.
+These additive fields drive [`analytics-api.md`](analytics-api.md) §4.1 (`group_by=gateway_key`) and §4.8 (`/analytics/by_key`), and the new `group_by=user` / `group_by=team` / `/analytics/by_team` surfaces in [`multi-user.md §5`](multi-user.md). Existing consumers ignore unknown fields.
 
 ---
 

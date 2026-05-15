@@ -190,3 +190,138 @@ async def test_allowed_models_filter_rejects_off_list_model(
     assert r.status_code == 403
     body = r.json()
     assert "allowed_models" in body["error"]["message"]
+
+
+async def test_trace_events_stamp_user_id_and_team_id_for_tagged_key(
+    client, scripted_adapter, runtime, tmp_path
+) -> None:
+    """multi-user.md §4.4 — a request authenticated with a (user, team)-tagged
+    key produces `llm.call_completed` and `turn.completed` events that carry
+    both stable identity ids alongside the existing `gateway_key_id` stamp."""
+    from metis_gateway.auth import GatewayKey, Keystore, hash_bearer_token
+
+    token = "gw_tagged_token"
+    runtime.keystore = Keystore(
+        [
+            GatewayKey(
+                key_id="gk_alice",
+                secret_hash=hash_bearer_token(token),
+                name="alice-claude-code",
+                workspace_path=str(tmp_path),
+                user_id="alice",
+                team_id="eng",
+            )
+        ]
+    )
+    scripted_adapter.push_response()
+    r = await client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"model": "haiku", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200
+    await runtime.bus.drain()
+
+    import json
+    import sqlite3
+
+    conn = sqlite3.connect(runtime.db_file)
+    try:
+        rows = conn.execute("SELECT type, payload_json FROM events ORDER BY id").fetchall()
+        payloads_by_type = {row[0]: json.loads(row[1]) for row in rows}
+
+        completed = payloads_by_type["llm.call_completed"]
+        assert completed["gateway_key_id"] == "gk_alice"
+        assert completed["user_id"] == "alice"
+        assert completed["team_id"] == "eng"
+
+        turn = payloads_by_type["turn.completed"]
+        assert turn["gateway_key_id"] == "gk_alice"
+        assert turn["user_id"] == "alice"
+        assert turn["team_id"] == "eng"
+    finally:
+        conn.close()
+
+
+async def test_trace_events_stamp_null_identity_for_untagged_v1_key(
+    client, bearer_token, scripted_adapter, runtime
+) -> None:
+    """Back-compat: a key issued without `--user` / `--team` (the `keystore`
+    fixture's default) still authenticates and stamps both id fields as
+    `null` on the analytics-relevant events."""
+    scripted_adapter.push_response()
+    r = await client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {bearer_token}"},
+        json={"model": "haiku", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200
+    await runtime.bus.drain()
+
+    import json
+    import sqlite3
+
+    conn = sqlite3.connect(runtime.db_file)
+    try:
+        rows = conn.execute("SELECT type, payload_json FROM events ORDER BY id").fetchall()
+        payloads_by_type = {row[0]: json.loads(row[1]) for row in rows}
+
+        completed = payloads_by_type["llm.call_completed"]
+        assert completed["gateway_key_id"] == "gk_test_001"
+        assert completed["user_id"] is None
+        assert completed["team_id"] is None
+
+        turn = payloads_by_type["turn.completed"]
+        assert turn["gateway_key_id"] == "gk_test_001"
+        assert turn["user_id"] is None
+        assert turn["team_id"] is None
+    finally:
+        conn.close()
+
+
+async def test_anthropic_endpoint_stamps_identity_too(
+    client, scripted_adapter, runtime, tmp_path
+) -> None:
+    """The `/v1/messages` (Anthropic-shape) handler resolves the same
+    `Identity` projection and stamps the same fields."""
+    from metis_gateway.auth import GatewayKey, Keystore, hash_bearer_token
+
+    token = "gw_anthropic_tagged"
+    runtime.keystore = Keystore(
+        [
+            GatewayKey(
+                key_id="gk_anthropic_user",
+                secret_hash=hash_bearer_token(token),
+                name="anthropic-tagged",
+                workspace_path=str(tmp_path),
+                user_id="bob",
+                team_id="ops",
+            )
+        ]
+    )
+    scripted_adapter.push_response()
+    r = await client.post(
+        "/v1/messages",
+        headers={"x-api-key": token, "anthropic-version": "2023-06-01"},
+        json={
+            "model": "haiku",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 200
+    await runtime.bus.drain()
+
+    import json
+    import sqlite3
+
+    conn = sqlite3.connect(runtime.db_file)
+    try:
+        rows = conn.execute("SELECT type, payload_json FROM events ORDER BY id").fetchall()
+        payloads_by_type = {row[0]: json.loads(row[1]) for row in rows}
+        completed = payloads_by_type["llm.call_completed"]
+        assert completed["inbound_shape"] == "anthropic"
+        assert completed["user_id"] == "bob"
+        assert completed["team_id"] == "ops"
+    finally:
+        conn.close()

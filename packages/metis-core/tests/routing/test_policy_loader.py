@@ -309,6 +309,30 @@ def test_pattern_cost_weight_out_of_range(registry):
     _expect_error("pattern: { cost_weight: 1.5 }\n", registry, match="cost_weight must be in")
 
 
+def test_pattern_cost_weight_default_is_zero_point_one(registry):
+    # Policy file with no `pattern` block at all → dataclass default applies.
+    # The default was lowered from 0.3 → 0.1 on 2026-05-14 per the §A3-rev
+    # benchmark finding (routing-engine.md §5.5 "Default rationale").
+    policy = parse_policy_text("schema_version: 1\n", registry)
+    assert policy.pattern.cost_weight == 0.1
+
+    # Same default when `pattern:` is present but `cost_weight` is omitted.
+    policy_partial = parse_policy_text(
+        "schema_version: 1\npattern: { min_confidence: 0.4 }\n", registry
+    )
+    assert policy_partial.pattern.cost_weight == 0.1
+    assert policy_partial.pattern.min_confidence == 0.4
+
+
+def test_pattern_cost_weight_explicit_override_preserves_old_default(registry):
+    # The 0.3 → 0.1 default change is opt-out: a workspace that depended on
+    # the prior cost-bias restates `cost_weight: 0.3` in routing.yaml and
+    # gets the old behavior back. This guarantees explicit overrides keep
+    # working after the default migration.
+    policy = parse_policy_text("schema_version: 1\npattern: { cost_weight: 0.3 }\n", registry)
+    assert policy.pattern.cost_weight == 0.3
+
+
 def test_pattern_min_sample_size_zero(registry):
     _expect_error(
         "pattern: { min_sample_size: 0 }\n", registry, match="min_sample_size must be int >= 1"

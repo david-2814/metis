@@ -297,3 +297,123 @@ async def test_fingerprint_inputs_hook_records_distinct_signatures_per_turn(
         assert refactor_sig != debug_sig
     finally:
         store.close()
+
+
+async def test_submit_turn_workload_id_flows_into_pattern_recorded(
+    bus, event_log, tmp_path: Path
+) -> None:
+    """End-to-end: a `workload_id` passed to `SessionManager.submit_turn`
+    flows through `TurnContext`, the `fingerprint_inputs_hook`, and the
+    pattern subscriber so the recorded fingerprint reflects it. Two turns
+    that differ only by workload_id produce two distinct fingerprint ids,
+    not a single deduped row."""
+    from metis_core.adapters.protocol import StopReason
+    from metis_core.canonical.content import TextBlock
+    from metis_core.patterns.fingerprint import (
+        build_structural_features,
+        structural_signature,
+    )
+    from metis_core.pricing import DEFAULT_PRICE_TABLE
+    from metis_core.routing import ModelRegistry, RoutingEngine
+    from metis_core.sessions import InMemorySessionStore, SessionManager
+    from metis_core.tools.dispatcher import ToolDispatcher
+
+    from tests_shared.scripted_adapter import (
+        _ScriptedAnthropicAdapter,
+        _ScriptedResponse,
+    )
+
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+            ),
+            _ScriptedResponse(
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+            ),
+        ]
+    )
+    registry = ModelRegistry()
+    registry.register(model_id="anthropic:claude-sonnet-4-6", adapter=adapter, aliases=["sonnet"])
+    routing = RoutingEngine(registry=registry, bus=bus)
+    dispatcher = ToolDispatcher(bus)
+
+    store = PatternStore(tmp_path)
+    try:
+        subscriber = PatternEventSubscriber(
+            store_factory=lambda _ws: store,
+            workspace_resolver=lambda _sid: str(tmp_path),
+            bus=bus,
+        )
+        subscriber.attach()
+
+        def _builder(ctx) -> FingerprintInputs:
+            return FingerprintInputs(
+                user_message_text=ctx.user_message_text,
+                workspace_path=ctx.workspace_path,
+                estimated_input_tokens=ctx.estimated_input_tokens,
+                has_images=ctx.has_images,
+                has_tool_calls_in_history=ctx.has_tool_calls_in_history,
+                workload_id=getattr(ctx, "workload_id", None),
+            )
+
+        def _hook(turn_id: str, ctx) -> None:
+            subscriber.set_fingerprint_inputs(turn_id, _builder(ctx))
+
+        manager = SessionManager(
+            registry=registry,
+            routing=routing,
+            dispatcher=dispatcher,
+            bus=bus,
+            store=InMemorySessionStore(),
+            pricing=DEFAULT_PRICE_TABLE,
+            fingerprint_inputs_hook=_hook,
+        )
+
+        # Two sessions with the *same* user prompt but different workload_ids.
+        # Without workload_id plumbing they'd produce the same structural
+        # signature and dedup into one row.
+        session_a = manager.create_session(workspace_path=str(tmp_path))
+        await manager.submit_turn(session_a.id, "same prompt", workload_id="foo")
+        await bus.drain()
+        await bus.drain()
+
+        session_b = manager.create_session(workspace_path=str(tmp_path))
+        await manager.submit_turn(session_b.id, "same prompt", workload_id="bar")
+        await bus.drain()
+        await bus.drain()
+
+        recorded = [e for e in event_log if e.type == "pattern.recorded"]
+        assert len(recorded) == 2
+        fp_ids = {e.payload["fingerprint_id"] for e in recorded}
+        assert len(fp_ids) == 2, f"two workload_ids should produce two fingerprints; got {fp_ids!r}"
+
+        foo_sig = structural_signature(
+            build_structural_features(
+                FingerprintInputs(
+                    user_message_text="same prompt",
+                    workspace_path=str(tmp_path),
+                    estimated_input_tokens=0,
+                    has_images=False,
+                    has_tool_calls_in_history=False,
+                    workload_id="foo",
+                )
+            )
+        )
+        bar_sig = structural_signature(
+            build_structural_features(
+                FingerprintInputs(
+                    user_message_text="same prompt",
+                    workspace_path=str(tmp_path),
+                    estimated_input_tokens=0,
+                    has_images=False,
+                    has_tool_calls_in_history=False,
+                    workload_id="bar",
+                )
+            )
+        )
+        assert foo_sig != bar_sig
+    finally:
+        store.close()

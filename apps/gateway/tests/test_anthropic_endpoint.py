@@ -27,6 +27,7 @@ from metis_core.canonical.content import (
 from metis_core.canonical.ids import new_message_id
 from metis_core.canonical.messages import Message, Role
 from metis_gateway.app import build_app
+from metis_gateway.auth import Identity
 from metis_gateway.endpoints.anthropic import (
     InboundTranslationError,
     parse_anthropic_request,
@@ -602,8 +603,7 @@ async def test_messages_streaming_cancel_mid_stream(
             stop_sequences=[],
             output_schema=None,
             requested_model="haiku",
-            gateway_key_id="gk_test_001",
-            workspace_path="/tmp",
+            identity=Identity(gateway_key_id="gk_test_001", workspace_path="/tmp"),
             allowed_models=None,
             is_disconnected=make_disconnect_probe(is_disconnected),
         )

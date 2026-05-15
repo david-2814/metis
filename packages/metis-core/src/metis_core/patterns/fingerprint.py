@@ -85,6 +85,7 @@ class StructuralFeatures(msgspec.Struct, frozen=True):
     estimated_input_tokens_bucket: int
     intent_tags: tuple[str, ...]
     workspace_hash: str
+    workload_id: str | None = None
 
 
 class Fingerprint(msgspec.Struct, frozen=True):
@@ -121,6 +122,7 @@ class FingerprintInputs:
     file_path_buckets: tuple[str, ...] = ()
     tool_names: tuple[str, ...] = ()
     side_effect_classes: tuple[str, ...] = ()
+    workload_id: str | None = None
 
 
 def derive_fingerprint_inputs(
@@ -133,6 +135,7 @@ def derive_fingerprint_inputs(
     files_touched: tuple[str, ...] = (),
     tool_names: tuple[str, ...] = (),
     side_effect_classes: tuple[str, ...] = (),
+    workload_id: str | None = None,
 ) -> FingerprintInputs:
     """Convenience: derive `file_extensions` and `file_path_buckets` from a
     flat list of file paths.
@@ -163,6 +166,7 @@ def derive_fingerprint_inputs(
         file_path_buckets=tuple(sorted(buckets)),
         tool_names=tuple(sorted(set(tool_names))),
         side_effect_classes=tuple(sorted(set(side_effect_classes))),
+        workload_id=workload_id,
     )
 
 
@@ -183,6 +187,7 @@ def build_structural_features(inputs: FingerprintInputs) -> StructuralFeatures:
         estimated_input_tokens_bucket=_token_bucket(inputs.estimated_input_tokens),
         intent_tags=_intent_tags(inputs.user_message_text),
         workspace_hash=_workspace_hash(inputs.workspace_path),
+        workload_id=inputs.workload_id,
     )
 
 

@@ -449,8 +449,14 @@ The full user message text is *not* in the event payload — it's persisted as p
     "total_output_tokens": int,
     "total_cost_usd": float,
     "wall_time_seconds": float,
+    # --- additive (default null; existing consumers ignore unknown fields) ---
+    "signals_extra": dict | None,           # evaluator §5.1 supplementary keys (e.g. final_response_text)
+    "user_id": str | None,                  # multi-user.md §4.4; null on agent-loop and pre-multi-user keys
+    "team_id": str | None,                  # multi-user.md §4.4; same null convention as user_id
 }
 ```
+
+`user_id` and `team_id` are stable pseudonymous identifiers (`usr_<ulid>` / `team_<ulid>`) resolved from the gateway key at request entry per `multi-user.md` §3 and §4.4. They roll up under the null bucket in the analytics surface for agent-loop traffic and for keys issued before the multi-user fields were added. Plaintext PII (email, real name) lives in `users.json` only — the trace store carries the stable id only (`multi-user.md` §3.3).
 
 #### `turn.cancelled`
 
@@ -507,8 +513,15 @@ The full user message text is *not* in the event payload — it's persisted as p
     "stop_reason": Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"],
     "produced_tool_calls": int,      # number of tool_use blocks in the response
     "produced_thinking_blocks": int,
+    # --- additive (default null; existing consumers ignore unknown fields) ---
+    "gateway_key_id": str | None,           # gateway.md §6; null on agent-loop traffic
+    "inbound_shape": Literal["openai", "anthropic"] | None,  # gateway.md §6
+    "user_id": str | None,                  # multi-user.md §4.4; null on agent-loop and pre-multi-user keys
+    "team_id": str | None,                  # multi-user.md §4.4; same null convention as user_id
 }
 ```
+
+`gateway_key_id` and `inbound_shape` are stamped at the gateway boundary per `gateway.md` §6; both are `null` when the call originated from the in-process agent loop (CLI / TUI / `metis serve`). `user_id` and `team_id` are stable pseudonymous identifiers (`usr_<ulid>` / `team_<ulid>`) resolved from the gateway key per `multi-user.md` §3 and §4.4 — they roll up under the null bucket for agent-loop traffic and for keys issued before the multi-user fields were added. Plaintext PII (email, real name) lives in `users.json` only — the trace store carries the stable id only (`multi-user.md` §3.3).
 
 #### `llm.call_failed`
 
@@ -854,7 +867,8 @@ Mirrors `memory.eviction`. Fired when (1) a write lands the store over `soft_cap
 > **Sensitivity:** `pseudonymous`
 > **Phase:** 2
 > **Actor:** SYSTEM
-> **Parent:** `turn.started` or `llm.call_completed` (on-demand load)
+> **Parent:** `session.started` (pre-activation, `load_reason="always"`)
+> or `llm.call_completed` (on-demand load via `skill_load` tool)
 
 ```python
 {
@@ -866,6 +880,24 @@ Mirrors `memory.eviction`. Fired when (1) a write lands the store over `soft_cap
     "triggered_by_tool_use_id": str | None,    # for on_demand loads via load_skill tool
 }
 ```
+
+**`load_reason` semantics** (context-assembler.md v3 §5.2.1, wired
+2026-05-14):
+
+- `"always"` — **pre-activation**. Emitted by `SessionManager.create_session`
+  for every skill body inlined into the stable system prefix as v2
+  §5.1 padding. `triggered_by_tool_use_id` is `None`; `turn_id` is
+  `None` (pre-activation stands outside any turn).
+- `"on_demand"` — **explicit activation**. Emitted by `SkillLoadTool`
+  on a successful `skill_load(name)` call when the skill is not
+  already pre-activated and not already explicitly activated in this
+  session. `triggered_by_tool_use_id` is the `ToolUseBlock.id`.
+- `"auto_suggested"` — reserved for a later description-match-driven
+  activation mechanism; not emitted in v3.
+
+No `skill.unloaded` / `skill.evicted` event exists. v3 defers
+mid-session eviction (context-assembler.md v3 §5.2.5); budget
+exhaustion surfaces via `tool.failed` (§6.5) per §5.2.6.
 
 #### `skill.created`
 

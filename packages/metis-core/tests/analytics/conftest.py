@@ -127,6 +127,8 @@ class DBSeeder:
         turn_id: str | None = None,
         gateway_key_id: str | None = None,
         inbound_shape: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
     ) -> str:
         payload: dict = {
             "model": model,
@@ -146,6 +148,10 @@ class DBSeeder:
             payload["gateway_key_id"] = gateway_key_id
         if inbound_shape is not None:
             payload["inbound_shape"] = inbound_shape
+        if user_id is not None:
+            payload["user_id"] = user_id
+        if team_id is not None:
+            payload["team_id"] = team_id
         return self.insert_event(
             event_type="llm.call_completed",
             timestamp=timestamp,

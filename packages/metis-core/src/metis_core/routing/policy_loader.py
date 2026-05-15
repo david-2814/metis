@@ -191,9 +191,12 @@ def _parse_pattern(raw: Any, field: str, errors: list[str]) -> PatternConfig:
     if not isinstance(raw, dict):
         errors.append(f"{field}: must be a mapping")
         return PatternConfig()
-    cost_weight = raw.get("cost_weight", 0.3)
-    min_conf = raw.get("min_confidence", 0.3)
-    min_samples = raw.get("min_sample_size", 5)
+    # Fall through to the PatternConfig dataclass defaults so the single
+    # source of truth for the default `cost_weight` is `policy.PatternConfig`.
+    defaults = PatternConfig()
+    cost_weight = raw.get("cost_weight", defaults.cost_weight)
+    min_conf = raw.get("min_confidence", defaults.min_confidence)
+    min_samples = raw.get("min_sample_size", defaults.min_sample_size)
     if not isinstance(cost_weight, int | float) or not (0.0 <= cost_weight <= 1.0):
         errors.append(f"{field}.cost_weight must be in [0.0, 1.0] (got {cost_weight!r})")
     if not isinstance(min_conf, int | float) or not (0.0 <= min_conf <= 1.0):

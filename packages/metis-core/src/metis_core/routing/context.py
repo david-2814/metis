@@ -39,6 +39,11 @@ class TurnContext:
     timezone: str | None = None  # IANA zone name for time_of_day_between
     now_override: datetime | None = None  # for deterministic time-based tests
 
+    # Caller-provided workload tag for pattern-store K-NN clustering. Set by
+    # the benchmark harness (one workload per run); None for agent-loop
+    # sessions, which have no notion of a "workload." See pattern-store.md §5.1.
+    workload_id: str | None = None
+
     # For tracing
     parent_event_id: str | None = None  # typically the turn.started event id
 

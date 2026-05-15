@@ -389,9 +389,7 @@ async def run_workload(
                     heuristic=HeuristicJudge(),
                     escalation_threshold=judge_escalation_threshold,
                 )
-            new_evaluator, _ = register_evaluator(
-                runtime.bus, runtime.trace, judge=replacement
-            )
+            new_evaluator, _ = register_evaluator(runtime.bus, runtime.trace, judge=replacement)
             runtime.evaluator = new_evaluator
         try:
             if no_active_model:
@@ -410,7 +408,10 @@ async def run_workload(
                     f"  [{workload.name}] turn {i + 1}/{len(workload.turns)}: ", end="", flush=True
                 )
                 result = await runtime.manager.submit_turn(
-                    session.id, turn.prompt, temperature=temperature
+                    session.id,
+                    turn.prompt,
+                    temperature=temperature,
+                    workload_id=workload.name,
                 )
                 per_turn_metrics.append(
                     {

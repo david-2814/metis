@@ -5,16 +5,17 @@ description: >-
   under `routing/`; the agent must read those files and name real
   symbols. Models that don't ground in the source tend to fabricate
   plausible-sounding identifiers ("PATTERN_LOOKUP", "RouterChain",
-  "ModelSelector"); the heuristic substring assertion catches the
-  most distinctive of those (`PATTERN_RECOMMENDATION`, an UPPERCASE
-  slot policy enum that's hard to guess without reading
-  `routing/engine.py`). The per-turn `contains_substring`
-  cross-checks for `RoutingEngine` (central class name; a generic
-  answer that handwaves "the router" without naming the actual class
-  fails). Hallucination here = not opening the files. A future LLM-
-  judge tier can score fabricated symbols not in the heuristic; v1
-  leans on the two substring checks plus `min_tool_calls` to force
-  the agent to actually read the workspace.
+  "ModelSelector"). v1.1 of this workload uses the evaluator's
+  `grounding_tokens` / `forbidden_grounding` rubric primitive
+  (evaluator.md §5.4) instead of a single UPPERCASE substring check.
+  The §A3-rev finding (benchmarks/RESULTS.md) showed the original
+  `expect_substring_in_final_response="PATTERN_RECOMMENDATION"` rewarded
+  stylistic mimicry: sonnet cited the real `PolicyEvaluation` /
+  `RoutingDecision` dataclasses and lowercase `policy=` literals
+  (strictly more grounded) but scored 0.50 because it didn't parrot the
+  docstring's UPPERCASE label. The grounding lists below capture
+  multiple real-symbol entry points so the score reflects whether the
+  agent opened the files, not whether it copied one specific phrase.
 suite_version: 1
 turns:
   - prompt: >-
@@ -40,5 +41,25 @@ expect:
   max_hard_failures: 0
 evaluate:
   rubric: hybrid
-  expect_substring_in_final_response: "PATTERN_RECOMMENDATION"
   llm_judge_model: anthropic:claude-haiku-4-5
+  # Real symbols the agent must cite to count as grounded. Mix of class
+  # names, the actual lowercase `policy=` literal used on the wire, and
+  # the real `PolicyEvaluation` dataclass — none of these reward
+  # parroting the UPPERCASE_SLOT_LABEL convention from the module
+  # docstring. An agent that opened the files will name several of
+  # these; one that hallucinated will miss most.
+  grounding_tokens:
+    - "RoutingEngine"
+    - "ModelRegistry"
+    - "AvailabilityState"
+    - "PolicyEvaluation"
+    - "policy="
+  # Plausible-but-fabricated names a hallucinating agent would invent
+  # (each follows English/snake-case conventions for a "router" but is
+  # NOT in routing/ source). Presence of any of these is positive
+  # evidence of fabrication, not paraphrase.
+  forbidden_grounding:
+    - "PATTERN_LOOKUP"
+    - "RouterChain"
+    - "ModelSelector"
+    - "PolicyChain"

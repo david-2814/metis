@@ -603,3 +603,191 @@ async def test_cost_filter_by_gateway_key_sql_injection_guard_special_chars(
     )
     assert r.status_code == 400
     assert r.json()["error"]["code"] == "invalid_gateway_key"
+
+
+# ---- multi-user.md §5: group_by user/team + /analytics/by_team -----------
+
+
+@pytest.fixture
+async def principal_seeded_client(runtime, now):
+    """Seeds llm.call_completed rows stamped with `user_id` / `team_id`."""
+    db_path: Path = runtime.db_file
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn.executescript(_SCHEMA)
+
+    def _insert(
+        seq: int,
+        *,
+        user_id: str | None,
+        team_id: str | None,
+        cost: str,
+    ):
+        payload: dict = {
+            "model": "anthropic:claude-sonnet-4-6",
+            "provider": "anthropic",
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cached_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cost_usd": cost,
+            "pricing_version": "test-1",
+            "latency_ms": 500,
+            "stop_reason": "end_turn",
+            "produced_tool_calls": 0,
+            "produced_thinking_blocks": 0,
+        }
+        if user_id is not None:
+            payload["user_id"] = user_id
+        if team_id is not None:
+            payload["team_id"] = team_id
+        conn.execute(
+            "INSERT INTO events "
+            "(id, timestamp_us, session_id, turn_id, parent_event_id, type, "
+            " actor, sensitivity, payload_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                f"01HZP{seq:020d}",
+                _to_micros(now),
+                "sess_p",
+                f"turn_p_{seq}",
+                None,
+                "llm.call_completed",
+                "agent",
+                "pseudonymous",
+                json.dumps(payload),
+            ),
+        )
+
+    # team_eng: alice 2 calls ($0.10, $0.05), bob 1 call ($0.20).
+    _insert(1, user_id="usr_alice", team_id="team_eng", cost="0.10")
+    _insert(2, user_id="usr_alice", team_id="team_eng", cost="0.05")
+    _insert(3, user_id="usr_bob", team_id="team_eng", cost="0.20")
+    # team_sales: carol alone.
+    _insert(4, user_id="usr_carol", team_id="team_sales", cost="1.00")
+    # Un-tagged agent-loop traffic — null user/team.
+    _insert(5, user_id=None, team_id=None, cost="0.03")
+    conn.close()
+
+    app = build_app(runtime)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+        yield c
+
+
+async def test_cost_group_by_user_returns_rows(principal_seeded_client):
+    r = await principal_seeded_client.get("/analytics/cost", params={"group_by": "user"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    by_user = {row["user_id"]: row for row in body["data"]}
+    assert by_user["usr_alice"]["cost_usd"] == pytest.approx(0.15)
+    assert by_user["usr_alice"]["call_count"] == 2
+    assert by_user["usr_carol"]["cost_usd"] == pytest.approx(1.00)
+    # Null user_id (agent-loop traffic) surfaces under null.
+    assert None in by_user
+    assert by_user[None]["cost_usd"] == pytest.approx(0.03)
+
+
+async def test_cost_group_by_team_returns_rows(principal_seeded_client):
+    r = await principal_seeded_client.get("/analytics/cost", params={"group_by": "team"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    by_team = {row["team_id"]: row for row in body["data"]}
+    assert by_team["team_eng"]["cost_usd"] == pytest.approx(0.35)
+    assert by_team["team_sales"]["cost_usd"] == pytest.approx(1.00)
+    assert None in by_team
+
+
+async def test_cost_filter_by_user_with_session_group_by(principal_seeded_client):
+    """Spec §5.3 example: `?user=alice&group_by=session` works."""
+    r = await principal_seeded_client.get(
+        "/analytics/cost",
+        params={"group_by": "session", "user": "usr_alice"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["cost_usd"] == pytest.approx(0.15)
+    assert body["data"][0]["call_count"] == 2
+
+
+async def test_cost_filter_by_team_returns_only_matches(principal_seeded_client):
+    r = await principal_seeded_client.get(
+        "/analytics/cost",
+        params={"group_by": "user", "team": "team_eng"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    users = {row["user_id"] for row in body["data"]}
+    assert users == {"usr_alice", "usr_bob"}
+
+
+async def test_cost_user_filter_sql_injection_guard(principal_seeded_client):
+    r = await principal_seeded_client.get(
+        "/analytics/cost",
+        params={"user": "DROP TABLE"},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_user"
+
+
+async def test_cost_team_filter_sql_injection_guard(principal_seeded_client):
+    r = await principal_seeded_client.get(
+        "/analytics/cost",
+        params={"team": "team_eng'; DELETE FROM events; --"},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_team"
+
+
+async def test_by_team_endpoint_round_trip(principal_seeded_client):
+    r = await principal_seeded_client.get("/analytics/by_team")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "window" in body
+    assert "current_pricing_version" in body
+    by_team = {row["team_id"]: row for row in body["data"]}
+    eng = by_team["team_eng"]
+    assert eng["cost_usd"] == pytest.approx(0.35)
+    assert eng["call_count"] == 3
+    assert eng["user_count"] == 2
+    sub = {row["user_id"]: row for row in eng["by_user"]}
+    assert sub["usr_alice"]["cost_usd"] == pytest.approx(0.15)
+    assert sub["usr_bob"]["cost_usd"] == pytest.approx(0.20)
+    # bob spent more than alice → bob first within the team.
+    assert eng["by_user"][0]["user_id"] == "usr_bob"
+    # Order: team_sales is most expensive → first row.
+    assert body["data"][0]["team_id"] == "team_sales"
+    # Null bucket present with user_count == 0.
+    assert by_team[None]["user_count"] == 0
+    assert by_team[None]["cost_usd"] == pytest.approx(0.03)
+
+
+async def test_by_team_endpoint_filter_returns_one_team(principal_seeded_client):
+    r = await principal_seeded_client.get("/analytics/by_team", params={"team": "team_eng"})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["team_id"] == "team_eng"
+
+
+async def test_by_team_endpoint_sql_injection_guard(principal_seeded_client):
+    r = await principal_seeded_client.get(
+        "/analytics/by_team",
+        params={"team": "DROP TABLE"},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_team"
+
+
+async def test_by_team_null_bucket_present_with_only_untagged(principal_seeded_client):
+    """When only un-tagged rows match, the null bucket still appears."""
+    r = await principal_seeded_client.get(
+        "/analytics/by_team",
+        params={
+            "from": "1970-01-01T00:00:00Z",
+            "to": "1970-01-02T00:00:00Z",
+        },
+    )
+    # Empty window — no rows at all.
+    assert r.status_code == 200
+    assert r.json()["data"] == []

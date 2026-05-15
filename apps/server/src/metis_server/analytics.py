@@ -35,7 +35,9 @@ from metis_server.errors import (
     invalid_group_by,
     invalid_limit,
     invalid_order,
+    invalid_team,
     invalid_time_window,
+    invalid_user,
     turn_not_found,
     unknown_baseline_model,
 )
@@ -47,6 +49,11 @@ from metis_server.errors import (
 # rejected at the HTTP boundary — even though the SQL is parameterized,
 # pre-validating keeps the surface defensive in depth.
 _GATEWAY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
+# Same defense-in-depth shape guard for `user` / `team` filters. The
+# canonical id forms are `usr_<ulid>` / `team_<ulid>` (multi-user.md §3.1)
+# but the spec §5.3 also accepts a human alias, so the pattern matches
+# both. Whitespace, semicolons, quotes, etc. are rejected.
+_PRINCIPAL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 
 
 def _store(request: Request) -> AnalyticsStore:
@@ -87,10 +94,22 @@ async def cost(request: Request) -> Response:
     window = _resolve_window_from_query(request)
     group_by = request.query_params.get("group_by", "model")
     gateway_key = request.query_params.get("gateway_key")
+    user = request.query_params.get("user")
+    team = request.query_params.get("team")
     if gateway_key is not None and not _GATEWAY_KEY_PATTERN.match(gateway_key):
         raise invalid_gateway_key(f"gateway_key={gateway_key!r} does not look like a valid key id")
+    if user is not None and not _PRINCIPAL_ID_PATTERN.match(user):
+        raise invalid_user(f"user={user!r} does not look like a valid user id")
+    if team is not None and not _PRINCIPAL_ID_PATTERN.match(team):
+        raise invalid_team(f"team={team!r} does not look like a valid team id")
     try:
-        data = _store(request).cost(window, group_by=group_by, gateway_key=gateway_key)
+        data = _store(request).cost(
+            window,
+            group_by=group_by,
+            gateway_key=gateway_key,
+            user=user,
+            team=team,
+        )
     except InvalidGroupByError as exc:
         raise invalid_group_by(str(exc)) from exc
     return _json(_envelope(window, _pricing(request).version, data))
@@ -166,6 +185,22 @@ async def by_key(request: Request) -> Response:
     if gateway_key is not None and not _GATEWAY_KEY_PATTERN.match(gateway_key):
         raise invalid_gateway_key(f"gateway_key={gateway_key!r} does not look like a valid key id")
     data = _store(request).by_key(window, gateway_key=gateway_key)
+    return _json(_envelope(window, _pricing(request).version, data))
+
+
+async def by_team(request: Request) -> Response:
+    """GET /analytics/by_team (multi-user.md §5.2).
+
+    Per-(team_id) cost + tokens + call_count rollup, with a `by_user`
+    sub-array per row. Rows with `team_id: null` cover agent-loop traffic
+    and pre-v1 gateway keys issued without `--team`. Sorted by
+    `cost_usd` DESC; the `by_user` sub-array is also `cost_usd` DESC.
+    """
+    window = _resolve_window_from_query(request)
+    team = request.query_params.get("team")
+    if team is not None and not _PRINCIPAL_ID_PATTERN.match(team):
+        raise invalid_team(f"team={team!r} does not look like a valid team id")
+    data = _store(request).by_team(window, team=team)
     return _json(_envelope(window, _pricing(request).version, data))
 
 

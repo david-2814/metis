@@ -1009,10 +1009,11 @@ def test_pad_stable_prefix_noop_when_already_above_floor():
             return MIN_CACHEABLE_PREFIX_TOKENS + 100
 
     prompt = "already long enough"
-    out = _pad_stable_prefix_for_cache(
+    out, inlined = _pad_stable_prefix_for_cache(
         stable_prefix=prompt, adapter=_Adapter(), tools=[], skill_store=None
     )
     assert out == prompt
+    assert inlined == []
 
 
 def test_pad_stable_prefix_appends_operating_context_when_below_floor():
@@ -1028,7 +1029,7 @@ def test_pad_stable_prefix_appends_operating_context_when_below_floor():
             return max(1, len(system_prompt or "") // 4)
 
     base = "You are Metis. Be concise."
-    out = _pad_stable_prefix_for_cache(
+    out, inlined = _pad_stable_prefix_for_cache(
         stable_prefix=base, adapter=_Adapter(), tools=[], skill_store=None
     )
     # Padded prefix must clear the floor.
@@ -1037,6 +1038,8 @@ def test_pad_stable_prefix_appends_operating_context_when_below_floor():
     assert "## Operating context" in out
     # Base prompt preserved at the front.
     assert out.startswith(base)
+    # No skills supplied → no skills inlined.
+    assert inlined == []
 
 
 def test_pad_stable_prefix_respects_upper_bound():
@@ -1051,7 +1054,7 @@ def test_pad_stable_prefix_respects_upper_bound():
             return max(1, len(system_prompt or "") // 4)
 
     base = "You are Metis."
-    out = _pad_stable_prefix_for_cache(
+    out, _ = _pad_stable_prefix_for_cache(
         stable_prefix=base, adapter=_Adapter(), tools=[], skill_store=None
     )
     # ~4 chars/token: stay near or under the upper bound (small overshoot
@@ -1068,13 +1071,14 @@ def test_pad_stable_prefix_byte_stable_across_calls():
             return max(1, len(system_prompt or "") // 4)
 
     base = "You are Metis."
-    a = _pad_stable_prefix_for_cache(
+    a, a_inlined = _pad_stable_prefix_for_cache(
         stable_prefix=base, adapter=_Adapter(), tools=[], skill_store=None
     )
-    b = _pad_stable_prefix_for_cache(
+    b, b_inlined = _pad_stable_prefix_for_cache(
         stable_prefix=base, adapter=_Adapter(), tools=[], skill_store=None
     )
     assert a == b
+    assert a_inlined == b_inlined == []
 
 
 def test_pad_stable_prefix_prefers_skill_bodies_then_operating_context():
@@ -1108,7 +1112,7 @@ def test_pad_stable_prefix_prefers_skill_bodies_then_operating_context():
         ]
     )
     base = "You are Metis."
-    out = _pad_stable_prefix_for_cache(
+    out, inlined = _pad_stable_prefix_for_cache(
         stable_prefix=base, adapter=_Adapter(), tools=[], skill_store=skills
     )
     # Both skill headings present; alpha appears before zeta (name-ascending).
@@ -1118,6 +1122,8 @@ def test_pad_stable_prefix_prefers_skill_bodies_then_operating_context():
     # Short skill bodies don't fill the headroom alone, so the ops-context
     # block runs to top up.
     assert "## Operating context" in out
+    # Both skills got inlined (v3 §5.2.2 pre-activation), name-ascending.
+    assert [s.name for s in inlined] == ["alpha", "zeta"]
 
 
 def test_pad_stable_prefix_truncates_huge_skill_body():
@@ -1142,7 +1148,7 @@ def test_pad_stable_prefix_truncates_huge_skill_body():
         def list_skills(self):
             return [_BigSkill()]
 
-    out = _pad_stable_prefix_for_cache(
+    out, _ = _pad_stable_prefix_for_cache(
         stable_prefix="short base", adapter=_Adapter(), tools=[], skill_store=_Store()
     )
     assert len(out) // 4 <= MAX_CACHEABLE_PREFIX_TOKENS + 50

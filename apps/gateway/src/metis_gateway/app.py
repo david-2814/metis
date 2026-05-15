@@ -25,7 +25,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from metis_gateway.auth import extract_bearer_token
+from metis_gateway.auth import extract_bearer_token, identity_from_key
 from metis_gateway.endpoints.anthropic import (
     InboundTranslationError as AnthropicInboundTranslationError,
 )
@@ -178,8 +178,7 @@ async def chat_completions(request: Request) -> Response:
             stop_sequences=parsed.stop_sequences,
             output_schema=parsed.output_schema,
             requested_model=parsed.model,
-            gateway_key_id=key.key_id,
-            workspace_path=key.workspace_path,
+            identity=identity_from_key(key),
             allowed_models=key.allowed_models,
             is_disconnected=probe,
         )
@@ -231,8 +230,7 @@ async def _stream_chat_completions(
         stop_sequences=parsed.stop_sequences,
         output_schema=parsed.output_schema,
         requested_model=parsed.model,
-        gateway_key_id=key.key_id,
-        workspace_path=key.workspace_path,
+        identity=identity_from_key(key),
         allowed_models=key.allowed_models,
         is_disconnected=probe,
     )
@@ -342,8 +340,7 @@ async def messages(request: Request) -> Response:
             stop_sequences=parsed.stop_sequences,
             output_schema=None,
             requested_model=parsed.model,
-            gateway_key_id=key.key_id,
-            workspace_path=key.workspace_path,
+            identity=identity_from_key(key),
             allowed_models=key.allowed_models,
             is_disconnected=probe,
         )
@@ -383,8 +380,7 @@ async def _stream_messages(
         stop_sequences=parsed.stop_sequences,
         output_schema=None,
         requested_model=parsed.model,
-        gateway_key_id=key.key_id,
-        workspace_path=key.workspace_path,
+        identity=identity_from_key(key),
         allowed_models=key.allowed_models,
         is_disconnected=probe,
     )

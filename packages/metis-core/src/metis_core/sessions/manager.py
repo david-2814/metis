@@ -55,6 +55,7 @@ from metis_core.events.payloads import (
     LLMCallStarted,
     MemoryEviction,
     MemoryUpdated,
+    SkillLoaded,
     TurnCancelled,
     TurnCompleted,
     TurnStarted,
@@ -72,6 +73,7 @@ from metis_core.routing import (
 )
 from metis_core.routing.engine import RoutingError
 from metis_core.sessions.store import Session, SessionStore
+from metis_core.skills.activation import SkillActivationRegistry
 from metis_core.tools.dispatcher import ToolDispatcher
 
 logger = logging.getLogger(__name__)
@@ -497,7 +499,7 @@ def _pad_stable_prefix_for_cache(
     skill_store,
     min_tokens: int = MIN_CACHEABLE_PREFIX_TOKENS,
     max_tokens: int = MAX_CACHEABLE_PREFIX_TOKENS,
-) -> str:
+) -> tuple[str, list]:
     """Ensure the stable prefix tokenizes above the cache floor.
 
     Anthropic silently drops cache_control markers when the cached prefix
@@ -513,19 +515,27 @@ def _pad_stable_prefix_for_cache(
        agent might activate anyway via `skill_load`.
     2. `_OPERATING_CONTEXT_PADDING` — the static universal fallback.
 
+    Returns the padded prefix plus the list of `Skill` objects whose
+    bodies were inlined as padding. Callers use the second value to
+    (a) emit `skill.loaded(load_reason="always")` events per
+    context-assembler.md v3 §5.2.2 and (b) populate the activation
+    registry so subsequent `skill_load` calls on those skills return a
+    pointer instead of re-injecting the body.
+
     The returned prefix is byte-stable turn-to-turn within a session
     because: (a) padding sources are module-level constants and sorted
     frozen collections, (b) truncation uses character offsets computed
     from inputs that don't change within a session.
     """
     current = adapter.estimate_input_tokens([], tools, stable_prefix)
+    inlined_skills: list = []
     if current >= min_tokens:
-        return stable_prefix
+        return stable_prefix, inlined_skills
 
     headroom_tokens = max_tokens - current
     headroom_chars = max(0, headroom_tokens * 4)
     if headroom_chars <= 0:
-        return stable_prefix
+        return stable_prefix, inlined_skills
 
     segments: list[str] = []
     used_chars = 0
@@ -541,6 +551,7 @@ def _pad_stable_prefix_for_cache(
                 segment = segment[:remaining]
             segments.append(segment)
             used_chars += len(segment)
+            inlined_skills.append(skill)
 
     remaining = headroom_chars - used_chars
     if remaining >= 200:
@@ -551,8 +562,11 @@ def _pad_stable_prefix_for_cache(
         used_chars += len(ops)
 
     if not segments:
-        return stable_prefix
-    return stable_prefix.rstrip() + "\n\n" + "".join(segments).rstrip() + "\n"
+        return stable_prefix, inlined_skills
+    return (
+        stable_prefix.rstrip() + "\n\n" + "".join(segments).rstrip() + "\n",
+        inlined_skills,
+    )
 
 
 class UnknownAliasError(ValueError):
@@ -686,6 +700,15 @@ class SessionManager:
         # skill tools refuse to run.
         self._skill_store_factory = skill_store_factory
         self._skill_stores: dict[str, Any] = {}
+        # Per-session skill activation registry (context-assembler.md v3
+        # §5.2). Tracks pre-activated + explicitly-activated skills and
+        # enforces the §5.2.4 budget caps on `skill_load`.
+        self._skill_activations: dict[str, SkillActivationRegistry] = {}
+        # Cached stable system prompt (base persona + discovery index +
+        # v2 §5.1 padding) per session. Pre-computed at session init so
+        # the turn loop never re-runs padding (which would risk
+        # byte-drift if model selection varies across turns).
+        self._stable_prompt_cache: dict[str, str] = {}
         # /share state — captures the most recent slash-command output per
         # session so the next user message can include it. See `/share` in
         # the CLI/TUI. One-shot: cleared on consumption.
@@ -712,7 +735,76 @@ class SessionManager:
             self._skill_stores[session.id] = self._skill_store_factory(workspace_path)
         else:
             self._skill_stores[session.id] = None
+        # context-assembler.md v3 §5.2: pre-compute the stable system
+        # prompt + run pre-activation. This happens AFTER the session is
+        # created (so the FK on the emitted events is valid) and BEFORE
+        # any `turn.started` (so the events stand outside any turn).
+        self._initialize_skill_activations(session)
         return session
+
+    def _initialize_skill_activations(self, session: Session) -> None:
+        """Compute the stable system prompt once per session and emit
+        pre-activation events for any skill bodies inlined as padding.
+
+        Per context-assembler.md v3 §5.2.2:
+          - Compute the stable prefix (base + index + v2 §5.1 padding).
+          - For each inlined skill body, record the skill in the
+            activation registry and emit `skill.loaded` with
+            `load_reason="always"` and `triggered_by_tool_use_id=None`.
+          - Annotate the rendered discovery-index line with `[preloaded]`
+            so the agent knows the body is already in the prompt.
+        """
+        registry = SkillActivationRegistry()
+        self._skill_activations[session.id] = registry
+        skill_store = self._skill_stores.get(session.id)
+        # Pick a "seed" adapter for the token estimate. The padding
+        # logic is adapter-independent in practice (all three adapters
+        # use the same `~chars/4` heuristic per
+        # provider-adapter-contract §3.1) so any registered adapter
+        # works. If no adapter is registered, fall back to a heuristic
+        # so the session still gets a stable prefix.
+        seed_model = (
+            session.active_model
+            or (
+                self._registry.resolve_alias(self._workspace_default_model)
+                if self._workspace_default_model
+                else None
+            )
+            or self._registry.resolve_alias(self._global_default_model)
+            or self._global_default_model
+        )
+        seed_adapter = (
+            self._registry.adapter_for(seed_model)
+            if seed_model in self._registry
+            else _HeuristicAdapter()
+        )
+        tool_definitions = self._dispatcher.get_definitions_for_session(session)
+        prefix, inlined = _assemble_stable_system_prompt(
+            base_prompt=self._system_prompt,
+            skill_store=skill_store,
+            adapter=seed_adapter,
+            tools=tool_definitions,
+        )
+        self._stable_prompt_cache[session.id] = prefix
+        for skill in inlined:
+            registry.mark_preloaded(skill.name)
+            self._bus.emit(
+                make_event(
+                    type="skill.loaded",
+                    session_id=session.id,
+                    turn_id=None,
+                    actor=Actor.SYSTEM,
+                    payload=SkillLoaded(
+                        skill_id=skill.name,
+                        skill_version=skill.version,
+                        load_reason="always",
+                        load_size_tokens=skill.estimated_body_tokens,
+                        source=skill.source,
+                        triggered_by_tool_use_id=None,
+                    ),
+                    timestamp=_now(),
+                )
+            )
 
     def get_session(self, session_id: str) -> Session:
         """Return the current Session record from the store.
@@ -741,6 +833,23 @@ class SessionManager:
     def skills_for(self, session_id: str) -> Any:
         """Return the per-session skill store, if skills are configured."""
         return self._skill_stores.get(session_id)
+
+    def skill_activations_for(self, session_id: str) -> SkillActivationRegistry | None:
+        """Return the per-session activation registry (context-assembler.md
+        v3 §5.2). Useful for tests + introspection; the production hot
+        path uses the registry through `ToolContext.skill_activations`."""
+        return self._skill_activations.get(session_id)
+
+    def stable_system_prompt_for(self, session_id: str) -> str:
+        """Return the cached stable system prompt for this session.
+
+        The prompt is composed once at `create_session` time (base
+        persona + discovery index + v2 §5.1 padding) and reused on every
+        LLM call so the provider's cache_control marker fires. Visible
+        for tests; the turn loop reads `self._stable_prompt_cache`
+        directly to avoid the dict lookup hop.
+        """
+        return self._stable_prompt_cache.get(session_id, self._system_prompt)
 
     # ---- /share bridge ------------------------------------------------
 
@@ -826,6 +935,7 @@ class SessionManager:
         *,
         on_streaming_event: StreamHandler | None = None,
         temperature: float | None = None,
+        workload_id: str | None = None,
     ) -> TurnResult:
         session = self._store.get_session(session_id)
         turn_id = str(ULID())
@@ -867,6 +977,7 @@ class SessionManager:
             tool_definitions=tool_definitions,
             session=session,
             override=override,
+            workload_id=workload_id,
         )
         if self._fingerprint_inputs_hook is not None:
             try:
@@ -918,30 +1029,22 @@ class SessionManager:
 
         memory = self._memory_stores.get(session_id)
         skill_store = self._skill_stores.get(session_id)
+        skill_activations = self._skill_activations.get(session_id)
 
         try:
             while True:
                 history = self._store.get_messages(session_id)
                 # Split the system prompt into the two segments the cache
                 # breakpoint sits between (see context-assembler.md §2-§5):
-                #   stable: base persona + skill discovery index
+                #   stable: base persona + skill discovery index + v2 §5.1
+                #           padding (precomputed at session init, cached
+                #           byte-stable across turns)
                 #   volatile: USER.md + MEMORY.md (mutates per turn)
-                # Composing fresh each LLM call so mid-turn memory writes
-                # (from a tool) are reflected in the next call.
-                stable_system_prompt = self._system_prompt
-                if skill_store is not None and len(skill_store) > 0:
-                    stable_system_prompt = _append_skill_index(stable_system_prompt, skill_store)
-                # Pad to the minimum cacheable prefix so Anthropic's cache
-                # actually fires (context-assembler.md §5.1). Below the
-                # haiku-4-5 effective floor (~4000 actual tokens) the
-                # provider silently drops cache_control and every short
-                # session pays full input-rate. Padding is byte-stable so
-                # the cached prefix doesn't churn turn-to-turn.
-                stable_system_prompt = _pad_stable_prefix_for_cache(
-                    stable_prefix=stable_system_prompt,
-                    adapter=adapter,
-                    tools=tool_definitions,
-                    skill_store=skill_store,
+                # The stable prefix is the same bytes turn-to-turn so the
+                # provider's cache_control marker actually fires — see
+                # context-assembler.md §5.1 for the floor / padding rule.
+                stable_system_prompt = self._stable_prompt_cache.get(
+                    session_id, self._system_prompt
                 )
                 turn_memory = self._memory_stores.get(session_id)
                 volatile_system_prompt = (
@@ -1079,6 +1182,7 @@ class SessionManager:
                             parent_event_id=llm_started_event,
                             memory=memory,
                             skills=skill_store,
+                            skill_activations=skill_activations,
                         )
                         for tu in tool_uses
                     ]
@@ -1163,6 +1267,7 @@ class SessionManager:
         tool_definitions,
         session: Session,
         override: OverrideParseResult,
+        workload_id: str | None = None,
     ) -> TurnContext:
         has_images = any(isinstance(b, ImageBlock) for m in history for b in m.content)
         # Resolve a default model id by alias if the configured default is one.
@@ -1214,6 +1319,7 @@ class SessionManager:
             global_default_model=global_default,
             user_message_text=user_message_text,
             workspace_path=session.workspace_path,
+            workload_id=workload_id,
         )
 
     # ---- Event emitters -----------------------------------------------
@@ -1541,11 +1647,81 @@ def _assemble_volatile_memory(memory: MemoryStore) -> str | None:
     return composed or None
 
 
-def _append_skill_index(system_prompt: str, skill_store: Any) -> str:
+def _assemble_stable_system_prompt(
+    *,
+    base_prompt: str,
+    skill_store: Any,
+    adapter,
+    tools,
+) -> tuple[str, list]:
+    """Compose the stable system prompt: base persona + discovery index
+    (with v3 §5.2.2 `[preloaded]` annotation) + v2 §5.1 padding.
+
+    Returns the final prefix plus the list of `Skill` objects whose
+    bodies were inlined as padding (i.e. the pre-activated skills the
+    caller should record in the activation registry and emit
+    `skill.loaded(load_reason="always")` for).
+
+    Composition order:
+      1. Render the discovery index without annotation.
+      2. Run padding to determine which skills get inlined.
+      3. Patch the rendered prefix to add `[preloaded]` annotations on
+         the index lines for inlined skills. The patch is a fixed
+         string substitution — no re-padding, byte-stable per session.
+
+    Skills inlined as padding land on the *stable* side of the cache
+    breakpoint (along with the discovery index), so the bytes are
+    cached after the first turn. The `[preloaded]` annotation tells the
+    agent the body is already in context.
+    """
+    prefix = base_prompt
+    if skill_store is not None and len(skill_store) > 0:
+        prefix = _append_skill_index(prefix, skill_store, preloaded=frozenset())
+    padded, inlined = _pad_stable_prefix_for_cache(
+        stable_prefix=prefix,
+        adapter=adapter,
+        tools=tools,
+        skill_store=skill_store,
+    )
+    if inlined:
+        preloaded_names = {s.name for s in inlined}
+        padded = _annotate_index_for_preloaded(padded, preloaded_names)
+    return padded, inlined
+
+
+def _annotate_index_for_preloaded(prefix: str, preloaded_names: set[str]) -> str:
+    """Patch the rendered discovery-index lines for `preloaded_names`
+    from `- {name}: {description}` to `- {name} [preloaded]: {description}`.
+
+    Byte-stable: the replacement is a fixed `:` → ` [preloaded]:` insertion
+    on the index line. Idempotent against double-patching (the second
+    pass finds no match).
+    """
+    out = prefix
+    for name in preloaded_names:
+        # Anchor the match on the index-line format so we don't touch
+        # other text that happens to start with `- name:`.
+        old = f"\n- {name}: "
+        new = f"\n- {name} [preloaded]: "
+        out = out.replace(old, new, 1)
+    return out
+
+
+def _append_skill_index(
+    system_prompt: str,
+    skill_store: Any,
+    preloaded: frozenset[str] = frozenset(),
+) -> str:
     """Append the discovery index (agentskills.io stage 1) to the system prompt.
 
     One line per skill: `- <name>: <description>`. Bodies are NOT injected —
     the agent calls `skill_load(name)` to activate one.
+
+    Skills whose bodies were inlined into the stable prefix as v2 §5.1
+    padding get a `[preloaded]` annotation per context-assembler.md v3
+    §5.2.2 — the agent reads this and knows not to call `skill_load`
+    for them (the body is already in the system prompt; a `skill_load`
+    call returns a pointer, not the body).
     """
     lines = [
         "## Available skills",
@@ -1553,7 +1729,10 @@ def _append_skill_index(system_prompt: str, skill_store: Any) -> str:
         "",
     ]
     for name, description in skill_store.discovery_index():
-        lines.append(f"- {name}: {description}")
+        if name in preloaded:
+            lines.append(f"- {name} [preloaded]: {description}")
+        else:
+            lines.append(f"- {name}: {description}")
     return system_prompt.rstrip() + "\n\n" + "\n".join(lines)
 
 
@@ -1657,6 +1836,27 @@ def _heuristic_token_estimate(history: list[Message], system_prompt: str | None)
         for block in m.content:
             chars += len(getattr(block, "text", ""))
     return max(1, chars // 4)
+
+
+class _HeuristicAdapter:
+    """Minimal adapter stand-in for `_pad_stable_prefix_for_cache` when no
+    real adapter is available at session-init time. Uses the same
+    `~chars/4` heuristic that real adapters use for `estimate_input_tokens`
+    (provider-adapter-contract.md §3.1), so the padding decision is the
+    same whether or not a real adapter is registered."""
+
+    def estimate_input_tokens(
+        self,
+        messages: list,
+        tools: list,
+        system_prompt: str | None,
+    ) -> int:
+        chars = len(system_prompt or "")
+        for tool in tools or []:
+            chars += len(getattr(tool, "description", "")) + len(
+                str(getattr(tool, "input_schema", ""))
+            )
+        return max(1, chars // 4)
 
 
 _INTERNAL_WHITESPACE_RUN = re.compile(r" {2,}")

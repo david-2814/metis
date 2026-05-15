@@ -1,6 +1,6 @@
 # Context Assembler Specification
 
-**Status:** Draft v3 (additive on v2; v2 additive on v1)
+**Status:** Implemented v3 (v1 + v2 + v3 §5.2 explicit activation + pre-activation)
 **Last updated:** 2026-05-14
 **Scope:** v1 covers prompt-cache breakpoint placement; v2 (§5.1) adds
 a **minimum-cacheable-prefix** rule so the cached prefix tokenizes above
@@ -11,6 +11,23 @@ the bridge between explicit `skill_load` activation and the
 body-as-padding pre-activation path introduced in v2 §5.1. History
 compression and behavior near the context window remain a later spec —
 see [`STRATEGY.md §6.5`](../STRATEGY.md).
+
+> **v3 implementation status (2026-05-14).** Per-session
+> [`SkillActivationRegistry`](../../packages/metis-core/src/metis_core/skills/activation.py)
+> tracks pre-activations and explicit activations and enforces the
+> §5.2.4 budget caps (`MAX_EXPLICIT_ACTIVATIONS_PER_SESSION = 3`,
+> `WARN_CUMULATIVE_ACTIVATION_TOKENS = 10000`,
+> `HARD_CAP_CUMULATIVE_ACTIVATION_TOKENS = 30000`).
+> [`SessionManager.create_session`](../../packages/metis-core/src/metis_core/sessions/manager.py)
+> pre-computes the stable system prompt once and emits one
+> `skill.loaded(load_reason="always")` event per body inlined by v2
+> §5.1 padding; the discovery index annotates those skills `[preloaded]`.
+> [`SkillLoadTool`](../../packages/metis-core/src/metis_core/skills/tools.py)
+> consults the registry to return a pointer (not the body) for
+> pre-activated and re-loaded skills, and to raise `ToolExecutionError`
+> on budget exhaustion. The cache breakpoint placement (§3) is
+> unchanged — activated bodies live as `tool_result` blocks in message
+> history, not in the system prompt (§5.2.3).
 
 > **v1 motivation.** Per [`STRATEGY.md §1`](../STRATEGY.md), context
 > engineering is the single largest cost lever (the "5–10×" claim in

@@ -158,6 +158,7 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         Route("/analytics/turns/{turn_id}", analytics_handlers.turn, methods=["GET"]),
         Route("/analytics/savings", analytics_handlers.savings, methods=["GET"]),
         Route("/analytics/by_key", analytics_handlers.by_key, methods=["GET"]),
+        Route("/analytics/by_team", analytics_handlers.by_team, methods=["GET"]),
         Route("/analytics/quality", analytics_handlers.quality, methods=["GET"]),
         WebSocketRoute("/sessions/{session_id}/stream", _stream),
         # Dashboard SPA — vanilla HTML + JS, served as static files from

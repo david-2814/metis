@@ -9,6 +9,7 @@ import pytest
 from metis_core.canonical.content import TextBlock
 from metis_core.canonical.ids import new_message_id
 from metis_core.canonical.messages import Message, Role
+from metis_gateway.auth import Identity
 from metis_gateway.harness import (
     ClientDisconnected,
     GatewayHarness,
@@ -50,8 +51,7 @@ async def test_client_disconnect_aborts_in_flight_adapter_call(runtime, scripted
             stop_sequences=[],
             output_schema=None,
             requested_model="haiku",
-            gateway_key_id="gk_test_001",
-            workspace_path="/tmp",
+            identity=Identity(gateway_key_id="gk_test_001", workspace_path="/tmp"),
             allowed_models=None,
             is_disconnected=make_disconnect_probe(is_disconnected),
         )

@@ -21,6 +21,7 @@ import httpx
 import pytest
 from metis_core.adapters.protocol import StopReason
 from metis_gateway.app import build_app
+from metis_gateway.auth import Identity
 
 
 @pytest.fixture
@@ -231,8 +232,7 @@ async def test_stream_cancel_on_client_disconnect(runtime, scripted_adapter) -> 
             stop_sequences=[],
             output_schema=None,
             requested_model="haiku",
-            gateway_key_id="gk_test_001",
-            workspace_path="/tmp",
+            identity=Identity(gateway_key_id="gk_test_001", workspace_path="/tmp"),
             allowed_models=None,
             is_disconnected=make_disconnect_probe(is_disconnected),
         ):
