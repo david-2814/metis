@@ -17,6 +17,7 @@
         <div class="toggle" id="audience" role="tablist" aria-label="View">
           <button data-view="cost" class="on" role="tab">Cost</button>
           <button data-view="activity" role="tab">Activity</button>
+          <button data-view="keys" role="tab">Gateway keys</button>
         </div>
         <div class="toggle" id="window" role="tablist" aria-label="Time window">
           <button data-window="today" role="tab">Today</button>
@@ -28,6 +29,12 @@
     </header>
 
     <main id="view-root" aria-busy="false">
+      <!-- Active-key filter chip (Cost / Activity drill-down) -->
+      <div id="key-filter-chip" class="key-chip hidden">
+        <span>Filtered to <code id="key-filter-id">—</code></span>
+        <button id="key-filter-clear" type="button">clear</button>
+      </div>
+
       <!-- Cost view -->
       <section id="view-cost" class="view">
         <div class="hero-row">
@@ -83,6 +90,41 @@
           <h2>Recent sessions</h2>
           <div id="sessions-table" class="sessions"></div>
           <div class="empty hidden" id="sessions-empty">No sessions yet.</div>
+        </div>
+      </section>
+
+      <!-- Gateway keys view -->
+      <section id="view-keys" class="view hidden">
+        <div class="card">
+          <div class="keys-toolbar">
+            <div class="toggle pills" id="keys-source" role="tablist" aria-label="Traffic source">
+              <button data-keys-filter="all" class="on" role="tab">All traffic</button>
+              <button data-keys-filter="agent" role="tab">Agent-loop only</button>
+              <button data-keys-filter="gateway" role="tab">Gateway only</button>
+            </div>
+            <div class="toggle pills" id="keys-sort" role="tablist" aria-label="Sort">
+              <button data-keys-sort="cost" class="on" role="tab">Sort: cost</button>
+              <button data-keys-sort="call_count" role="tab">Sort: calls</button>
+            </div>
+          </div>
+
+          <div id="top-spender" class="top-spender hidden">
+            <span class="ts-label">Top spender</span>
+            <code id="top-spender-id">—</code>
+            <span class="ts-share" id="top-spender-share">—</span>
+            <span class="ts-hint">of all spend in this window</span>
+          </div>
+
+          <h2>Per-key spend</h2>
+          <div id="keys-table" class="keys-table"></div>
+          <div class="empty hidden" id="keys-empty">
+            No traffic in this window matching the selected filter.
+          </div>
+          <div class="hint">
+            Click a gateway-key row to filter the Cost &amp; Activity views to its
+            traffic. Agent-loop rows roll up in-process traffic (CLI / TUI / <code>metis serve</code>)
+            and have no key id.
+          </div>
         </div>
       </section>
     </main>

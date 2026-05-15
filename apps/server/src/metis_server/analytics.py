@@ -86,8 +86,11 @@ def _json(body: dict, *, status: int = 200) -> Response:
 async def cost(request: Request) -> Response:
     window = _resolve_window_from_query(request)
     group_by = request.query_params.get("group_by", "model")
+    gateway_key = request.query_params.get("gateway_key")
+    if gateway_key is not None and not _GATEWAY_KEY_PATTERN.match(gateway_key):
+        raise invalid_gateway_key(f"gateway_key={gateway_key!r} does not look like a valid key id")
     try:
-        data = _store(request).cost(window, group_by=group_by)
+        data = _store(request).cost(window, group_by=group_by, gateway_key=gateway_key)
     except InvalidGroupByError as exc:
         raise invalid_group_by(str(exc)) from exc
     return _json(_envelope(window, _pricing(request).version, data))

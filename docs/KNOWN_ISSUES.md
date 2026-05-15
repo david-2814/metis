@@ -18,22 +18,6 @@ When you fix one, **delete the entry**. This file is not a changelog; it's a wat
 
 ---
 
-## Event bus
-
-### 🟢 Sensitivity upgrade rule unenforced
-
-§4.4.1 says classification can only move *toward less private*. `make_event` accepts any `sensitivity` override without checking it's less private than the catalog default.
-
----
-
-## Gateway
-
-### 🟢 Gateway clients always trigger `per_message_override` slot win
-
-OpenAI / Anthropic SDKs always include `model` in the request body, so `route.decided.chain` reports `policy=per_message_override`, `verdict=chose` on every gateway request. The `rule`, `pattern`, `workspace_default`, and `global_default` slots are unreachable unless the client deliberately omits `model`. Correct per `gateway.md §V` (treat inbound `model` as a per-message override) but worth knowing when reading gateway traces. Documented in AGENTS.md "Gotchas."
-
----
-
 ## Gaps that aren't bugs (but worth tracking)
 
 Things that aren't promised by any spec but probably should be. AI agents proposing work in adjacent areas should know they're missing.

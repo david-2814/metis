@@ -483,11 +483,13 @@ class Evaluator:
         return WORKLOAD_HEURISTIC_RUBRIC_ID, WORKLOAD_HEURISTIC_RUBRIC_VERSION
 
     def _sensitivity_for(self, verdict: EvalVerdict) -> Sensitivity | None:
-        # §4.4: when rationale_redacted is populated (LLM-judge opt-in),
-        # sensitivity uplifts to user_controlled. v1 heuristic never sets it.
+        # §4.4.1: catalog floor is `user_controlled` (the worst case, when
+        # rationale_redacted is populated). When rationale is absent the event
+        # carries structural metadata only, so we downgrade to `pseudonymous`
+        # — a move toward less private, which §4.4.1 explicitly allows.
         if verdict.signals.get("rationale_redacted"):
-            return Sensitivity.USER_CONTROLLED
-        return None  # let make_event use the catalog default
+            return None  # keep the floor
+        return Sensitivity.PSEUDONYMOUS
 
 
 def register_evaluator(

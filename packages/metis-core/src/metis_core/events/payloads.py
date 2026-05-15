@@ -16,7 +16,7 @@ from typing import Literal
 
 import msgspec
 
-from metis_core.events.envelope import Actor, Event, Sensitivity, new_event_id
+from metis_core.events.envelope import Actor, Event, Sensitivity, new_event_id, sensitivity_rank
 from metis_core.events.errors import EventValidationError, UnknownEventTypeError
 
 # --- §6.1 Session domain ----------------------------------------------------
@@ -517,7 +517,7 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     "pattern.evicted": (PatternEvicted, Sensitivity.PSEUDONYMOUS),
     # eval (Phase 3)
     "eval.started": (EvalStarted, Sensitivity.PSEUDONYMOUS),
-    "eval.completed": (EvalCompleted, Sensitivity.PSEUDONYMOUS),
+    "eval.completed": (EvalCompleted, Sensitivity.USER_CONTROLLED),
     "eval.failed": (EvalFailed, Sensitivity.PSEUDONYMOUS),
     # bus
     "bus.subscriber_registered": (BusSubscriberRegistered, Sensitivity.PSEUDONYMOUS),
@@ -560,6 +560,17 @@ def make_event(
             [
                 f"payload class {payload.__class__.__name__} does not match "
                 f"registered {expected_class.__name__}"
+            ],
+        )
+    if sensitivity is not None and sensitivity_rank(sensitivity) < sensitivity_rank(
+        default_sensitivity
+    ):
+        raise EventValidationError(
+            type,
+            [
+                f"sensitivity override {sensitivity.value!r} is more private than the "
+                f"catalog floor {default_sensitivity.value!r}; §4.4.1 allows only "
+                f"moves toward less private"
             ],
         )
     return Event(

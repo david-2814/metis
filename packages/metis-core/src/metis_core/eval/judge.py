@@ -157,6 +157,20 @@ class HeuristicJudge:
         else:
             flags_negative.append("tool_failed")
 
+        # `tool.failed` only fires on uncaught Python exceptions; a shell tool
+        # returning a non-zero exit code emits `tool.completed` with
+        # `success=False`. Without this gate the heuristic awards a clean
+        # lifecycle score to runs that printed "FAIL N/M" and exited non-zero
+        # (see benchmarks/RESULTS.md §A3 for the case this closes).
+        tool_exit_failure = any(
+            e.type == "tool.completed" and e.payload.get("success") is False for e in ctx.events
+        )
+        if not tool_exit_failure:
+            flags.append("no_tool_exit_failure")
+            weighted += cfg.weight_no_tool_exit_failure
+        else:
+            flags_negative.append("tool_returned_failure")
+
         # max_tokens: any nested llm.call_completed with stop_reason=max_tokens
         # within the turn signals an over-long response.
         max_tokens_hit = any(

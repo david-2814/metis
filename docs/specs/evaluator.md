@@ -291,7 +291,8 @@ Inputs (all derived from events already in the trace store for `turn_id`):
 |--------------------------|-----------------------------------------------------------------------|-----------|
 | `stop_reason_clean`      | `turn.completed.stop_reason == "end_turn"`                            | positive  |
 | `no_llm_failure`         | No `llm.call_failed` in turn                                          | positive  |
-| `no_tool_failure`        | No `tool.failed` in turn                                              | positive  |
+| `no_tool_failure`        | No `tool.failed` in turn (uncaught Python exception path)             | positive  |
+| `no_tool_exit_failure`   | No `tool.completed` with `success=False` in turn (clean-exit-nonzero path; e.g. shell-tool nonzero return code) | positive (strong; single failure must drop a clean turn's score by ≥0.3) |
 | `no_max_tokens_hit`      | No `llm.call_completed.stop_reason == "max_tokens"` in turn           | positive  |
 | `tool_cycle_count_reasonable` | `turn.completed.tool_call_count` ≤ a configured threshold (default 20) | positive  |
 | `assistant_refusal_detected` | `signals_extra.final_response_text` begins with a refusal phrase (e.g. "I cannot help", "I'm unable to") within the first 160 chars | negative (×0.5) |
@@ -308,16 +309,50 @@ file (`rubrics/turn-heuristic-v1.yaml`, not specified here); the *contract*
 is that the score is bounded and that explicit feedback dominates implicit
 signals dominates lifecycle signals.
 
+**Two distinct tool-failure signals.** v1 distinguishes `tool.failed` (an
+uncaught Python exception raised inside a `Tool.execute` body — the
+dispatcher catches it and emits `tool.failed`) from `tool.completed` with
+`success=False` (the tool ran cleanly to completion but returned a
+non-success outcome — the canonical case is the shell tool reporting a
+non-zero exit code). Both are real failures from the agent's perspective;
+the rubric reads them as two independent gates so a shell tool that
+prints `"FAIL N/M"` and exits 1 (`success=False`, no exception) lowers
+the score by the same shape as an uncaught exception would. The
+`no_tool_exit_failure` weight is sized so that a single failed exit
+drops a clean turn's score by ≥0.3 and the resulting confidence below
+the v1 hybrid escalation threshold (0.7, see
+[§5.3](#53-hybrid-escalation)), so `HybridJudge` escalates to the LLM
+judge on this class of failure without depending on assistant-text
+content signals.
+
 **Content penalty (opt-in).** `assistant_refusal_detected` and
 `empty_assistant_response` apply as multiplicative penalties on the
 normalized score (×0.5 and ×0.4 respectively), not as weighted lifecycle
 signals. They fire only when the caller plumbs `final_response_text` via
-`SubjectContext.signals_extra` — the bus subscriber path doesn't carry
-assistant text today, so this is a no-op on the online path. The
-benchmark harness *does* plumb the text (see [§5.4](#54-workload-rubric))
-so workload-level evaluation exercises it. The refusal regex is anchored
-to the first 160 chars of the stripped response so substantive answers
-that incidentally quote a refusal phrase don't false-positive.
+`SubjectContext.signals_extra`. The refusal regex is anchored to the
+first 160 chars of the stripped response so substantive answers that
+incidentally quote a refusal phrase don't false-positive.
+
+**`signals_extra` contract.** The session manager's
+`_emit_turn_completed` stamps three text keys onto
+`turn.completed.signals_extra` when the underlying string is non-empty
+(any missing string is omitted so the judge's "(not available)"
+fallback fires honestly):
+
+| Key                        | Source                                             | Reader                                              |
+|----------------------------|----------------------------------------------------|-----------------------------------------------------|
+| `final_response_text`      | last assistant text block in the turn              | heuristic content-penalty path (this section)       |
+| `assistant_response_text`  | alias of `final_response_text`                     | LLM judge `_build_user_message` (see [§5.2](#52-llm-as-judge-rubric)) |
+| `user_prompt_text`         | first text block of the persisted user message     | LLM judge `_build_user_message` (see [§5.2](#52-llm-as-judge-rubric)) |
+
+The two assistant-text keys are intentionally aliased to the same
+string so producer and consumer evolved independently — the heuristic
+content-penalty path was wired before the LLM judge tier landed and
+reads the older name; the LLM judge ships with the newer one. A future
+migration can drop the alias once the consumer side converges. The
+benchmark workload harness (see [§5.4](#54-workload-rubric)) also
+populates these keys at the workload subject level, so workload-level
+evaluation exercises the same readers.
 
 **Confidence** is high when ≥ N signals fire in the same direction with no
 conflict; low when signals contradict (e.g. clean stop reason but implicit
@@ -576,9 +611,9 @@ implementation lands (this spec describes the contract only).
 
 ### 8.2 `eval.completed`
 
-> **Sensitivity:** `pseudonymous` (floor; can upgrade per
->   [`event-bus-and-trace-catalog.md §4.4.1`](event-bus-and-trace-catalog.md)
->   when `signals.rationale_redacted` is populated on opt-in)
+> **Sensitivity:** `user_controlled` (floor; downgrades to `pseudonymous`
+>   per [`event-bus-and-trace-catalog.md §4.4.1`](event-bus-and-trace-catalog.md)
+>   when `signals.rationale_redacted` is absent)
 > **Phase:** 3
 > **Actor:** SYSTEM
 > **Parent:** `eval.started`
@@ -606,11 +641,14 @@ Cost is serialized as a string (mirrors `Usage.cost_usd` in
 [`canonical-message-format.md §6.4`](canonical-message-format.md)) so the
 JSON envelope round-trips through the trace store without `Decimal` loss.
 
-**Sensitivity uplift.** When `signals.rationale_redacted` is populated (the
-user opted into capturing LLM judge rationales), the event's recorded
-`sensitivity` upgrades to `user_controlled` per the dynamic-sensitivity
-rule in [`event-bus-and-trace-catalog.md §4.4.1`](event-bus-and-trace-catalog.md).
-The catalog floor remains `pseudonymous`.
+**Sensitivity floor.** The catalog floor is `user_controlled` — the worst
+case, when `signals.rationale_redacted` is populated (the user opted into
+capturing LLM judge rationales) and the event carries user-derived text.
+When the rationale field is absent (heuristic verdict, or LLM verdict
+without rationale opt-in), the subscriber passes `pseudonymous` to
+`make_event` — a downgrade toward less private, which the dynamic-sensitivity
+rule in [`event-bus-and-trace-catalog.md §4.4.1`](event-bus-and-trace-catalog.md)
+allows.
 
 ### 8.3 `eval.failed`
 
@@ -645,10 +683,10 @@ rubric is LLM-only.
 Summary of the three new events in the
 [`event-bus-and-trace-catalog.md §4.4`](event-bus-and-trace-catalog.md) frame:
 
-| Event             | Floor sensitivity | Can upgrade to       |
+| Event             | Floor sensitivity | Downgrade pathway    |
 |-------------------|-------------------|----------------------|
 | `eval.started`    | `pseudonymous`    | (no opt-in fields)   |
-| `eval.completed`  | `pseudonymous`    | `user_controlled` when `signals.rationale_redacted` is set |
+| `eval.completed`  | `user_controlled` | `pseudonymous` when `signals.rationale_redacted` is absent |
 | `eval.failed`     | `pseudonymous`    | (no opt-in fields)   |
 
 The `eval` domain joins the closed domain list in

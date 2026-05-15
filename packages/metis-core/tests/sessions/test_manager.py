@@ -1390,3 +1390,105 @@ async def test_clean_response_keeps_eval_score_at_baseline(bus, event_log, works
     completed = [e for e in event_log if e.type == "eval.completed"]
     assert completed
     assert float(completed[0].payload["score"]) == 1.0
+
+
+async def test_turn_completed_carries_user_prompt_text_in_signals_extra(bus, event_log, workspace):
+    """Producer-side plumbing: `_emit_turn_completed` stamps the user's
+    prompt text on `turn.completed.signals_extra.user_prompt_text` so the
+    LLM judge's `_build_user_message` reader sees real intent on the
+    online subscriber path (evaluator.md §5.1, §5.2). Closes the second
+    A3 unblock identified in benchmarks/RESULTS.md."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="Here is the factorization.")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+
+    user_text = "Help me factor 1729."
+    await manager.submit_turn(session.id, user_text)
+    await bus.drain()
+    await bus.stop()
+
+    turn_completed = next(e for e in event_log if e.type == "turn.completed")
+    extras = turn_completed.payload.get("signals_extra")
+    assert extras is not None
+    assert extras.get("user_prompt_text") == user_text
+
+
+async def test_turn_completed_aliases_assistant_response_text_to_final_response_text(
+    bus, event_log, workspace
+):
+    """The LLM judge reads `assistant_response_text`; the heuristic content-
+    penalty path reads `final_response_text`. Producer keeps them aliased
+    at the same string so a single mutation stays consistent
+    (evaluator.md §5.1)."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="1729 = 7 * 13 * 19.")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+
+    await manager.submit_turn(session.id, "Help me factor 1729.")
+    await bus.drain()
+    await bus.stop()
+
+    turn_completed = next(e for e in event_log if e.type == "turn.completed")
+    extras = turn_completed.payload.get("signals_extra")
+    assert extras is not None
+    assert extras.get("final_response_text") == "1729 = 7 * 13 * 19."
+    assert extras.get("assistant_response_text") == extras.get("final_response_text")
+
+
+async def test_turn_completed_signals_extra_feeds_llm_judge_build_user_message(
+    bus, event_log, workspace
+):
+    """End-to-end: SessionManager produces signals_extra → LLM judge's
+    `_build_user_message` reads it. Asserts the rendered prompt contains
+    the real user + assistant text (not the "(not available)" fallback)
+    so the LLM judge can actually grade content, not just lifecycle
+    (evaluator.md §5.2; benchmarks/RESULTS.md §A3 unblock 2)."""
+    from metis_core.eval.judge import SubjectContext
+    from metis_core.eval.llm_judge import _build_user_message
+
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="FAIL 15/16 — one edge case is still broken.")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+
+    user_text = "Run the regex test fixture and report pass/fail."
+    await manager.submit_turn(session.id, user_text)
+    await bus.drain()
+    await bus.stop()
+
+    turn_completed = next(e for e in event_log if e.type == "turn.completed")
+    extras = turn_completed.payload.get("signals_extra")
+    assert extras is not None
+
+    ctx = SubjectContext(
+        subject_kind="turn",
+        subject_id=turn_completed.turn_id or "",
+        events=[turn_completed],
+        session_id=session.id,
+        signals_extra=extras,
+    )
+    rendered = _build_user_message(ctx)
+    assert user_text in rendered
+    assert "FAIL 15/16" in rendered
+    assert "USER PROMPT:\n(not available)" not in rendered
+    assert "ASSISTANT FINAL RESPONSE:\n(not available)" not in rendered

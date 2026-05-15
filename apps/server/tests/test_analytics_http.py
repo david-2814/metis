@@ -514,3 +514,92 @@ async def test_by_key_endpoint_sql_injection_guard_special_chars(gateway_seeded_
     )
     assert r.status_code == 400
     assert r.json()["error"]["code"] == "invalid_gateway_key"
+
+
+async def test_by_key_includes_last_call_at(gateway_seeded_client, now):
+    """`last_call_at` is the max `llm.call_completed` timestamp for that key.
+
+    Additive vs analytics-api.md §4.8 example response — drives the
+    dashboard's "last call" column on the Gateway keys table.
+    """
+    r = await gateway_seeded_client.get("/analytics/by_key")
+    assert r.status_code == 200
+    body = r.json()
+    for row in body["data"]:
+        assert "last_call_at" in row
+        # The fixture seeds every row at the same `now`, so each key's
+        # last_call_at is exactly that timestamp.
+        assert row["last_call_at"].startswith("2026-05-12T12:00")
+
+
+async def test_cost_filter_by_gateway_key_returns_only_match(gateway_seeded_client):
+    """The new `gateway_key=<id>` filter on /analytics/cost restricts rows.
+
+    The fixture seeds three calls under `gk_alpha`, one under `gk_beta`,
+    and one under no key. Filtering by `gk_alpha` must yield only its
+    aggregated row.
+    """
+    r = await gateway_seeded_client.get(
+        "/analytics/cost",
+        params={"group_by": "gateway_key", "gateway_key": "gk_alpha"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["gateway_key_id"] == "gk_alpha"
+    assert body["data"][0]["cost_usd"] == pytest.approx(0.15)
+    assert body["data"][0]["call_count"] == 2
+
+
+async def test_cost_filter_by_gateway_key_with_default_group_by(gateway_seeded_client):
+    """Filter works alongside the default `group_by=model`.
+
+    Confirms the filter restricts rows before grouping — alpha is the
+    only key with two calls and both used the same model, so the
+    grouped-by-model rollup gets two calls and $0.15.
+    """
+    r = await gateway_seeded_client.get(
+        "/analytics/cost",
+        params={"gateway_key": "gk_alpha"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["model"] == "anthropic:claude-sonnet-4-6"
+    assert body["data"][0]["call_count"] == 2
+    assert body["data"][0]["cost_usd"] == pytest.approx(0.15)
+
+
+async def test_cost_filter_by_gateway_key_unknown_returns_empty(gateway_seeded_client):
+    """Filtering to a key that has no traffic yields an empty array."""
+    r = await gateway_seeded_client.get(
+        "/analytics/cost",
+        params={"group_by": "model", "gateway_key": "gk_does_not_exist"},
+    )
+    assert r.status_code == 200
+    assert r.json()["data"] == []
+
+
+async def test_cost_filter_by_gateway_key_sql_injection_guard(gateway_seeded_client):
+    """SPACE / DROP / quotes are rejected before reaching SQL.
+
+    Defense in depth — the SQL is parameterized, but the same HTTP-layer
+    shape check used by /analytics/by_key applies to /analytics/cost too.
+    """
+    r = await gateway_seeded_client.get(
+        "/analytics/cost",
+        params={"gateway_key": "DROP TABLE"},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_gateway_key"
+
+
+async def test_cost_filter_by_gateway_key_sql_injection_guard_special_chars(
+    gateway_seeded_client,
+):
+    r = await gateway_seeded_client.get(
+        "/analytics/cost",
+        params={"gateway_key": "gk_alpha'; DELETE FROM events; --"},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_gateway_key"

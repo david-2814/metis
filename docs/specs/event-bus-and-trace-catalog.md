@@ -10,8 +10,10 @@
 > the existing pattern domain (§6.5b) — `pattern.recorded`, `pattern.matched`,
 > `pattern.evicted` per `pattern-store.md §10`. All six payloads landed in
 > `events/payloads.py` and `PAYLOAD_REGISTRY`. Sensitivity floor is
-> `pseudonymous` for all six; `eval.completed` admits opt-in uplift to
-> `user_controlled` per §4.4.1.
+> `pseudonymous` for five; `eval.completed`'s floor is `user_controlled`
+> (the worst case, when `signals.rationale_redacted` is populated) and
+> downgrades to `pseudonymous` when the rationale field is absent — a
+> move toward less private, which §4.4.1 explicitly allows.
 
 > **v3 changes:** Streaming events explicitly excluded from catalog (§4.5);
 > streaming server removed from bus subscriber table (§5.4) — they receive
@@ -250,13 +252,16 @@ Some event types have payload fields that are populated only when the user opts 
 
 When such a field is populated, the event's *recorded* sensitivity may upgrade to a less-restrictive class than the catalog default. The rule:
 
-- The catalog declares the *floor* sensitivity for an event type — what it is when only required fields are set.
+- The catalog declares the *floor* sensitivity for an event type — the **worst case**, i.e., the most-private classification the event can have when all opt-in fields are populated.
 - An event's actual `sensitivity` value is computed at emit time based on which optional fields are populated.
-- The classification can only move *toward less private* (i.e., from `private` to `user_controlled` to `pseudonymous` to `aggregatable`) and only when the user has explicitly opted into that level of sharing for that field.
+- The classification can only move *toward less private* (i.e., from `private` to `user_controlled` to `pseudonymous` to `aggregatable`) — never toward more private than the floor. `make_event` enforces this: a sensitivity override more private than the catalog floor raises `EventValidationError`.
 
-Concrete: a `turn.started` event with `user_message_text_redacted: null` is recorded as `private`. The same event type with the field populated (because the user opted in) is recorded as `user_controlled`. Both are valid; the difference is observable in the event's `sensitivity` field.
+Concrete examples:
 
-This keeps the catalog contract honest: it declares the floor, the actual record reflects what was actually included.
+- `turn.started` floor is `private`. A `turn.started` event with `user_message_text_redacted: null` is recorded as the floor `private`. The same event type with the field populated (because the user opted into trace sharing) is recorded as `user_controlled` — a downgrade toward less private, which the rule allows.
+- `eval.completed` floor is `user_controlled`. With `signals.rationale_redacted` populated, recorded as the floor `user_controlled`. With the rationale field absent (heuristic verdict, or LLM verdict without rationale opt-in), the subscriber passes `pseudonymous` — again a downgrade toward less private.
+
+This keeps the catalog contract honest: the floor is the most-private possible recording for that event type, and the actual sensitivity tag reflects what was actually included.
 
 ### 4.5 Type names
 
@@ -1155,7 +1160,7 @@ Emitted when the evaluator begins scoring a subject. Pairs 1:1 with a later `eva
 
 #### `eval.completed`
 
-> **Sensitivity:** `pseudonymous` (floor; can upgrade to `user_controlled` per §4.4.1 when `signals.rationale_redacted` is populated on opt-in)
+> **Sensitivity:** `user_controlled` (floor; downgrades to `pseudonymous` per §4.4.1 when `signals.rationale_redacted` is absent)
 > **Phase:** 3
 > **Actor:** SYSTEM
 > **Parent:** `eval.started`
@@ -1181,7 +1186,7 @@ Emitted when the evaluator begins scoring a subject. Pairs 1:1 with a later `eva
 
 `judge_cost_usd` is `Decimal("0")` for heuristic verdicts and `judge_pricing_version` is `None` in that case — pricing semantics don't apply to code that did no inference.
 
-**Sensitivity uplift.** When the user has opted into capturing LLM judge rationales, the emitter populates `signals.rationale_redacted` and passes `Sensitivity.USER_CONTROLLED` to `make_event` per §4.4.1. The catalog floor remains `pseudonymous`.
+**Sensitivity floor.** The catalog floor is `user_controlled` — the worst case, when `signals.rationale_redacted` is populated and the event carries LLM-generated text the user opted into capturing. When the rationale field is absent (heuristic verdicts, opt-in disabled), the emitter passes `Sensitivity.PSEUDONYMOUS` to `make_event` — a move toward less private, which §4.4.1 allows.
 
 #### `eval.failed`
 

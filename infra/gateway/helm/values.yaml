@@ -1,0 +1,300 @@
+# Default values for the metis-gateway chart.
+#
+# The gateway is per-request stateless (gateway.md §2) and binds 127.0.0.1
+# inside the pod (server-api.md §3.1 safety guarantee). Two consequences
+# the chart has to bridge:
+#
+# 1. A Kubernetes Service forwards to pod-IP:targetPort, not to 127.0.0.1.
+#    To make the Service reachable, the chart runs a tiny socat sidecar in
+#    the same pod that listens on 0.0.0.0:gatewayPort and forwards to
+#    127.0.0.1:gatewayPort. Sidecars share the pod's network namespace, so
+#    the gateway's loopback IS the sidecar's loopback.
+# 2. kubelet HTTP probes run from the NODE's network namespace and target
+#    the pod IP — they cannot reach 127.0.0.1 inside the container. The
+#    chart uses `exec` probes (`curl 127.0.0.1`) so they work whether or
+#    not the sidecar is enabled.
+#
+# For TLS, either (a) terminate at an Ingress in front of the Service, or
+# (b) swap the socat sidecar for a Caddy/nginx sidecar via `proxy.image`
+# + `proxy.command` + a ConfigMap-mounted config file via `extraVolumes`.
+# See docs/gateway-deployment.md "Kubernetes via helm" for full recipes.
+
+# -- Override the chart name (defaults to .Chart.Name).
+nameOverride: ""
+# -- Override the fully qualified app name (defaults to release-chart).
+fullnameOverride: ""
+
+image:
+  # -- Container registry + image name. The chart does not push images;
+  # build and push from infra/gateway/Dockerfile first. Common overrides:
+  # `ghcr.io/your-org/metis-gateway` or `your-registry.example.com/metis-gateway`.
+  repository: metis-gateway
+  # -- Image tag. `latest` is a placeholder; pin to a versioned release
+  # (e.g. "0.1.0") before any production deployment. See production-
+  # readiness audit in docs/gateway-deployment.md.
+  tag: "latest"
+  # -- IfNotPresent is correct for pinned tags; Always is required if tag
+  # stays "latest" so pods pick up rebuilt images.
+  pullPolicy: IfNotPresent
+  # -- imagePullSecrets attached to the ServiceAccount (private registries).
+  pullSecrets: []
+
+# -- Number of pod replicas. Gateway is stateless so horizontal scaling is
+# safe at the request level, but every replica writes to the same trace DB.
+# With a shared ReadWriteMany PVC you get accurate per-key cost rollups
+# but SQLite contention will cap throughput. Keep at 1 unless you've split
+# the trace DB per-replica and accept that cost rollups need cross-replica
+# aggregation. HPA below can override if enabled.
+replicaCount: 1
+
+# Gateway listen port — loopback inside the pod. The proxy sidecar bridges
+# this to pod-IP:proxy.listenPort for the Service to reach. MUST differ
+# from proxy.listenPort: the gateway and proxy share the pod's network
+# namespace, so binding the same port number twice (even on different IPs)
+# fails because a wildcard 0.0.0.0 bind claims every interface including
+# loopback. The split is intentional, not cosmetic.
+gatewayPort: 8422
+
+# Sidecar TCP-forwarder. Default: socat listens on 0.0.0.0:proxy.listenPort
+# inside the pod and forwards to 127.0.0.1:gatewayPort. This is what makes
+# the Service work; without it, the gateway's loopback bind is unreachable
+# from anywhere outside the container's process tree.
+#
+# Swap to Caddy/nginx to add TLS termination at the pod boundary; have it
+# listen on proxy.listenPort and proxy_pass to 127.0.0.1:gatewayPort. The
+# pod's network namespace is shared, so the proxy's `127.0.0.1:gatewayPort`
+# upstream resolves to the gateway.
+proxy:
+  enabled: true
+  # -- Port the sidecar listens on (exposed to the Service). MUST differ
+  # from gatewayPort (see note above).
+  listenPort: 8423
+  image:
+    repository: alpine/socat
+    tag: "1.8.0.0"
+    pullPolicy: IfNotPresent
+  # -- Command + args. Default forwards TCP 0.0.0.0:listenPort →
+  # 127.0.0.1:gatewayPort. Templated to track listenPort + gatewayPort
+  # automatically; override here only if swapping to caddy/nginx.
+  command: []
+  argsTemplate:
+    - "-d"
+    - "-d"
+    - "TCP-LISTEN:{listenPort},bind=0.0.0.0,fork,reuseaddr"
+    - "TCP:127.0.0.1:{gatewayPort}"
+  # -- Raw args. Leave empty to use argsTemplate; set non-empty to override
+  # entirely (useful for caddy/nginx with their own config files).
+  args: []
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+# Service exposes the gateway in-cluster. Default ClusterIP is correct for
+# anything fronted by an Ingress controller. Switch to LoadBalancer only
+# if a TLS-terminating L7 LB sits between the LB IP and the gateway —
+# the gateway itself terminates plaintext.
+service:
+  type: ClusterIP
+  # -- Port the Service exposes. Conventional gateway port stays 8422 to
+  # match the docker-compose deployment; the Service's targetPort hits
+  # the proxy sidecar on its proxy.listenPort.
+  port: 8422
+  # -- Set when type == LoadBalancer (cloud-provider annotations, etc).
+  annotations: {}
+  # -- Set when type == NodePort.
+  nodePort: null
+
+# Ingress is OFF by default. The gateway expects a TLS terminator in front
+# of it (gateway.md §3.2). Turn this on only after pointing tls.secretName
+# at a Secret holding a real cert (cert-manager, ACM-as-secret, etc).
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: gateway.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # - secretName: metis-gateway-tls
+  #   hosts:
+  #     - gateway.example.com
+
+# Resources: conservative defaults sized for a single-replica deployment
+# handling a handful of concurrent connections. Scale up CPU when latency
+# under tool-use round-trips matters; scale up memory if the trace DB is
+# on the pod's emptyDir (it accumulates over the pod lifetime).
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+# Autoscaling is OFF by default. Enable only after you've moved the trace
+# DB to an external store or accepted per-replica trace fragmentation —
+# see the production-readiness audit in docs/gateway-deployment.md.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+  # targetMemoryUtilizationPercentage: 80
+
+# PodDisruptionBudget protects the gateway against simultaneous node drains.
+# When replicaCount is 1 (default), PDB is a soft signal — a node drain
+# will still cordon the pod, but cluster autoscalers / upgrade tools wait
+# for a replacement to become Ready before evicting.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # maxUnavailable: 0
+
+# NetworkPolicy: deny-by-default ingress + egress with named exceptions.
+# Egress allow-list covers DNS (cluster + 53) and the public provider
+# APIs the gateway must reach. NetworkPolicy cannot match on DNS names
+# directly; the egress rule allows TCP 443 to any IP. Tighten with a
+# service-mesh egress gateway or a CIDR allow-list if your cluster
+# requires it.
+networkPolicy:
+  enabled: true
+  # -- Selector for pods allowed to talk to the gateway Service. Default
+  # allows any in-namespace pod. Empty matchLabels = "all pods in this
+  # namespace". Replace with podSelector or namespaceSelector to tighten.
+  ingressFromSelector:
+    matchLabels: {}
+  # -- Allow Pod egress to in-cluster DNS (kube-dns / CoreDNS).
+  allowDnsEgress: true
+  # -- Egress ports the gateway needs to reach provider APIs.
+  egressPorts:
+    - port: 443
+      protocol: TCP
+
+# Provider API keys. The gateway refuses to start without at least one
+# (runtime.py:84). Recommended: set provider.existingSecret to the name
+# of a Secret managed by your secret store (Vault / SealedSecrets /
+# External Secrets Operator). Inline values exist for laptop / CI smoke.
+provider:
+  # -- Name of an existing Secret with ANTHROPIC_API_KEY / OPENAI_API_KEY /
+  # OPENROUTER_API_KEY keys. If set, inline `provider.*ApiKey` values are
+  # ignored and the chart-managed Secret is not rendered.
+  existingSecret: ""
+  # -- Inline keys. AT LEAST ONE must be non-empty (or existingSecret must
+  # point at a Secret that has at least one). Stored in a chart-managed
+  # Secret named <release>-metis-gateway-providers.
+  anthropicApiKey: ""
+  openaiApiKey: ""
+  openrouterApiKey: ""
+
+# Keystore: the JSON file the gateway reads at startup to validate gateway
+# keys. The chart can either (a) seed it from a ConfigMap (default;
+# convenient for laptop / CI / GitOps when keys are managed out-of-band)
+# or (b) consume a pre-created Secret you populate via
+# `metis gateway issue-key` and bundle externally.
+keystore:
+  # -- If set, mount this existing Secret as the keystore file. The Secret
+  # MUST contain a key named "keys.json" with the keystore JSON as its
+  # value. Use this with External Secrets Operator or `kubectl create
+  # secret generic <name> --from-file=keys.json=./keys.json`.
+  existingSecret: ""
+  # -- Path the chart mounts the keystore to inside the container. Matches
+  # the METIS_GATEWAY_KEYSTORE env var below.
+  mountPath: /etc/metis/keys.json
+  # -- Seed contents for the ConfigMap-backed keystore when existingSecret
+  # is empty. Leave as "{}" — issue real keys with `metis gateway
+  # issue-key` and roll them in via existingSecret in production.
+  seed: |
+    {
+      "keys": []
+    }
+
+# Trace DB persistence. SQLite WAL on a PersistentVolume gives the buyer
+# durable cost-attribution data across pod restarts. Disable persistence
+# only for smoke / ephemeral deployments.
+persistence:
+  enabled: true
+  # -- PVC size. The trace DB grows linearly with traffic; 1Gi is sized
+  # for weeks of single-tenant developer traffic. Prune with the SQL
+  # recipe in docs/gateway-deployment.md "Trace DB size management".
+  size: 1Gi
+  accessMode: ReadWriteOnce
+  # -- StorageClass. Leave empty to use the cluster default. Set to
+  # "longhorn", "ebs-sc", "csi-cinder-default", etc. as appropriate.
+  storageClass: ""
+  # -- Mount path inside the gateway container. Matches the
+  # METIS_GATEWAY_DB_PATH env var.
+  mountPath: /var/lib/metis
+  dbFile: /var/lib/metis/metis.db
+
+# Global default model — slot 7 of the routing chain, only consulted when
+# clients omit `model` (rare; SDKs always pass one — see gateway.md §V).
+globalDefaultModel: anthropic:claude-sonnet-4-6
+
+# Probes use `exec curl` against 127.0.0.1 inside the container because
+# kubelet HTTP probes run from the node namespace and cannot reach the
+# gateway's loopback bind. Override `probeType` to `httpGet` if you've
+# enabled the proxy sidecar AND want kubelet HTTP probes (they hit the
+# sidecar, not the gateway directly).
+probes:
+  type: exec
+  liveness:
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# Pod security: drop all caps, non-root, read-only root FS. The gateway
+# writes only to /var/lib/metis (PVC) and /tmp (memory-backed emptyDir).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# -- Extra environment variables (e.g. METIS_LOG_LEVEL).
+extraEnv: []
+# - name: METIS_LOG_LEVEL
+#   value: INFO
+
+# -- Extra volume mounts / volumes for sidecar TLS terminators etc.
+extraVolumeMounts: []
+extraVolumes: []
+
+# -- Pod scheduling.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+# -- Extra pod labels and annotations.
+podLabels: {}
+podAnnotations: {}

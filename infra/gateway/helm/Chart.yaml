@@ -1,0 +1,26 @@
+apiVersion: v2
+name: metis-gateway
+description: |
+  Helm chart for the Metis transparent gateway — a per-request stateless HTTP
+  proxy that speaks OpenAI-shape and Anthropic-shape inbound, routes through
+  the canonical IR to a provider adapter, and attributes cost per gateway key.
+  Single-tenant v1 (one workspace per key); multi-user / team rollups are
+  tracked in docs/specs/multi-user.md.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - metis
+  - gateway
+  - llm
+  - proxy
+  - openai
+  - anthropic
+home: https://github.com/2sumAI/metis
+sources:
+  - https://github.com/2sumAI/metis
+maintainers:
+  - name: Metis maintainers
+    email: 2sum.ai.group@gmail.com
+annotations:
+  category: AI

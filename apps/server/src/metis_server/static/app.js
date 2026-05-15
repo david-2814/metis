@@ -12,8 +12,19 @@ const BASELINE_MODEL = "anthropic:claude-sonnet-4-6";
 // ----- State ---------------------------------------------------------------
 
 const state = {
-  view: "cost", // "cost" | "activity"
+  view: "cost", // "cost" | "activity" | "keys"
   windowKey: "7d", // "today" | "7d" | "30d" | "all"
+  // Drill-down: when a row in the keys view is clicked we filter the cost
+  // endpoint calls. `null` means "all traffic". The agent-loop bucket
+  // (gateway_key_id IS NULL on the server) is not drill-downable in v1 —
+  // the cost endpoint's `gateway_key` filter is an exact-match `= ?` and
+  // can't express IS NULL through the same parameter shape.
+  gatewayKey: null,
+  // Pills inside the keys view. `keysFilter` only filters which rows the
+  // table displays; it doesn't talk to the server. `keysSort` is similarly
+  // client-side.
+  keysFilter: "all", // "all" | "agent" | "gateway"
+  keysSort: "cost", // "cost" | "call_count"
 };
 
 const charts = {}; // canvasId -> Chart instance
@@ -137,11 +148,17 @@ const baseChartOpts = (extra = {}) => ({
 
 async function renderCostView(win) {
   const params = withWindowParams(win);
-  // Fire all queries in parallel — they're independent.
+  // Only the cost endpoint accepts gateway_key as a filter (see
+  // analytics-api.md §4.1). cache_effectiveness and savings remain global
+  // in v1 — the key chip stays visible so the user knows the cost charts
+  // are filtered while the other panels aren't.
+  const costParams = state.gatewayKey
+    ? { ...params, gateway_key: state.gatewayKey }
+    : params;
   const [totals, byDay, byModel, cache, savings] = await Promise.all([
-    fetchAnalytics("cost", { ...params, group_by: "none" }),
-    fetchAnalytics("cost", { ...params, group_by: "day" }),
-    fetchAnalytics("cost", { ...params, group_by: "model" }),
+    fetchAnalytics("cost", { ...costParams, group_by: "none" }),
+    fetchAnalytics("cost", { ...costParams, group_by: "day" }),
+    fetchAnalytics("cost", { ...costParams, group_by: "model" }),
     fetchAnalytics("cache_effectiveness", params),
     fetchAnalytics("savings", { ...params, baseline: BASELINE_MODEL }),
   ]);
@@ -519,21 +536,140 @@ function renderSessions(rows) {
   }
 }
 
+// ----- Gateway keys view --------------------------------------------------
+
+async function renderKeysView(win) {
+  const params = withWindowParams(win);
+  const resp = await fetchAnalytics("by_key", params);
+  document.getElementById("pricing-version").textContent =
+    resp.current_pricing_version || "—";
+
+  // Top-spender callout uses the unfiltered set so the share denominator
+  // matches "all traffic in this window" — flipping the source pill changes
+  // *which rows are visible*, not what counts toward "top spender".
+  renderTopSpender(resp.data);
+
+  let rows = resp.data;
+  if (state.keysFilter === "gateway")
+    rows = rows.filter((r) => r.gateway_key_id !== null);
+  else if (state.keysFilter === "agent")
+    rows = rows.filter((r) => r.gateway_key_id === null);
+
+  const sorted = [...rows].sort((a, b) =>
+    state.keysSort === "call_count"
+      ? b.call_count - a.call_count
+      : b.cost_usd - a.cost_usd,
+  );
+  renderKeysTable(sorted);
+}
+
+function renderTopSpender(rows) {
+  const el = document.getElementById("top-spender");
+  if (!rows || rows.length === 0) {
+    el.classList.add("hidden");
+    return;
+  }
+  const total = rows.reduce((a, r) => a + r.cost_usd, 0);
+  if (total <= 0) {
+    el.classList.add("hidden");
+    return;
+  }
+  // Sort by cost to find the top spender — `by_key` already does this on
+  // the server, but recompute defensively in case future versions of the
+  // endpoint change the row order.
+  const top = [...rows].sort((a, b) => b.cost_usd - a.cost_usd)[0];
+  const share = top.cost_usd / total;
+  // The >50% threshold flags concentrated spend that's worth a conversation
+  // (one dev / project burning most of the budget). Below that we hide the
+  // callout — equal distribution is the boring case.
+  if (share <= 0.5) {
+    el.classList.add("hidden");
+    return;
+  }
+  el.classList.remove("hidden");
+  document.getElementById("top-spender-id").textContent =
+    top.gateway_key_id || "agent-loop";
+  document.getElementById("top-spender-share").textContent = pct(share);
+}
+
+function renderKeysTable(rows) {
+  const root = document.getElementById("keys-table");
+  const empty = document.getElementById("keys-empty");
+  root.innerHTML = "";
+  if (!rows || rows.length === 0) {
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+
+  const head = document.createElement("div");
+  head.className = "row head";
+  head.innerHTML =
+    `<span>Gateway key</span>` +
+    `<span class="cost">Cost</span>` +
+    `<span class="num">Calls</span>` +
+    `<span>Last call</span>` +
+    `<span>Inbound shapes</span>`;
+  root.appendChild(head);
+
+  for (const r of rows) {
+    const isAgent = r.gateway_key_id === null;
+    const row = document.createElement("div");
+    row.className = isAgent ? "row agent-loop" : "row clickable";
+    const shapes = (r.by_inbound_shape || [])
+      .map(
+        (s) =>
+          `<span class="shape-tag">${s.inbound_shape || "in-process"}` +
+          `<span class="count">${s.call_count}</span></span>`,
+      )
+      .join("");
+    row.innerHTML =
+      `<span class="id" title="${r.gateway_key_id || "in-process agent loop"}">` +
+      `${isAgent ? "agent-loop" : r.gateway_key_id}</span>` +
+      `<span class="cost">${usd(r.cost_usd)}</span>` +
+      `<span class="num">${r.call_count.toLocaleString()}</span>` +
+      `<span>${localTime(r.last_call_at)}</span>` +
+      `<span class="shapes">${shapes}</span>`;
+    if (!isAgent) {
+      row.addEventListener("click", () => {
+        state.gatewayKey = r.gateway_key_id;
+        state.view = "cost";
+        for (const b of document.querySelectorAll("#audience button"))
+          b.classList.toggle("on", b.dataset.view === "cost");
+        render();
+      });
+    }
+    root.appendChild(row);
+  }
+}
+
 // ----- Top-level render ---------------------------------------------------
 
 async function render() {
   const win = resolveWindow(state.windowKey);
   document.getElementById("window-label").textContent = win.label;
-  document.getElementById("view-cost").classList.toggle("hidden", state.view !== "cost");
-  document
-    .getElementById("view-activity")
-    .classList.toggle("hidden", state.view !== "activity");
+  for (const id of ["view-cost", "view-activity", "view-keys"]) {
+    const key = id.replace("view-", "");
+    document.getElementById(id).classList.toggle("hidden", state.view !== key);
+  }
+
+  // Active-key filter chip: visible on Cost / Activity when a key is
+  // selected. On the keys view itself we hide it — the table is already
+  // the place to drill in/out.
+  const chip = document.getElementById("key-filter-chip");
+  if (state.gatewayKey && state.view !== "keys") {
+    chip.classList.remove("hidden");
+    document.getElementById("key-filter-id").textContent = state.gatewayKey;
+  } else {
+    chip.classList.add("hidden");
+  }
 
   const root = document.getElementById("view-root");
   root.setAttribute("aria-busy", "true");
   try {
     if (state.view === "cost") await renderCostView(win);
-    else await renderActivityView(win);
+    else if (state.view === "activity") await renderActivityView(win);
+    else await renderKeysView(win);
     document.getElementById("last-refresh").textContent =
       `refreshed ${new Date().toLocaleTimeString()}`;
   } catch (exc) {
@@ -563,6 +699,26 @@ function wireToggles() {
       render();
     });
   }
+  for (const btn of document.querySelectorAll("#keys-source button")) {
+    btn.addEventListener("click", () => {
+      state.keysFilter = btn.dataset.keysFilter;
+      for (const b of document.querySelectorAll("#keys-source button"))
+        b.classList.toggle("on", b === btn);
+      render();
+    });
+  }
+  for (const btn of document.querySelectorAll("#keys-sort button")) {
+    btn.addEventListener("click", () => {
+      state.keysSort = btn.dataset.keysSort;
+      for (const b of document.querySelectorAll("#keys-sort button"))
+        b.classList.toggle("on", b === btn);
+      render();
+    });
+  }
+  document.getElementById("key-filter-clear").addEventListener("click", () => {
+    state.gatewayKey = null;
+    render();
+  });
 }
 
 wireToggles();

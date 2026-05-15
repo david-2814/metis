@@ -34,6 +34,8 @@ When working on a spec PR, scan this file for `pending review` entries against s
 - `pattern-store.md` — per-workspace bounded SQLite store of task fingerprints + outcomes that powers routing slot 4 (`PATTERN_RECOMMENDATION`). Phase 2.5.
 - `skill-format.md` — retrospective v1 (2026-05-13) of the existing skills loader / store / tools; conforms to agentskills.io.
 - `evaluator.md` — heuristic + hybrid LLM-as-judge feedback loop; emits `eval.*` events; resolves [`STRATEGY.md §6.7`](../STRATEGY.md) when signed off. Phase 3.
+- `multi-user.md` — per-user / per-team identity layer on top of the shipped per-key cost attribution; analytics rollups, routing-rule predicates, gateway-level circuit breakers. Drafted 2026-05-14; Phase 3 implementation pending.
+- `delegation.md` — Phase 4 design for worker sessions and the `delegate()` tool: slot 5 (`DELEGATE_REQUEST`) consumer contract, worker lifecycle, isolation, cost attribution, integration with pattern store + evaluator. Drafted 2026-05-14; Phase 4 implementation pending.
 
 ## Cross-reference map
 
@@ -56,12 +58,87 @@ A snapshot of which specs reference which (refresh when adding a spec):
 | `pattern-store.md` | canonical-message-format, event-bus-and-trace-catalog, routing-engine, memory-store, analytics-api, evaluator |
 | `skill-format.md` | canonical-message-format, event-bus-and-trace-catalog, tool-dispatcher, context-assembler |
 | `evaluator.md` | event-bus-and-trace-catalog, canonical-message-format, analytics-api, benchmark, routing-engine, pattern-store *(planned)* |
+| `multi-user.md` | canonical-message-format, event-bus-and-trace-catalog, gateway, routing-engine, analytics-api |
+| `delegation.md` | canonical-message-format, event-bus-and-trace-catalog, routing-engine, streaming-protocol, server-api, tool-dispatcher, context-assembler, pattern-store, evaluator, analytics-api |
 
 When changing a spec, the dependent specs (right column whose left column is the changed spec) must be checked.
 
 ---
 
 ## Change log
+
+### 2026-05-14 — event-bus-and-trace-catalog.md §4.4.1 enforced; `eval.completed` floor inverted
+
+- **Specs:** `event-bus-and-trace-catalog.md` §4.4.1 (rule clarification + example), §6.12 (`eval.completed` floor sensitivity); `evaluator.md` §8.2 and §8.4 (floor + downgrade pathway).
+- **Change:** `make_event` now rejects a `sensitivity` override that is more private than the catalog floor (raises `EventValidationError`), per §4.4.1's "only toward less private" rule. The rule's prose is reworded so "floor" is unambiguously the *worst case* — the most-private classification the event can have when all opt-in fields are populated — and a downgrade is what happens when the event carries less than the worst-case content. To make `eval.completed` spec-consistent under the strict rule, its catalog floor moves from `pseudonymous` → `user_controlled` (the worst case, when `signals.rationale_redacted` is populated) and the evaluator subscriber's `_sensitivity_for` is inverted: when the rationale field is absent, downgrade to `pseudonymous` (allowed); when present, no override.
+- **Type:** breaking for `eval.completed` consumers that filter by `sensitivity == pseudonymous` (the floor moved up). Additive for everything else — non-`eval.completed` events keep their existing floors; the new `make_event` check rejects overrides that were never spec-conformant.
+- **References to verify:**
+  - `evaluator.md §8.2 / §8.4` — updated in this change to match the new floor and downgrade pathway.
+  - `event-bus-and-trace-catalog.md §4.4.1 / §6.12` — updated in this change.
+  - `analytics-api.md` — `/analytics/quality` projects `eval.completed.score` and doesn't filter on `sensitivity`; no behavior change.
+  - `KNOWN_ISSUES.md` — "Sensitivity upgrade rule unenforced" 🟢 entry deleted; replaced by the enforcing check.
+- **Status:** verified.
+
+### 2026-05-14 — delegation.md v1 (Phase 4 worker-session design)
+
+- **Specs:** `delegation.md` (new — drafted v1). No code changes; pure spec. Implies additive cross-spec edits flagged below — none land until Phase 4 implementation.
+- **Change:** Consolidates the worker-session contract that has been distributed across [`routing-engine.md §6`](routing-engine.md) (the `delegate()` tool, tier resolution, slot 5 re-entry, `InsufficientContextRequest`), [`event-bus-and-trace-catalog.md §6.8`](event-bus-and-trace-catalog.md) (the three `delegate.*` events), and [`streaming-protocol.md §6.4 + §7`](streaming-protocol.md) (cancellation cascade, `include_worker_sessions` filter) into one Phase-4 design document. Defines what the worker session *is* (full Session record with additive `parent_session_id` / `parent_tool_use_id` / `is_worker` fields), the spawn → routing-re-entry → execution → completion lifecycle, the read-only isolation contract against MEMORY.md / USER.md / skills / routing config (planner-only durable state), the cost-attribution model (worker tokens land on the worker's `llm.call_completed`; `delegate.completed.worker_total_cost_usd` is derived, single source of truth via `llm.call_completed`), pattern-store integration (workers write their own fingerprint rows; slot 4 forced to defer inside delegation re-entry so learned patterns don't silently override the planner's explicit `tier=`), evaluator integration (worker terminal turn scored independently; parent session rubric folds in `delegate.completed.success` but parent *turn* score is not transitively inflated by worker scores), and the confirmation-handler-inheritance rule (workers inherit planner's handler; "always" answers from worker prompts do NOT persist to `trust.yaml` in v1). Slot 5 (`DELEGATE_REQUEST`) treatment is non-normative — canonical source remains routing-engine §6. Documents v1 as **opt-in**: gated by `can_delegate: true` in the registry + active planner model + planner LLM choice; default registry has `can_delegate: false` on `fast`-tier models so buyers without multi-step workloads never see the surface. Open questions section surfaces (1) cost-of-delegation overhead for small sub-tasks, (2) cancellation cascade for already-completed workers, (3) concurrent delegation cap, (4) worker streaming back to planner (deferred per `streaming-protocol.md §12.2`), (5) worker wall-clock timeout, (6) router-decided delegation (rejected for v1 — predicate routing can't distinguish delegatable sub-tasks), (7) worker-prompt "always" answers persisting to trust.yaml, (8) tier name configurability, (9) worker history visibility default.
+- **Type:** additive. New spec drafted; all cross-spec implications below are additive (existing consumers are unchanged; new fields default to `None` / `false`).
+- **References to verify:**
+  - `routing-engine.md §6` — canonical source for the `delegate()` tool signature, `can_delegate`, tier resolution, slot 5 re-entry, `InsufficientContextRequest`. No edits required; delegation.md treats §6 as the source of truth.
+  - `event-bus-and-trace-catalog.md §6.8` — three `delegate.*` events already present in the catalog (Phase 4). `delegation.md §9` proposes two additive `delegate.started` payload fields (`allowed_tool_count`, `dropped_tools`); catalog edit lands with implementation.
+  - `event-bus-and-trace-catalog.md §6.3` — `llm.call_started.is_worker` and `Actor.WORKER` already in the catalog. No change required.
+  - `streaming-protocol.md §6.4 + §7` — cancellation-during-delegation seam and `include_worker_sessions` filter are already documented; no edits.
+  - `server-api.md` — `is_worker` / `parent_session_id` already on the session record; `include_workers` query already documented. No edits.
+  - `canonical-message-format.md §9.1` — Session schema gains three additive nullable columns (`parent_session_id`, `parent_tool_use_id`, `is_worker`); migration is `ALTER TABLE ADD COLUMN ... DEFAULT NULL`. Cross-spec edit lands with implementation.
+  - `pattern-store.md` — worker writes its own fingerprint row; `parent_session_id` is not projected into the fingerprint. Cross-spec edit if pattern-store wants to add a worker-aware filter (§11 deferred).
+  - `evaluator.md §5.6 + §6.1` — parent session rubric folds in `delegate.completed.success`; current heuristic rubric does not yet read this signal. Cross-spec edit lands with Phase 4 implementation.
+  - `analytics-api.md §4.1` — `_COST_GROUP_BY_ALLOWED` gains `parent_session` and `is_worker` group_by values; `include_workers` query parameter behavior added. Cross-spec edit lands with implementation.
+  - `tool-dispatcher.md` — `delegate` registered as a builtin tool with elevated kernel privileges (can spawn a session); no other builtin has this capability. Cross-spec edit lands with implementation.
+  - `context-assembler.md §5` — worker's system prompt uses the same assembler path as planner's; no change required.
+  - `STRATEGY.md §4` — "third lever (planner→worker delegation)" now has a drafted Phase-4 spec home. Existing thesis statement unchanged.
+- **Status:** drafted; awaiting owner review. Cross-spec edits enumerated above land alongside Phase 4 implementation.
+
+### 2026-05-14 — multi-user.md v1 (per-user / per-team identity & rollup layer)
+
+- **Specs:** `multi-user.md` (new — drafted v1), implies additive cross-spec changes flagged below. No code changes; pure spec.
+- **Change:** Adds a per-user / per-team identity layer on top of the shipped per-(gateway-key) attribution from [`gateway.md §3.3 / §6`](gateway.md). Defines three identity dimensions (`User`, `Team`, `Workspace`) and a request-scoped `Principal` projection of `GatewayKey`. `metis gateway issue-key` gains `--user` / `--team`; new `metis gateway user add` / `team add` subcommands manage `~/.metis/gateway/users.json` and `teams.json` (mode `0o600`). Trace-stamping additive: `user_id` and `team_id` land on `LLMCallCompleted` and `TurnCompleted` (parallel to the existing `gateway_key_id` / `inbound_shape`). Analytics surface extends: `group_by` ∈ {`user`, `team`} on `/analytics/cost`; new `/analytics/by_team` rollup (mirrors the shipped `/analytics/by_key`); optional `?user=` / `?team=` filters on all five time-windowed endpoints; new `partial_coverage` flag for mixed-mode rollout windows. Quota enforcement is two-layered: routing-rule **soft caps** via three new predicates (`user_cost_today_exceeds_usd`, `team_cost_today_exceeds_usd`, `team_cost_month_exceeds_usd`) parallel to the shipped `cost_today_exceeds_usd`; gateway-boundary **hard caps** via `Team.daily_cap_usd` / `monthly_cap_usd` (and finally activating the previously reserved `GatewayKey.daily_cap_usd`) — hard cap short-circuits before routing, returns 429, emits a new `gateway.quota_exceeded` audit event. Three new `gateway.*` catalog events: `key_issued`, `key_revoked`, `quota_exceeded`, all `pseudonymous`-sensitive. Privacy posture: plaintext email lives in `users.json` only; trace events carry the stable `user_id`; `email_sha256` exists for bootstrap-dedup and a future SSO bridge. Deployment-shape neutral — same struct + wire shape in local-FS and SaaS deployments; only the storage backend differs. v1 explicitly excludes SSO / OIDC / SAML / SCIM / RBAC / multi-org / multi-workspace-per-key (§8); the startup-CTO default from [`STRATEGY.md §6.2`](../STRATEGY.md) is the v1 target.
+- **Type:** additive. New spec drafted; all cross-spec implications below are additive (no existing consumer breaks; missing fields default to `None`).
+- **References to verify:**
+  - `gateway.md §3.3` — `GatewayKey` gains two optional fields (`user_id`, `team_id`); existing keys with both `None` keep working. Cross-spec edit lands with implementation; flagged in `multi-user.md §4.1`.
+  - `gateway.md §11` — "Multi-user / team-level rollups" follow-on now references `multi-user.md` as the design. Edit at implementation time.
+  - `event-bus-and-trace-catalog.md §6.3` — `LLMCallCompleted.user_id` / `team_id` and `TurnCompleted.user_id` / `team_id` are typed additive fields; same pattern as the shipped `gateway_key_id` extension. Catalog edit lands with implementation.
+  - `event-bus-and-trace-catalog.md §6` — three new event types (`gateway.key_issued`, `gateway.key_revoked`, `gateway.quota_exceeded`); payload structs sketched in `multi-user.md §7.2`. Catalog entry per `AGENTS.md` "Adding a new X" recipe at implementation time.
+  - `routing-engine.md §5.3.2` — three new predicates (`user_cost_today_exceeds_usd`, `team_cost_today_exceeds_usd`, `team_cost_month_exceeds_usd`) parallel to `cost_today_exceeds_usd`; same snapshot-at-turn-start semantics. Edit at implementation time.
+  - `analytics-api.md §4.1` — `_COST_GROUP_BY_ALLOWED` whitelist gains `user` / `team`. Endpoint shape additive.
+  - `analytics-api.md §4.8` — new sibling endpoint `/analytics/by_team` documented in `multi-user.md §5.2`. Edit at implementation time.
+  - `analytics-api.md §4.7` — savings endpoint's behavior under `?team` filter clarified in `multi-user.md §5.4`; no math change.
+  - `STRATEGY.md §2` — "multi-user from day one is real" and "team-level cost attribution matters" both have a drafted spec home. §2 stays open per the prompt's instructions (it closes when the spec lands **and** [`STRATEGY.md §6.3`](../STRATEGY.md) — local-first vs SaaS — is decided).
+- **Status:** drafted; awaiting owner review. Cross-spec edits enumerated above land alongside Phase 3 implementation.
+
+### 2026-05-14 — evaluator.md §5.1 turn rubric reads `tool.completed.success=False`
+
+- **Specs:** `evaluator.md` §5.1 (turn heuristic rubric — new `no_tool_exit_failure` signal + prose distinguishing the two tool-failure paths).
+- **Change:** Closes the first [§A3](../../benchmarks/RESULTS.md#a3-why-the-differentiator-does-not-fire) unblock. The v1 turn heuristic's tool-failure gate previously only fired on `tool.failed` (uncaught Python exception); a shell tool that prints `"FAIL N/M"` and exits with a non-zero code emits `tool.completed` with `success=False` and was invisible to the rubric. v1.1 adds a sibling gate `no_tool_exit_failure` that scans for `tool.completed` events with `success=False`. Weighted at 0.5 (vs `weight_no_tool_failure=0.25`) — sized so a single failed exit drops a clean turn's score from 1.0 to ~0.667 (drop ≥0.3) and the heuristic confidence to 0.55, below the v1 hybrid escalation threshold (0.7). This lets `HybridJudge` escalate to the LLM judge on this class of failure regardless of whether the bus subscriber plumbs assistant-response text. Implementation in [`packages/metis-core/src/metis_core/eval/judge.py::_evaluate_turn`](../../packages/metis-core/src/metis_core/eval/judge.py); weight + total normalization in [`eval/rubric.py::TurnHeuristicConfig`](../../packages/metis-core/src/metis_core/eval/rubric.py). Rubric version bump `1.0.0 → 1.1.0` per [§12](evaluator.md#12-invariants) invariant 7 so prior `eval.completed` rows are not silently recalibrated.
+- **Type:** additive. Existing positive-lifecycle signals are untouched; turns that had no `tool.completed.success=False` events behave identically (clean score still 1.0). The rubric version bump produces a new score series rather than mutating old verdicts.
+- **References to verify:**
+  - `event-bus-and-trace-catalog.md §6.x` — `ToolCompleted.success: bool` already exists and is unchanged. ✓
+  - `evaluator.md §5.3` — Hybrid escalation threshold default 0.7 is unchanged; the new signal lowers heuristic confidence into the escalation band on tool-exit failures. ✓
+  - `evaluator.md §12` — invariant 7 (rubric versioning); the bump to 1.1.0 satisfies it. ✓
+  - `evaluator.md §5.1` Agent 7a-2's `signals_extra` contract paragraph — independent edit in the same section; cross-references the same §A3 unblock list. ✓
+  - `benchmarks/RESULTS.md §A3` — re-run owned by Agent 7a-7; not modified here. ⏳
+- **Status:** verified.
+
+### 2026-05-14 — evaluator.md §5.1 turn-completed `signals_extra` plumbed for LLM judge
+
+- **Specs:** `evaluator.md` §5.1 (signals_extra contract).
+- **Change:** Documented the three-key `turn.completed.signals_extra` contract produced by `SessionManager._emit_turn_completed`: `final_response_text` (existing; heuristic content-penalty reader), `assistant_response_text` (new alias of `final_response_text`; LLM-judge `_build_user_message` reader), and `user_prompt_text` (new; LLM-judge `_build_user_message` reader). Closes the second [§A3](../../benchmarks/RESULTS.md#a3-why-the-differentiator-does-not-fire) unblock — the online bus path now forwards enough text for the LLM judge to grade a turn instead of reading "(not available)" / "(not available)". The `assistant_response_text` alias is intentional and points at the same string as `final_response_text`; a future migration can drop it once heuristic and LLM consumers converge on one name. Keys with empty values are omitted so absent text degrades to the judge's "(not available)" fallback honestly.
+- **Type:** additive. The producer only adds keys; the existing `final_response_text` reader path is unchanged. The new `user_prompt_text` parameter on `_emit_turn_completed` is keyword-only with a `None` default.
+- **References to verify:**
+  - `event-bus-and-trace-catalog.md` — `TurnCompleted.signals_extra` is already typed as a free-form `dict | None` per §6.4; no payload-registry change. ✓
+  - `evaluator.md §5.2` — the LLM-as-judge rubric's input list still cites "user prompt + assistant final response text" generically; the §5.1 contract update is the cross-reference that makes it concrete. ✓
+  - `benchmark.md` — the workload harness already plumbs `user_prompt_text` / `assistant_response_text` at the workload subject level; no change. ✓
+- **Status:** verified.
 
 ### 2026-05-14 — gateway.md v1 (captures shipped surface) + per-key analytics rollup
 

@@ -1118,6 +1118,12 @@ class SessionManager:
         self._store.update_session(session)
 
         # 8. Emit turn.completed.
+        # First text block of the persisted user message — what the LLM
+        # judge needs to read intent (evaluator.md §5.1).
+        user_prompt_text = next(
+            (b.text for b in user_message.content if isinstance(b, TextBlock)),
+            None,
+        )
         self._emit_turn_completed(
             session_id=session_id,
             turn_id=turn_id,
@@ -1130,6 +1136,7 @@ class SessionManager:
             wall_time=wall_time,
             parent_event_id=turn_started_event,
             final_response_text=last_assistant_text,
+            user_prompt_text=user_prompt_text,
         )
 
         return TurnResult(
@@ -1359,6 +1366,7 @@ class SessionManager:
         wall_time: float,
         parent_event_id: str,
         final_response_text: str | None = None,
+        user_prompt_text: str | None = None,
     ) -> None:
         if stop_reason == StopReason.CANCELLED:
             return  # turn.cancelled is its own event type
@@ -1366,9 +1374,22 @@ class SessionManager:
         catalog_stop = stop_reason.value
         if catalog_stop not in ("end_turn", "max_tokens", "stop_sequence", "tool_use"):
             catalog_stop = "end_turn"
+        # Compose signals_extra per evaluator.md §5.1. `final_response_text`
+        # feeds the heuristic content-penalty path; `assistant_response_text`
+        # is an intentional alias that feeds the LLM judge's
+        # `_build_user_message` reader. Both names point at the same string
+        # so a single mutation keeps them consistent. Omit any key whose
+        # value is empty so absent text is honest (the judge's
+        # "(not available)" fallback fires correctly).
         signals_extra: dict | None = None
+        extras: dict[str, str] = {}
         if final_response_text:
-            signals_extra = {"final_response_text": final_response_text}
+            extras["final_response_text"] = final_response_text
+            extras["assistant_response_text"] = final_response_text
+        if user_prompt_text:
+            extras["user_prompt_text"] = user_prompt_text
+        if extras:
+            signals_extra = extras
         self._bus.emit(
             make_event(
                 type="turn.completed",

@@ -28,6 +28,19 @@ class Sensitivity(StrEnum):
     AGGREGATABLE = "aggregatable"
 
 
+_SENSITIVITY_RANK: dict[Sensitivity, int] = {
+    Sensitivity.PRIVATE: 0,
+    Sensitivity.USER_CONTROLLED: 1,
+    Sensitivity.PSEUDONYMOUS: 2,
+    Sensitivity.AGGREGATABLE: 3,
+}
+
+
+def sensitivity_rank(value: Sensitivity) -> int:
+    """Order from most-private (0) to least-private (3). See §4.4.1."""
+    return _SENSITIVITY_RANK[value]
+
+
 def new_event_id() -> str:
     """ULID, monotonic per process (see §4.2)."""
     return str(next_monotonic_ulid())

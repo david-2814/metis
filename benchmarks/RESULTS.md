@@ -1850,3 +1850,334 @@ print('slot winners:', dict(slots))
 print('chosen models:', dict(chosen))
 "
 ```
+
+## Experiment A3-rev: differentiator unblocked
+
+Re-run of §A3 after both follow-up unblocks landed:
+
+1. `HeuristicJudge` now penalizes `tool.completed.success=False`
+   ([packages/metis-core/src/metis_core/eval/judge.py](../packages/metis-core/src/metis_core/eval/judge.py)
+   `_evaluate_turn`, `weight_no_tool_exit_failure=0.5`). A single
+   shell-tool nonzero exit drops a clean turn's score from 1.0 to
+   0.667 and confidence from 0.9 to 0.55, taking the hybrid below
+   the 0.7 escalation threshold.
+2. `SessionManager._emit_turn_completed` now forwards
+   `signals_extra.user_prompt_text` and
+   `signals_extra.assistant_response_text` so the LLM judge's
+   `_build_user_message` reader sees real content instead of
+   "(not available)"
+   ([packages/metis-core/src/metis_core/sessions/manager.py](../packages/metis-core/src/metis_core/sessions/manager.py)
+   `_emit_turn_completed`).
+
+Both unblocks are exercised by tests in
+[packages/metis-core/tests/eval/test_judge.py](../packages/metis-core/tests/eval/test_judge.py)
+and
+[packages/metis-core/tests/sessions/test_manager.py](../packages/metis-core/tests/sessions/test_manager.py)
+(`test_turn_heuristic_tool_completed_success_true_does_not_fire_negative`,
+`test_turn_completed_carries_user_prompt_text_in_signals_extra`,
+`test_turn_completed_aliases_assistant_response_text_to_final_response_text`,
+`test_turn_completed_signals_extra_feeds_llm_judge_build_user_message`).
+Test baseline: 1127 passing on commit `1ccefe7` (dirty).
+
+### A3-rev protocol
+
+Identical to §A3 — three passes against the full 7-workload suite
+sharing one patterns DB, hybrid judge with threshold 0.7:
+
+```bash
+rm -f benchmarks/.runs/a3rev-patterns.db
+uv run python scripts/benchmark.py \
+  --model haiku  --patterns-db-path benchmarks/.runs/a3rev-patterns.db \
+  --db-path     benchmarks/.runs/a3rev-pass-a.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+uv run python scripts/benchmark.py \
+  --model sonnet --patterns-db-path benchmarks/.runs/a3rev-patterns.db \
+  --db-path     benchmarks/.runs/a3rev-pass-b.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+uv run python scripts/benchmark.py \
+  --no-active-model --patterns-db-path benchmarks/.runs/a3rev-patterns.db \
+  --db-path     benchmarks/.runs/a3rev-pass-c.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+```
+
+Total spend: **$1.032** (Pass A $0.205, Pass B $0.651, Pass C $0.176)
+— within the $1–2 budget envelope.
+
+### A3-rev transient failures
+
+- Pass A: `multi-turn-refactor` lost connection on turn 4/4
+  (`NetworkError`). Turns 1–3 still wrote pattern outcomes.
+- Pass B: `write-a-doc-from-notes` lost connection on turn 2/2.
+  Turn 1 still wrote a pattern outcome.
+- Pass C: `regex-with-edge-cases` lost connection on turn 3/3 (the
+  diagnostically critical turn — the one where §A3-original's
+  haiku produced "FAIL 15/16"). `write-a-doc-from-notes` lost
+  connection on turn 1/2.
+
+The transient error rate matches §A3-original (≈3 connection errors
+across ~50 LLM calls). They are *not* deterministic — re-runs hit
+different turns each time. The Pass C regex transient is the worst
+luck of the three: that workload was the focal target of §A3's
+finding, and the data point is missing.
+
+### A3-rev per-turn judge breakdown
+
+The heuristic + hybrid mix shifted materially vs §A3-original — the
+unblocks are doing their job:
+
+| Pass | heuristic (turn) | hybrid (turn) | LLM-only | workload heuristic |
+|------|-----------------:|--------------:|---------:|-------------------:|
+| A    | 11               | **6**         | 0        | 6                  |
+| B    | 12               | **5**         | 0        | 6                  |
+| C    | 11               | **4**         | 0        | 5                  |
+
+Hybrid escalations to the LLM judge fired on 15 turns across the three
+passes. Concrete LLM-judge verdicts visible in the trace (sample):
+
+```
+Pass A multi-file-refactor turn 3 (haiku):  score=0.300  conf=0.800  (LLM)
+Pass A multi-file-refactor turn 4 (haiku):  score=0.700  conf=0.800  (LLM)
+Pass A multi-turn-refactor   turn 3 (haiku):  score=0.300  conf=0.700  (LLM)
+Pass B multi-file-refactor turn 2 (sonnet): score=0.700  conf=0.800  (LLM)
+Pass B multi-file-refactor turn 3 (sonnet): score=0.300  conf=0.700  (LLM)
+Pass B multi-turn-refactor   turn 3 (sonnet): score=0.400  conf=0.600  (LLM)
+Pass B multi-turn-refactor   turn 4 (sonnet): score=0.800  conf=0.700  (LLM)
+```
+
+§A3-original recorded **0** LLM escalations (it was an empty
+column). A3-rev sees the LLM judge produce differentiated 0.3 / 0.7 /
+0.8 / 1.0 scores reading the actual assistant text. **Unblock 7a-2 is
+working as intended.** And the heuristic confidence drops below 0.7
+on turns where a shell tool exited non-zero, which is what causes the
+hybrid to escalate — **unblock 7a-1 is working as intended.**
+
+### A3-rev per-workload heuristic and LLM-judge deltas
+
+Workload-level quality verdict (the score the pattern store sees) per
+workload per pass — sonnet vs haiku:
+
+| Workload | Pass A haiku | Pass B sonnet | Δ (sonnet − haiku) |
+|----------|:-----------:|:-------------:|-------------------:|
+| architectural-explanation-without-hallucination | 1.00 | 0.50 | **−0.50** (inverted heuristic, still wrong) |
+| fix-a-bug-small                          | 0.93 | 1.00 | +0.07 |
+| intentionally-failing-task               | 0.25 | 0.25 | 0.00 |
+| multi-file-refactor-with-shared-types    | 0.88 | 0.88 | 0.00 |
+| multi-turn-refactor                      | (transient) | 0.80 | (n/a) |
+| regex-with-edge-cases                    | 0.75 | 1.00 | **+0.25** |
+| write-a-doc-from-notes                   | 1.00 | (transient) | (n/a) |
+
+`regex-with-edge-cases` is now the workload where the heuristic
+correctly detects the haiku failure (a shell test exited non-zero
+on haiku turn 2; workload-rubric score dropped from 1.0 to 0.75
+because of the cascading `tool_returned_failure` flag). Sonnet on
+the same prompts scored 1.00 — a +0.25 quality gap *visible to the
+heuristic*. §A3-original's same comparison showed 1.00 / 1.00 on
+this workload because the heuristic never saw the tool exit failure.
+
+Net per-workload deltas where the data exists: regex favors sonnet
+by 0.25; fix-a-bug-small slightly favors sonnet by 0.07; multi-file
+and intentionally-failing tie; architectural-without-hallucination
+*still* inverts (0.50 vs 1.00 against sonnet) — the
+substring-presence content check from the diversity-wave-2 caveat
+remains broken in v1 and §A3-rev inherits the flaw.
+
+### A3-rev Pass C slot-4 outcomes — THE KEY TABLE
+
+Pass C ran 15 turns under `--no-active-model`. Routing breakdown:
+
+| Slot         | Wins (Pass C) | Chose haiku | Chose sonnet |
+|--------------|--------------:|------------:|-------------:|
+| pattern      | **15**        | 15          | **0**        |
+| global_default | 2           | 2           | 0            |
+
+All 15 pattern-slot wins picked haiku. The K-NN cluster's per-model
+aggregated scores (from
+`route.decided.chain[pattern].pattern_alternatives`) tell the story:
+
+```
+#   chose            haiku.score  sonnet.score  pattern_conf
+0   haiku                  1.000         0.700         0.300
+1   haiku                  0.972         0.658         0.323
+2   haiku                  0.930         0.612         0.341
+3   haiku                  0.755         0.245         0.675
+4   haiku                  1.000         0.700         0.300
+5   haiku                  1.000         0.700         0.300
+6   haiku                  0.953         0.612         0.358
+7   haiku                  0.804         0.245         0.695
+8   haiku                  0.902         0.612         0.321
+9   haiku                  1.000         0.647         0.353
+10  haiku                  0.953         0.647         0.321
+11  haiku                  0.804         0.245         0.695
+13  haiku                  1.000         0.700         0.300
+15  haiku                  0.804         0.245         0.695
+16  haiku                  1.000         0.700         0.300
+```
+
+`alternatives_count=2` (haiku + sonnet) and `sample_size=5–6` per
+cluster on every row — the K-NN is reading cross-model outcomes from
+both Pass A and Pass B. There is no fingerprint cluster in this
+patterns DB where sonnet's aggregated score beats haiku's. The
+quality differential A3-rev hoped to surface on `regex-with-edge-
+cases` (haiku 0.75 vs sonnet 1.00) is washed out by the K-NN
+clustering across other workloads.
+
+### A3-rev cost-per-quality-unit
+
+| Pass | Quality sum (working workloads) | actual_repriced_usd | cost-per-quality |
+|------|--------------------------------:|--------------------:|-----------------:|
+| A (haiku)     | 4.808 (6 of 7)                | $0.2050             | **$0.0426**      |
+| B (sonnet)    | 4.425 (6 of 7)                | $0.6513             | **$0.1472**      |
+| C (no active) | 3.877 (5 of 7)                | $0.1752             | **$0.0452**      |
+
+A3-original same numbers were $0.0306 / $0.1005 / $0.0477. A3-rev's
+slightly higher per-quality-unit numbers reflect a different sample
+of working workloads (transients hit different rows) plus the LLM
+judge's content penalty firing on more turns at workload-level too.
+
+Pass C is still essentially Pass A's cost ($0.0452 vs $0.0426) — it
+spent ~6% more per quality unit than haiku-only, well below sonnet's
+$0.1472. The 6% premium is real but it is **not** the result of slot
+4 picking sonnet — Pass C never picked sonnet. The premium reflects
+two missing workloads (regex + write-a-doc both hit transients in
+Pass C) lowering the denominator, plus the multi-file-refactor
+quality score landing at 0.69 in Pass C vs 0.88 in Pass A under the
+same model.
+
+### A3-rev finding
+
+**The differentiator still does not invert under hybrid-0.7 with
+both 7a-1 and 7a-2 landed.** Slot 4 picks haiku on every Pass C turn
+(15 of 15) despite:
+
+1. The heuristic now correctly penalizing `tool.completed.success=
+   False` (verified: confidence drops from 0.9 → 0.55 on synthetic
+   inputs).
+2. The LLM judge now reading `assistant_response_text` and producing
+   real differentiated scores (verified: 4–6 hybrid escalations per
+   pass, 0 in §A3-original).
+3. The K-NN cluster's `pattern_alternatives` showing **5 samples of
+   each model** on every selection — the cross-model data is in the
+   store and the aggregator is reading it.
+
+The new root cause is downstream of both unblocks. The per-model
+aggregated score the K-NN produces (the table above) consistently
+shows haiku ahead of sonnet:
+
+- Haiku aggregated scores: 0.755 → 1.000
+- Sonnet aggregated scores: 0.245 → 0.700
+
+The gap is bigger than the required 0.428 success-mean delta from
+§A3-original's analysis. But it is wrong-direction: in this 33-row
+patterns DB, the K-NN computes `success_mean_haiku ≈ success_mean_
+sonnet` (both around 0.72–0.95) and then the `cost_weight=0.3` term
+on cost_efficiency (haiku cheaper → cost_eff_haiku=1, cost_eff_sonnet=0)
+adds a flat +0.3 to haiku's score. The hybrid judge's LLM
+verdicts on Pass B's sonnet turns (multi-turn-refactor turn 3
+→ 0.400, multi-file-refactor turn 2 → 0.700, multi-file-refactor
+turn 3 → 0.300) actively pulled sonnet's success_mean *down* below
+haiku's on a non-trivial slice of clusters, because the LLM judge
+read sonnet's verbose responses and the heuristic-content-check
+penalty fired.
+
+Concretely: in the patterns DB ([benchmarks/.runs/a3rev-patterns.db]):
+
+```
+sonnet outcomes: 16 rows, success_mean per row in {0.0, 0.3, 0.4, 0.7, 0.8, 1.0}
+haiku  outcomes: 17 rows, success_mean per row in {0.0, 0.3, 0.7, 0.8, 1.0}
+```
+
+The 0.0 sonnet rows came from sessions where the LLM judge
+escalated and gave 0.300 (then the workload-level scorer aggregated
+across turns); haiku has only 2 of 17 rows at 0.0 — fewer. Sonnet's
+mean across the patterns DB is actually slightly **lower** than
+haiku's by ~0.05, before cost_weight is applied. After cost_weight=0.3
+the gap widens to ~0.35.
+
+### What the third unblock looks like
+
+The two unblocks alone are not sufficient. Three independent paths
+could move the needle on a follow-up A3-rev2:
+
+1. **K-NN clustering at workload granularity, not structural-
+   fingerprint granularity.** The fingerprint inputs builder
+   produces `intent_tags=[]` on most turns (the regex matchers
+   trigger on architecture / debug / doc / refactor / test keywords
+   but the per-turn prompts in this suite often miss those). When
+   intent is empty, K-NN groups turns by tool-use shape and length
+   bucket — which mixes workloads. A workload-tag carried as part of
+   the fingerprint (or surfaced through the `fingerprint_inputs_
+   builder` from the benchmark harness) would let same-workload
+   neighbors cluster together first.
+2. **Lower `cost_weight`.** Default is 0.3 (`routing/policy.py:40`).
+   Setting it to ~0.1 would require a quality delta of only ~0.143
+   to flip the chooser (since the cost margin would shrink to 0.1).
+   Cluster deltas of 0.15–0.30 do exist in the current data, just
+   not the 0.43 the default requires. This is a policy-level knob
+   change, not a code change.
+3. **Fix the heuristic content inversion on
+   `architectural-explanation-without-hallucination`.** Sonnet
+   scored 0.50 vs haiku 1.00 there because the workload-rubric's
+   `contains_substring` check rewards refusal-of-omission instead
+   of confirming the agent stayed within scope. That single
+   workload is dragging sonnet's pattern-store mean down by ~0.06
+   when it should be the *other* direction.
+
+Either #1 or #2 alone should flip slot 4 on regex; #3 is independent
+quality work but matters if the suite stays as-is.
+
+### A3-rev caveats
+
+- **Temperature=0 non-determinism re-confirmed.** §A3-original's
+  haiku regex turn 3 produced "FAIL 15/16"; A3-rev's haiku regex
+  turn 3 (Pass A) produced "PASS 16/16". The heuristic's new
+  `tool_returned_failure` flag fired on turn 2 instead (still
+  enough to drop the workload score from 1.0 to 0.75), but the
+  exact failure mode differed run-to-run.
+- **Pass C lost regex turn 3 to a transient**, the single turn most
+  diagnostic for whether slot 4 inverts. A re-run of Pass C alone
+  could resolve that specific data point at ~$0.05.
+- **Pricing version drift mid-Pass-C.** Pass A/B ran under
+  `2026-05-08+openrouter-2519f42cf205`; Pass C ran under
+  `2026-05-08+openrouter-0151960e3ed7`. The OpenRouter overlay hash
+  changed between Pass B and Pass C (OpenRouter price update
+  happened concurrently — the bench harness re-fetches it on every
+  run). Native Anthropic prices are unchanged so `actual_repriced_
+  usd` is comparable across passes.
+
+### Reproduce A3-rev
+
+```bash
+# Baseline check
+uv run pytest -q                                   # expect 1127 passed
+
+# A3-rev: 3-pass experiment with hybrid judge (threshold 0.7).
+rm -f benchmarks/.runs/a3rev-patterns.db \
+      benchmarks/.runs/a3rev-pass-{a,b,c}.{db,json}
+uv run python scripts/benchmark.py \
+  --model haiku  --patterns-db-path benchmarks/.runs/a3rev-patterns.db \
+  --db-path     benchmarks/.runs/a3rev-pass-a.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+uv run python scripts/benchmark.py \
+  --model sonnet --patterns-db-path benchmarks/.runs/a3rev-patterns.db \
+  --db-path     benchmarks/.runs/a3rev-pass-b.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+uv run python scripts/benchmark.py \
+  --no-active-model --patterns-db-path benchmarks/.runs/a3rev-patterns.db \
+  --db-path     benchmarks/.runs/a3rev-pass-c.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+
+# Inspect Pass C slot-4 alternatives (the key table):
+uv run python -c "
+import sqlite3, json
+c = sqlite3.connect('benchmarks/.runs/a3rev-pass-c.db').cursor()
+for r in c.execute(\"SELECT payload_json FROM events WHERE type='route.decided' ORDER BY id\"):
+    p = json.loads(r[0])
+    pat = next((c for c in p.get('chain', []) if c.get('policy') == 'pattern'), None)
+    if pat and pat.get('verdict') == 'chose':
+        alts = pat.get('pattern_alternatives') or []
+        h = next((a for a in alts if 'haiku' in a['model']), None)
+        s = next((a for a in alts if 'sonnet' in a['model']), None)
+        chose = p['chosen_model'].split(':')[-1]
+        print(f'{chose:<22} haiku={h[\"score\"]:.3f} sonnet={s[\"score\"]:.3f} conf={pat[\"confidence\"]:.3f}')
+"
+```

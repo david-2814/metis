@@ -114,6 +114,58 @@ def test_make_event_allows_explicit_sensitivity_upgrade():
     assert event.sensitivity == Sensitivity.USER_CONTROLLED
 
 
+def test_make_event_rejects_more_private_sensitivity_override():
+    """§4.4.1: sensitivity can only move toward less private than the floor."""
+    with pytest.raises(EventValidationError) as exc:
+        make_event(
+            type="session.created",  # catalog floor: PSEUDONYMOUS
+            session_id="sess_1",
+            actor=Actor.SYSTEM,
+            payload=SessionCreated(
+                workspace_path="/x",
+                workspace_hash="h",
+                initial_active_model=None,
+                routing_policy_version="v",
+            ),
+            timestamp=_now(),
+            sensitivity=Sensitivity.PRIVATE,
+        )
+    assert "more private" in str(exc.value)
+    assert "private" in str(exc.value) and "pseudonymous" in str(exc.value)
+
+
+def test_make_event_allows_same_or_less_private_override():
+    """§4.4.1: override equal to floor and less private than floor both succeed."""
+    same = make_event(
+        type="session.created",  # floor: PSEUDONYMOUS
+        session_id="sess_1",
+        actor=Actor.SYSTEM,
+        payload=SessionCreated(
+            workspace_path="/x",
+            workspace_hash="h",
+            initial_active_model=None,
+            routing_policy_version="v",
+        ),
+        timestamp=_now(),
+        sensitivity=Sensitivity.PSEUDONYMOUS,
+    )
+    assert same.sensitivity == Sensitivity.PSEUDONYMOUS
+    less = make_event(
+        type="session.created",
+        session_id="sess_1",
+        actor=Actor.SYSTEM,
+        payload=SessionCreated(
+            workspace_path="/x",
+            workspace_hash="h",
+            initial_active_model=None,
+            routing_policy_version="v",
+        ),
+        timestamp=_now(),
+        sensitivity=Sensitivity.AGGREGATABLE,
+    )
+    assert less.sensitivity == Sensitivity.AGGREGATABLE
+
+
 def test_make_event_rejects_wrong_payload_class():
     with pytest.raises(EventValidationError) as exc:
         make_event(
@@ -341,7 +393,7 @@ def test_pattern_make_event_rejects_wrong_payload():
 def test_eval_registry_membership():
     for type_name, expected_class, expected_sens in [
         ("eval.started", EvalStarted, Sensitivity.PSEUDONYMOUS),
-        ("eval.completed", EvalCompleted, Sensitivity.PSEUDONYMOUS),
+        ("eval.completed", EvalCompleted, Sensitivity.USER_CONTROLLED),
         ("eval.failed", EvalFailed, Sensitivity.PSEUDONYMOUS),
     ]:
         assert type_name in PAYLOAD_REGISTRY
@@ -432,8 +484,8 @@ def test_eval_completed_llm_with_cost():
     assert event.payload["parent_eval_id"] == "01HZEVAL2"
 
 
-def test_eval_completed_sensitivity_uplift_on_opt_in():
-    """§4.4.1: rationale_redacted opt-in upgrades sensitivity."""
+def test_eval_completed_floor_holds_when_rationale_present():
+    """§4.4.1: floor is USER_CONTROLLED (worst case, with rationale present)."""
     payload = EvalCompleted(
         eval_id="01HZEVAL4",
         subject_kind="turn",
@@ -458,9 +510,36 @@ def test_eval_completed_sensitivity_uplift_on_opt_in():
         actor=Actor.SYSTEM,
         payload=payload,
         timestamp=_now(),
-        sensitivity=Sensitivity.USER_CONTROLLED,
     )
     assert event.sensitivity == Sensitivity.USER_CONTROLLED
+
+
+def test_eval_completed_downgrades_to_pseudonymous_when_rationale_absent():
+    """§4.4.1: downgrade USER_CONTROLLED → PSEUDONYMOUS is allowed (less private)."""
+    payload = EvalCompleted(
+        eval_id="01HZEVAL5",
+        subject_kind="turn",
+        subject_id="t_4",
+        score=0.9,
+        confidence=0.95,
+        judge_kind="heuristic",
+        judge_cost_usd=Decimal("0"),
+        judge_latency_ms=2,
+        rubric_id="turn-heuristic-v1",
+        rubric_version="1.0.0",
+        signals={"latency_ms": 1200},
+        judge_model=None,
+        judge_pricing_version=None,
+    )
+    event = make_event(
+        type="eval.completed",
+        session_id="sess_1",
+        actor=Actor.SYSTEM,
+        payload=payload,
+        timestamp=_now(),
+        sensitivity=Sensitivity.PSEUDONYMOUS,
+    )
+    assert event.sensitivity == Sensitivity.PSEUDONYMOUS
 
 
 def test_eval_failed_roundtrip_and_event():

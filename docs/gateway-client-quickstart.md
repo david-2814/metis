@@ -77,11 +77,16 @@ with your `gateway_key_id` in the Metis trace store.
 ```bash
 # Against the metis serve instance that shares the gateway's SQLite db
 curl http://127.0.0.1:8421/analytics/cost?window=24h | jq
+
+# Per-key rollup (the buyer story: spend per dev / per project)
+curl http://127.0.0.1:8421/analytics/by_key | jq
+
+# Per-key drill-down: cost of this key only, grouped by model
+curl 'http://127.0.0.1:8421/analytics/cost?group_by=model&gateway_key=gk_01J...' | jq
 ```
 
-The per-key roll-up (`group_by=gateway_key`) is a follow-on per
-`gateway.md §V`; for now, group by `model` or `none` and filter by
-your key's workspace.
+For a visual surface, point a browser at `http://127.0.0.1:8421/dashboard/`
+and click the **Gateway keys** tab — see §7 below.
 
 ---
 
@@ -279,3 +284,46 @@ If you see three event rows for the call (`route.decided`,
 `llm.call_completed`, `turn.completed`) with the same monotonic ULID
 ordering and a cost in fractions of a cent, the gateway is wired
 end-to-end.
+
+---
+
+## 7. Per-key spend in the dashboard
+
+Once you have multiple gateway keys issued — one per dev, one per
+project, however you carved up the namespace — the **Gateway keys**
+tab in the dashboard turns the trace data into a buyer-shaped view:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ Metis · Local dashboard          [Cost] [Activity] [Gateway keys]│
+├──────────────────────────────────────────────────────────────────┤
+│ [All traffic] [Agent-loop only] [Gateway only]   [Sort: cost ▼]  │
+│                                                                  │
+│ ⚠ TOP SPENDER  gk_01J...alice    63%  of all spend in this window│
+│                                                                  │
+│ PER-KEY SPEND                                                    │
+│ ────────────────────────────────────────────────────────────────│
+│ GATEWAY KEY            COST    CALLS  LAST CALL   INBOUND SHAPES │
+│ gk_01J...alice       $3.42      87   2m ago      openai 60 anthropic 27 │
+│ gk_01J...bob         $1.21      34   18m ago     anthropic 34   │
+│ agent-loop           $0.18      22   1h ago      in-process 22  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+Each clickable row sets a `gateway_key` filter on the Cost view, so
+clicking `gk_01J...alice` switches to **Cost** and re-renders the spend
+chart, cost-by-model chart, and total against Alice's traffic only.
+A chip near the top of the Cost view reminds you what's filtered and
+gives you a one-click way back to "all traffic".
+
+The **All traffic / Agent-loop only / Gateway only** pills change which
+rows appear in the per-key table — useful when you want to compare
+gateway clients to in-process CLI usage. The agent-loop row aggregates
+every `llm.call_completed` that has no `gateway_key_id` stamp; it is
+not drillable in v1 because the underlying filter is an exact-match
+`= ?` and can't express IS NULL through the same parameter shape.
+
+The **Top spender** banner only appears when one key (or `agent-loop`)
+accounts for more than 50% of spend in the window — the threshold is
+deliberately conservative so the banner is a real signal worth talking
+about, not chart noise.

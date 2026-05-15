@@ -116,7 +116,13 @@ class AnalyticsStore:
 
     # ---- /analytics/cost ---------------------------------------------------
 
-    def cost(self, window: TimeWindow, group_by: str) -> dict | list[dict]:
+    def cost(
+        self,
+        window: TimeWindow,
+        group_by: str,
+        *,
+        gateway_key: str | None = None,
+    ) -> dict | list[dict]:
         """Aggregate cost / tokens / latency over the window.
 
         Aggregation happens **in Python with `Decimal`** per spec §5.1 — the
@@ -124,6 +130,10 @@ class AnalyticsStore:
         sums in `Decimal` and emits quantized JSON numbers at the boundary.
         SQL aggregation with `SUM()` would drift via float at the 12th decimal,
         below display precision but outside the spec contract.
+
+        `gateway_key` is an optional exact-match filter on the payload's
+        `gateway_key_id`. Like `/analytics/by_key`, it's bound through a SQL
+        placeholder; the HTTP handler additionally pre-validates the shape.
         """
         if group_by not in _COST_GROUP_BY_ALLOWED:
             raise InvalidGroupByError(group_by, _COST_GROUP_BY_ALLOWED)
@@ -131,6 +141,11 @@ class AnalyticsStore:
         # Whitelist-mapped SQL fragments. Never interpolate raw request.
         key_select, key_names, time_series = _cost_key_shape(group_by)
         prefix = f"{key_select}, " if key_select else ""
+        params: list = [window.start_us, window.end_us]
+        where_extra = ""
+        if gateway_key is not None:
+            where_extra = " AND json_extract(payload_json, '$.gateway_key_id') = ?"
+            params.append(gateway_key)
         sql = (
             f"SELECT {prefix}"
             "  json_extract(payload_json, '$.cost_usd') AS cost_usd, "
@@ -142,8 +157,9 @@ class AnalyticsStore:
             "FROM events "
             "WHERE type = 'llm.call_completed' "
             "  AND timestamp_us >= ? AND timestamp_us < ?"
+            f"{where_extra}"
         )
-        cursor = self._conn.execute(sql, (window.start_us, window.end_us))
+        cursor = self._conn.execute(sql, params)
 
         # Aggregate by composite key in Python. For `group_by=none`, every row
         # collapses into a single bucket keyed by `()`.
@@ -493,7 +509,8 @@ class AnalyticsStore:
             "  json_extract(payload_json, '$.output_tokens') AS output_tokens, "
             "  json_extract(payload_json, '$.cached_input_tokens') AS cached_input_tokens, "
             "  json_extract(payload_json, '$.cache_creation_input_tokens') "
-            "    AS cache_creation_input_tokens "
+            "    AS cache_creation_input_tokens, "
+            "  timestamp_us "
             "FROM events "
             "WHERE type = 'llm.call_completed' "
             "  AND timestamp_us >= ? AND timestamp_us < ?"
@@ -512,6 +529,7 @@ class AnalyticsStore:
                     "cached_input_tokens": 0,
                     "cache_creation_input_tokens": 0,
                     "call_count": 0,
+                    "_last_us": 0,
                     "_by_shape": {},  # shape → {"cost_usd": Decimal, "call_count": int}
                 }
                 aggregates[key_id] = agg
@@ -522,6 +540,9 @@ class AnalyticsStore:
             agg["cached_input_tokens"] += int(row["cached_input_tokens"] or 0)
             agg["cache_creation_input_tokens"] += int(row["cache_creation_input_tokens"] or 0)
             agg["call_count"] += 1
+            ts_us = int(row["timestamp_us"])
+            if ts_us > agg["_last_us"]:
+                agg["_last_us"] = ts_us
             shape = row["inbound_shape"]
             by_shape = agg["_by_shape"]
             shape_agg = by_shape.get(shape)
@@ -554,6 +575,10 @@ class AnalyticsStore:
                     "cached_input_tokens": agg["cached_input_tokens"],
                     "cache_creation_input_tokens": agg["cache_creation_input_tokens"],
                     "call_count": agg["call_count"],
+                    # Additive vs spec §4.8 — drives the dashboard's "last call"
+                    # column. Max timestamp of the per-key llm.call_completed
+                    # rows within the window, ISO 8601 UTC.
+                    "last_call_at": _us_to_iso(agg["_last_us"]),
                     "by_inbound_shape": by_shape_out,
                 }
             )

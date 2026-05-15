@@ -19,7 +19,7 @@ from typing import Any, Literal
 # Bump when the heuristic weights or signal set changes. The number lands in
 # every emitted EvalVerdict.rubric_version so consumers can detect a change.
 TURN_HEURISTIC_RUBRIC_ID = "turn-heuristic-v1"
-TURN_HEURISTIC_RUBRIC_VERSION = "1.0.0"
+TURN_HEURISTIC_RUBRIC_VERSION = "1.1.0"
 
 TOOL_CYCLE_HEURISTIC_RUBRIC_ID = "tool-cycle-heuristic-v1"
 TOOL_CYCLE_HEURISTIC_RUBRIC_VERSION = "1.0.0"
@@ -109,6 +109,12 @@ class TurnHeuristicConfig:
     weight_stop_reason_clean: float = 0.25
     weight_no_llm_failure: float = 0.25
     weight_no_tool_failure: float = 0.25
+    # `no_tool_exit_failure` distinguishes `tool.completed.success=False`
+    # (clean exit, nonzero return — e.g. shell tool's nonzero exit code) from
+    # `tool.failed` (uncaught Python exception). Sized so a single shell-tool
+    # failure drops a clean turn's score by >0.3 (1.0 → 1.0/1.5 ≈ 0.667),
+    # taking confidence below the v1 hybrid escalation threshold of 0.7.
+    weight_no_tool_exit_failure: float = 0.5
     weight_no_max_tokens_hit: float = 0.15
     weight_tool_cycle_reasonable: float = 0.10
     tool_cycle_threshold: int = 20
@@ -119,6 +125,7 @@ class TurnHeuristicConfig:
             self.weight_stop_reason_clean
             + self.weight_no_llm_failure
             + self.weight_no_tool_failure
+            + self.weight_no_tool_exit_failure
             + self.weight_no_max_tokens_hit
             + self.weight_tool_cycle_reasonable
         )
