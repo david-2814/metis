@@ -1,8 +1,16 @@
 # Provider Adapter Contract
 
-**Status:** Draft v1.1
-**Last updated:** 2026-05-08
+**Status:** Draft v1.2
+**Last updated:** 2026-05-14
 **Owner:** _your name_
+
+> **v1.2 changes:** `CanonicalResponse` returns `content: list[ContentBlock]`
+> + `model` + `provider` rather than a full `Message` (§3.3). The adapter
+> doesn't see the routing decision or the cost, so it returns the parts it
+> knows and the caller (`SessionManager`) assembles the final canonical
+> `Message`. Substitutability is unchanged: any two adapters returning the
+> same `(content, stop_reason, usage)` triple still produce identical
+> downstream `Message`s.
 
 > **v1.1 changes:** Clarified that streaming events emit to a separate
 > streaming-only channel, not through the bus (§5.1). Pinned `max_retries`
@@ -134,7 +142,9 @@ class CanonicalRequest:
 
 class CanonicalResponse:
     request_id: str
-    message: Message                 # the new ASSISTANT message; role is always ASSISTANT
+    model: str                       # canonical "provider:name" — the actual model that served the call
+    provider: str                    # adapter.name; for trace-side bookkeeping
+    content: list[ContentBlock]      # the assistant's reply blocks, in order
     stop_reason: StopReason
     usage: TokenUsage                # raw token counts, no cost
     latency_ms: int                  # wall-clock for the call
@@ -154,6 +164,17 @@ class TokenUsage:
     cache_creation_input_tokens: int = 0  # cache write (creates cache entry)
     # Cost is NOT reported here; computed by core from price table.
 ```
+
+The adapter returns `content` rather than a full `Message` because it does
+not own two of the required `Message` fields: the `RoutingDecisionRecord`
+(decided upstream by the routing engine) and `Usage.cost_usd` (computed by
+the core from the local price table per canonical-format §6.4). The caller
+(`SessionManager`) assembles the final `Message` by combining the adapter's
+`content` + `model` + `provider` with its own routing decision, cost
+computation, and id allocation. Adapters never see `Message` on the
+response side. Substitutability is unaffected: two adapters returning the
+same `(content, stop_reason, usage)` triple produce identical downstream
+`Message`s.
 
 ### 3.4 Capability declaration
 

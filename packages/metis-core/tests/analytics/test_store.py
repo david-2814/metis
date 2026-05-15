@@ -186,6 +186,64 @@ def test_cost_group_by_none_empty_returns_zeroed_object(seeded_db, window):
     assert data["call_count"] == 0
 
 
+def test_cost_group_by_gateway_key(seeded_db, now, window):
+    db_path, seeder = seeded_db
+    # Two gateway-stamped calls (key A), one (key B), one agent-loop call (null).
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        cost_usd="0.10",
+        input_tokens=100,
+        output_tokens=20,
+        latency_ms=1000,
+        gateway_key_id="gk_alpha",
+        inbound_shape="openai",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        cost_usd="0.05",
+        input_tokens=50,
+        output_tokens=10,
+        latency_ms=1000,
+        gateway_key_id="gk_alpha",
+        inbound_shape="anthropic",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-haiku-4-5",
+        provider="anthropic",
+        cost_usd="0.01",
+        input_tokens=20,
+        output_tokens=5,
+        latency_ms=200,
+        gateway_key_id="gk_beta",
+        inbound_shape="openai",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-haiku-4-5",
+        provider="anthropic",
+        cost_usd="0.02",
+        input_tokens=30,
+        output_tokens=5,
+        latency_ms=400,
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.cost(window, group_by="gateway_key")
+    by_key = {row["gateway_key_id"]: row for row in data}
+    assert by_key["gk_alpha"]["cost_usd"] == pytest.approx(0.15)
+    assert by_key["gk_alpha"]["call_count"] == 2
+    assert by_key["gk_beta"]["cost_usd"] == pytest.approx(0.01)
+    # Agent-loop traffic (no gateway_key_id stamp) keyed under None.
+    assert None in by_key
+    assert by_key[None]["cost_usd"] == pytest.approx(0.02)
+    # Result ordered by cost DESC.
+    assert data[0]["gateway_key_id"] == "gk_alpha"
+
+
 def test_cost_invalid_group_by_raises(seeded_db, window):
     db_path, _ = seeded_db
     with AnalyticsStore(db_path) as store:
@@ -796,6 +854,114 @@ def test_savings_stamped_vs_repriced_separation(seeded_db, now, window):
     assert data["actual_stamped_usd"] == pytest.approx(999.99)
     # Re-priced reflects the current table.
     assert data["actual_repriced_usd"] != pytest.approx(999.99)
+
+
+# ---- /analytics/by_key ----------------------------------------------------
+
+
+def test_by_key_rollup_per_gateway_key(seeded_db, now, window):
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        cost_usd="0.10",
+        input_tokens=100,
+        output_tokens=20,
+        latency_ms=1000,
+        gateway_key_id="gk_alpha",
+        inbound_shape="openai",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        cost_usd="0.05",
+        input_tokens=50,
+        output_tokens=10,
+        latency_ms=1000,
+        gateway_key_id="gk_alpha",
+        inbound_shape="anthropic",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-haiku-4-5",
+        provider="anthropic",
+        cost_usd="0.02",
+        input_tokens=30,
+        output_tokens=5,
+        latency_ms=200,
+        gateway_key_id="gk_beta",
+        inbound_shape="openai",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-haiku-4-5",
+        provider="anthropic",
+        cost_usd="0.03",
+        input_tokens=30,
+        output_tokens=5,
+        latency_ms=400,
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.by_key(window)
+    by_id = {row["gateway_key_id"]: row for row in data}
+    assert by_id["gk_alpha"]["cost_usd"] == pytest.approx(0.15)
+    assert by_id["gk_alpha"]["call_count"] == 2
+    shapes = {s["inbound_shape"]: s for s in by_id["gk_alpha"]["by_inbound_shape"]}
+    assert shapes["openai"]["call_count"] == 1
+    assert shapes["openai"]["cost_usd"] == pytest.approx(0.10)
+    assert shapes["anthropic"]["call_count"] == 1
+    # Null gateway_key (agent-loop traffic) rolls up under None.
+    assert by_id[None]["call_count"] == 1
+    # Sorted by cost DESC.
+    assert data[0]["gateway_key_id"] == "gk_alpha"
+
+
+def test_by_key_filter_exact_match(seeded_db, now, window):
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        cost_usd="0.10",
+        gateway_key_id="gk_alpha",
+        inbound_shape="openai",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-haiku-4-5",
+        provider="anthropic",
+        cost_usd="0.02",
+        gateway_key_id="gk_beta",
+        inbound_shape="openai",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.by_key(window, gateway_key="gk_alpha")
+    assert len(data) == 1
+    assert data[0]["gateway_key_id"] == "gk_alpha"
+
+
+def test_by_key_filter_uses_parameterized_sql(seeded_db, now, window):
+    """Even a hostile filter value goes through SQL placeholders, not interpolation."""
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        cost_usd="0.10",
+        gateway_key_id="gk_alpha",
+        inbound_shape="openai",
+    )
+    with AnalyticsStore(db_path) as store:
+        # The store doesn't validate the shape (that's the HTTP layer's job);
+        # it must safely pass any string through parameterized SQL.
+        data = store.by_key(window, gateway_key="DROP TABLE events")
+    assert data == []
+    # And the original event row is still present.
+    with AnalyticsStore(db_path) as store:
+        data = store.by_key(window)
+    assert len(data) == 1
 
 
 # ---- Cross-cutting --------------------------------------------------------

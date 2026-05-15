@@ -53,7 +53,7 @@ def _tool_use(name: str, **input: object) -> ToolUseBlock:
 
 
 async def test_memory_tools_registered(dispatcher: ToolDispatcher):
-    names = {d.name for d in dispatcher.get_definitions()}
+    names = {d.name for d in dispatcher.get_definitions_for_session()}
     assert names == {"memory_add", "memory_replace", "memory_consolidate"}
 
 

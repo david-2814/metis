@@ -36,6 +36,7 @@ _COST_GROUP_BY_ALLOWED: tuple[str, ...] = (
     "session",
     "day",
     "hour",
+    "gateway_key",
     "none",
 )
 _SESSIONS_ORDER_ALLOWED: tuple[str, ...] = ("cost", "recency")
@@ -456,6 +457,109 @@ class AnalyticsStore:
             "rows_missing_from_price_table": rows_missing,
         }
 
+    # ---- /analytics/by_key ------------------------------------------------
+
+    def by_key(
+        self,
+        window: TimeWindow,
+        *,
+        gateway_key: str | None = None,
+    ) -> list[dict]:
+        """Aggregate cost / tokens / call_count per `gateway_key_id`.
+
+        Rolls up `llm.call_completed` events by their stamped
+        `gateway_key_id` (gateway.md §6); rows that originated from the
+        in-process agent loop (CLI / TUI / `metis serve`) appear under
+        `gateway_key_id: null`. Each row also carries a `by_inbound_shape`
+        sub-array so operators can see openai- vs anthropic-shape volume
+        per key.
+
+        `gateway_key` is an optional exact-match filter. It is passed via
+        SQL parameter (never interpolated), so even hostile input is safe
+        — the HTTP layer additionally validates the shape and rejects
+        non-conforming values with a 400 before this method is called.
+        """
+        params: list = [window.start_us, window.end_us]
+        where_extra = ""
+        if gateway_key is not None:
+            where_extra = " AND json_extract(payload_json, '$.gateway_key_id') = ?"
+            params.append(gateway_key)
+        sql = (
+            "SELECT "
+            "  json_extract(payload_json, '$.gateway_key_id') AS gateway_key_id, "
+            "  json_extract(payload_json, '$.inbound_shape') AS inbound_shape, "
+            "  json_extract(payload_json, '$.cost_usd') AS cost_usd, "
+            "  json_extract(payload_json, '$.input_tokens') AS input_tokens, "
+            "  json_extract(payload_json, '$.output_tokens') AS output_tokens, "
+            "  json_extract(payload_json, '$.cached_input_tokens') AS cached_input_tokens, "
+            "  json_extract(payload_json, '$.cache_creation_input_tokens') "
+            "    AS cache_creation_input_tokens "
+            "FROM events "
+            "WHERE type = 'llm.call_completed' "
+            "  AND timestamp_us >= ? AND timestamp_us < ?"
+            f"{where_extra}"
+        )
+        aggregates: dict[str | None, dict] = {}
+        for row in self._conn.execute(sql, params):
+            key_id = row["gateway_key_id"]
+            agg = aggregates.get(key_id)
+            if agg is None:
+                agg = {
+                    "gateway_key_id": key_id,
+                    "cost_usd": Decimal("0"),
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cached_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "call_count": 0,
+                    "_by_shape": {},  # shape → {"cost_usd": Decimal, "call_count": int}
+                }
+                aggregates[key_id] = agg
+            cost = _coerce_decimal(row["cost_usd"])
+            agg["cost_usd"] += cost
+            agg["input_tokens"] += int(row["input_tokens"] or 0)
+            agg["output_tokens"] += int(row["output_tokens"] or 0)
+            agg["cached_input_tokens"] += int(row["cached_input_tokens"] or 0)
+            agg["cache_creation_input_tokens"] += int(row["cache_creation_input_tokens"] or 0)
+            agg["call_count"] += 1
+            shape = row["inbound_shape"]
+            by_shape = agg["_by_shape"]
+            shape_agg = by_shape.get(shape)
+            if shape_agg is None:
+                shape_agg = {"cost_usd": Decimal("0"), "call_count": 0}
+                by_shape[shape] = shape_agg
+            shape_agg["cost_usd"] += cost
+            shape_agg["call_count"] += 1
+
+        results: list[dict] = []
+        for agg in aggregates.values():
+            by_shape_out = sorted(
+                (
+                    {
+                        "inbound_shape": shape,
+                        "call_count": sub["call_count"],
+                        "cost_usd": _dec_to_json(sub["cost_usd"]),
+                    }
+                    for shape, sub in agg["_by_shape"].items()
+                ),
+                key=lambda r: r["cost_usd"],
+                reverse=True,
+            )
+            results.append(
+                {
+                    "gateway_key_id": agg["gateway_key_id"],
+                    "cost_usd": _dec_to_json(agg["cost_usd"]),
+                    "input_tokens": agg["input_tokens"],
+                    "output_tokens": agg["output_tokens"],
+                    "cached_input_tokens": agg["cached_input_tokens"],
+                    "cache_creation_input_tokens": agg["cache_creation_input_tokens"],
+                    "call_count": agg["call_count"],
+                    "by_inbound_shape": by_shape_out,
+                }
+            )
+        results.sort(key=lambda r: r["cost_usd"], reverse=True)
+        return results
+
     # ---- /analytics/quality -----------------------------------------------
 
     def quality(
@@ -601,6 +705,12 @@ def _cost_key_shape(group_by: str) -> tuple[str, tuple[str, ...], bool]:
         )
     if group_by == "session":
         return ("session_id", ("session_id",), False)
+    if group_by == "gateway_key":
+        return (
+            "json_extract(payload_json, '$.gateway_key_id') AS gateway_key_id",
+            ("gateway_key_id",),
+            False,
+        )
     if group_by == "day":
         return (
             "date(timestamp_us/1000000, 'unixepoch') AS bucket",

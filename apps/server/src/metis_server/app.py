@@ -157,6 +157,7 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         Route("/analytics/sessions", analytics_handlers.sessions, methods=["GET"]),
         Route("/analytics/turns/{turn_id}", analytics_handlers.turn, methods=["GET"]),
         Route("/analytics/savings", analytics_handlers.savings, methods=["GET"]),
+        Route("/analytics/by_key", analytics_handlers.by_key, methods=["GET"]),
         Route("/analytics/quality", analytics_handlers.quality, methods=["GET"]),
         WebSocketRoute("/sessions/{session_id}/stream", _stream),
         # Dashboard SPA — vanilla HTML + JS, served as static files from
@@ -235,7 +236,7 @@ async def _post_session(request: Request) -> Response:
             "workspace_path": session.workspace_path,
             "active_model": session.active_model,
             "created_at": session.created_at.isoformat(),
-            "routing_policy_version": None,
+            "routing_policy_version": st.runtime.manager.routing_policy_version(),
         },
         status=201,
     )
@@ -281,7 +282,7 @@ async def _get_session(request: Request) -> Response:
             "id": session.id,
             "workspace_path": session.workspace_path,
             "active_model": session.active_model,
-            "routing_policy_version": None,
+            "routing_policy_version": st.runtime.manager.routing_policy_version(),
             "cost_so_far_usd": session.cost_so_far_usd,
             "turn_count": session.turn_count,
             "current_turn_id": None,

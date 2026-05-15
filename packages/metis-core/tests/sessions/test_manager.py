@@ -327,6 +327,22 @@ async def test_unknown_alias_raises_before_llm_call(bus, event_log, workspace):
     assert adapter.requests == []
 
 
+async def test_bare_alias_with_no_body_raises_override_error(bus, event_log, workspace):
+    """Per routing-engine.md §9.2, `@<alias>` must be followed by whitespace +
+    body. A bare `@haiku` is malformed and the turn does not start."""
+    from metis_core.sessions import OverrideError
+
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    with pytest.raises(OverrideError) as excinfo:
+        await manager.submit_turn(session.id, "@haiku")
+    await bus.drain()
+    await bus.stop()
+    assert excinfo.value.alias == "haiku"
+    assert adapter.requests == []
+
+
 async def test_set_active_model_changes_sticky(bus, event_log, workspace):
     adapter = _ScriptedAnthropicAdapter(
         [

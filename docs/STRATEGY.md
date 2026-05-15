@@ -17,6 +17,24 @@ This doc captures the **why** behind the project — the kind of context an AI a
 
 The order of impact on a typical workload is **context > skills > model selection**. The current implementation has the inverse priority — routing is most built, skills exist as a Phase 2 wedge, the context-assembler is still architectural-diagram-only. This is a known mismatch to resolve.
 
+**Model-selection lever calibration (2026-05-14, §A3 finding):** the
+benchmark's `savings_pct` (66.7%) is the structural haiku-vs-sonnet
+rate-card ratio — multiply equal token counts by either rate and the
+ratio is fixed. It does not reflect a quality-weighted choice. Pass C
+of [`benchmarks/RESULTS.md §A3`](../benchmarks/RESULTS.md) is the first
+benchmark run where routing slot 4 (`PATTERN_RECOMMENDATION`) fires on
+17 of 18 turns, and it picks haiku on every single one — including the
+regex turn that produced "FAIL 15/16." Cost-per-quality-unit for Pass C
+is **$0.0477** (mid-suite haiku $0.0306, sonnet $0.1005), the same as
+single-model haiku would produce. The model-selection lever's
+*claimed* ceiling depends on slot 4 inverting when haiku fails; A3
+shows that inversion is currently blocked by two specific gaps (v1
+heuristic doesn't read `tool.completed.success=False`; the online
+subscriber doesn't forward `assistant_response_text` for the LLM
+judge). Until those land, the headline `savings_pct` should be quoted
+as "rate-card savings *given haiku succeeds*," not "savings on
+successful work."
+
 ## 2. Buyer ≠ user
 
 **The buyer is the budget owner — an engineering leader or CTO. The user is the dev who runs `metis chat` (or whatever the eventual surface is).**
@@ -84,6 +102,7 @@ Implication: the moat is execution speed + opinionated defaults + the FTS5/finge
 | 2026-05-14 | Pattern store mechanics specced | Specced in [`docs/specs/pattern-store.md`](specs/pattern-store.md). Per-workspace bounded SQLite store at `<workspace>/.metis/patterns.db`; structural-only v1 fingerprint (file extensions / tool names / side-effect classes / token bucket / intent regex tags); 5k soft / 10k hard / 180-day caps with hard-cap auto-evict (asymmetric with memory-store because pattern writes are mechanical projections); K-NN retrieval with weighted Jaccard + sample-size-weighted cluster aggregation implementing routing-engine §5.5 verbatim; three new `pattern.*` event types pending catalog addition at Phase 2.5 implementation. Embedding-provider-abstract; v2 hybrid lands data-only. Closes §6.6. |
 | 2026-05-14 | Evaluator scope specced | Specced in [`docs/specs/evaluator.md`](specs/evaluator.md). Heuristic-first / hybrid-LLM-as-judge feedback loop across four subject kinds (turn / tool_cycle / session / workload). `EvalVerdict` carries a single `score` in `[0, 1]` plus `confidence` gate, opaque `signals` dict, versioned rubric; cost-capped (per-session $0.10 / per-day $1.00 defaults) and append-only (re-evaluation produces new verdicts, not mutations). Pattern store consumes verdicts async via `PatternStore.update_score(turn_id, ...)`; latest-verdict join is `MAX(eval_id)` per subject (reconciliation sweep 2026-05-14). One new `/analytics/quality` endpoint + additive `include_eval` on `/analytics/cost` to land at Phase 3 implementation. Closes §6.7. |
 | 2026-05-14 | Pattern-store ↔ evaluator reconciliation pinned | See `docs/specs/CHANGES.md` "2026-05-14 — Pattern-store ↔ evaluator reconciliation sweep" for the five pinned items: verdict shape (evaluator owns), async timing via `update_score()` joined on `turn_id`, confidence-gate filter in pattern-store config with default `0.5`, sample-size-weighted mean clarified in routing-engine §5.5, `MAX(eval_id)` as latest-verdict rule documented in pattern-store §10.4. |
+| 2026-05-14 | §A3 documents the model-selection lever's current ceiling | [`benchmarks/RESULTS.md §A3`](../benchmarks/RESULTS.md) — first three-pass benchmark where slot 4 fires on essentially every turn (17 of 18) reading cross-model outcomes; result: still picks haiku everywhere. Pass C cost-per-quality-unit `$0.0477` is the same shape as single-model haiku; the differentiator does not invert under hybrid-0.7 + the v1 heuristic + the current `signals_extra` plumbing. Identifies two follow-up unblocks (heuristic learns `tool.completed.success=False`; bus subscriber forwards `assistant_response_text` to the LLM judge), either sufficient alone. Adjusts §1's quoted savings posture to "rate-card savings *given haiku succeeds*." Total experiment spend: $1.026. |
 | 2026-05-14 | Gateway v1 shipped | Transparent HTTP gateway ([`apps/gateway/`](../apps/gateway/)) exposes `POST /v1/chat/completions` (OpenAI shape) and `POST /v1/messages` (Anthropic shape), each in sync + SSE flavors, routed via `metis_core.routing.RoutingEngine` with `gateway_key_id` + `inbound_shape` stamped on every `llm.call_completed` / `turn.completed`. Per-request stateless (no session manager / tool dispatcher / memory store / skill loader); loopback-only bind. `metis gateway issue-key` creates keys; the keystore stores SHA-256 hashes, the plaintext token is printed once. Live-validated on 2026-05-14 at ~$0.0002 / 4 calls (OpenAI + Anthropic shapes, sync + SSE) with per-key cost roll-up confirmed via direct SQL on the trace DB. This is the §3 hybrid's "gateway first" leg in production-shape; §6.3 (local-first vs SaaS) **remains open** — the gateway can be deployed in either posture and no GTM evidence has pinned the choice. Follow-on: the `group_by=gateway_key` dimension on `/analytics/cost` (gateway.md §V) is not yet wired; per-key analytics today requires direct SQL. |
 
 ## 6. Open questions (decisions deferred)

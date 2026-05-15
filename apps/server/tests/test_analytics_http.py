@@ -395,3 +395,122 @@ async def test_dashboard_assets_set_no_cache(seeded_client):
         r = await seeded_client.get(path)
         assert r.status_code == 200
         assert r.headers.get("cache-control") == "no-cache", path
+
+
+# ---- /analytics/cost?group_by=gateway_key + /analytics/by_key -------------
+
+
+@pytest.fixture
+async def gateway_seeded_client(runtime, now):
+    """Seeds llm.call_completed rows with `gateway_key_id` / `inbound_shape`."""
+    db_path: Path = runtime.db_file
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn.executescript(_SCHEMA)
+
+    def _insert(seq: int, *, gateway_key_id: str | None, inbound_shape: str | None, cost: str):
+        payload: dict = {
+            "model": "anthropic:claude-sonnet-4-6",
+            "provider": "anthropic",
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cached_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cost_usd": cost,
+            "pricing_version": "test-1",
+            "latency_ms": 500,
+            "stop_reason": "end_turn",
+            "produced_tool_calls": 0,
+            "produced_thinking_blocks": 0,
+        }
+        if gateway_key_id is not None:
+            payload["gateway_key_id"] = gateway_key_id
+        if inbound_shape is not None:
+            payload["inbound_shape"] = inbound_shape
+        conn.execute(
+            "INSERT INTO events "
+            "(id, timestamp_us, session_id, turn_id, parent_event_id, type, "
+            " actor, sensitivity, payload_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                f"01HZK{seq:020d}",
+                _to_micros(now),
+                "sess_gw",
+                f"turn_gw_{seq}",
+                None,
+                "llm.call_completed",
+                "agent",
+                "pseudonymous",
+                json.dumps(payload),
+            ),
+        )
+
+    _insert(1, gateway_key_id="gk_alpha", inbound_shape="openai", cost="0.10")
+    _insert(2, gateway_key_id="gk_alpha", inbound_shape="anthropic", cost="0.05")
+    _insert(3, gateway_key_id="gk_beta", inbound_shape="openai", cost="0.02")
+    _insert(4, gateway_key_id=None, inbound_shape=None, cost="0.03")
+    conn.close()
+
+    app = build_app(runtime)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+        yield c
+
+
+async def test_cost_group_by_gateway_key_returns_rows(gateway_seeded_client):
+    r = await gateway_seeded_client.get("/analytics/cost", params={"group_by": "gateway_key"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    by_id = {row["gateway_key_id"]: row for row in body["data"]}
+    assert by_id["gk_alpha"]["cost_usd"] == pytest.approx(0.15)
+    assert by_id["gk_alpha"]["call_count"] == 2
+    assert by_id["gk_beta"]["call_count"] == 1
+    # Agent-loop traffic surfaces under null.
+    assert None in by_id
+    assert by_id[None]["cost_usd"] == pytest.approx(0.03)
+
+
+async def test_by_key_endpoint_round_trip(gateway_seeded_client):
+    r = await gateway_seeded_client.get("/analytics/by_key")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "window" in body
+    assert "current_pricing_version" in body
+    by_id = {row["gateway_key_id"]: row for row in body["data"]}
+    alpha = by_id["gk_alpha"]
+    assert alpha["cost_usd"] == pytest.approx(0.15)
+    assert alpha["call_count"] == 2
+    shapes = {s["inbound_shape"]: s for s in alpha["by_inbound_shape"]}
+    assert shapes["openai"]["cost_usd"] == pytest.approx(0.10)
+    assert shapes["anthropic"]["cost_usd"] == pytest.approx(0.05)
+    # gk_alpha is first (cost DESC).
+    assert body["data"][0]["gateway_key_id"] == "gk_alpha"
+
+
+async def test_by_key_endpoint_filter_returns_one_key(gateway_seeded_client):
+    r = await gateway_seeded_client.get(
+        "/analytics/by_key",
+        params={"gateway_key": "gk_alpha"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["gateway_key_id"] == "gk_alpha"
+
+
+async def test_by_key_endpoint_sql_injection_guard(gateway_seeded_client):
+    r = await gateway_seeded_client.get(
+        "/analytics/by_key",
+        params={"gateway_key": "DROP TABLE"},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_gateway_key"
+
+
+async def test_by_key_endpoint_sql_injection_guard_special_chars(gateway_seeded_client):
+    """A semicolon-laced value is also rejected at the HTTP boundary."""
+    r = await gateway_seeded_client.get(
+        "/analytics/by_key",
+        params={"gateway_key": "gk_alpha'; DROP TABLE events; --"},
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_gateway_key"

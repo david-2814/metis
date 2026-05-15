@@ -15,9 +15,13 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import jsonschema
 import msgspec
+
+if TYPE_CHECKING:
+    from metis_core.sessions.store import Session
 
 from metis_core.canonical.content import TextBlock, ToolResultBlock, ToolUseBlock
 from metis_core.canonical.ids import next_monotonic_ulid
@@ -156,7 +160,15 @@ class ToolDispatcher:
         server-api.md §4.2."""
         self._confirmation_handler = handler
 
-    def get_definitions(self) -> list[ToolDefinition]:
+    def get_definitions_for_session(self, session: Session | None = None) -> list[ToolDefinition]:
+        """Return tool definitions visible to this session.
+
+        Per tool-dispatcher.md §3.4, this is the surface that filters out
+        tools a worker session shouldn't see (memory tools per
+        routing-engine.md §6.2.1). v1 returns all registered tools; the
+        session arg is accepted so callers don't get rewritten when worker
+        filtering lands.
+        """
         return [r.definition for r in self._registry.values()]
 
     # ---- Dispatch ------------------------------------------------------

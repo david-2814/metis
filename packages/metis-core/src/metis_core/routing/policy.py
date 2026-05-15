@@ -208,6 +208,11 @@ class RoutingPolicy:
     rules: tuple[Rule, ...]
     workspaces: tuple[WorkspaceScope, ...]
     source_path: str | None = None  # for /rules check display; None for in-memory
+    # Opaque per-load identifier surfaced by `GET /sessions/{id}` so the SPA
+    # / clients can label "rules vN" and notice when the active policy
+    # changes. Computed from the raw yaml content at parse time; `None` for
+    # `EMPTY_POLICY` and other in-memory fixtures that don't carry a source.
+    version: str | None = None
 
     def workspace_for(self, workspace_path: str) -> WorkspaceScope | None:
         """Best-match workspace scope for a given absolute workspace path.

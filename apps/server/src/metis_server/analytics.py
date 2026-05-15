@@ -12,6 +12,7 @@ but the SPA's expected concurrency is well within the loopback v1 envelope).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import msgspec
@@ -30,6 +31,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from metis_server.errors import (
+    invalid_gateway_key,
     invalid_group_by,
     invalid_limit,
     invalid_order,
@@ -37,6 +39,14 @@ from metis_server.errors import (
     turn_not_found,
     unknown_baseline_model,
 )
+
+# Gateway key ids are `gk_<ULID>` (issue_key.py); Crockford-base32 ULIDs are
+# 26 chars of `[0-9A-HJKMNP-TV-Z]`. We accept a slightly looser charset so
+# tests and ad-hoc tooling can use synthetic ids without lying about the
+# format. Anything outside this character set or longer than the cap is
+# rejected at the HTTP boundary — even though the SQL is parameterized,
+# pre-validating keeps the surface defensive in depth.
+_GATEWAY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 
 
 def _store(request: Request) -> AnalyticsStore:
@@ -138,6 +148,22 @@ async def savings(request: Request) -> Response:
     except UnknownBaselineModelError as exc:
         raise unknown_baseline_model(exc.model_id) from exc
     return _json(_envelope(window, pricing.version, data))
+
+
+async def by_key(request: Request) -> Response:
+    """GET /analytics/by_key (gateway.md §6 / analytics-api.md §4.8).
+
+    Per-(gateway_key_id) cost + tokens + call_count rollup, with an
+    `by_inbound_shape` sub-array per row. Rows for in-process agent traffic
+    (no `gateway_key_id` stamp) appear with `gateway_key_id: null`. Sorted
+    by `cost_usd` DESC.
+    """
+    window = _resolve_window_from_query(request)
+    gateway_key = request.query_params.get("gateway_key")
+    if gateway_key is not None and not _GATEWAY_KEY_PATTERN.match(gateway_key):
+        raise invalid_gateway_key(f"gateway_key={gateway_key!r} does not look like a valid key id")
+    data = _store(request).by_key(window, gateway_key=gateway_key)
+    return _json(_envelope(window, _pricing(request).version, data))
 
 
 async def quality(request: Request) -> Response:

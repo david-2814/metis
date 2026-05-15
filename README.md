@@ -31,6 +31,27 @@ Sanity-check the full loop against the real API in under a minute (~$0.015 with 
 uv run python scripts/smoke.py --model haiku
 ```
 
+## Try it — transparent gateway in Docker
+
+Want to drop Metis in front of an existing OpenAI / Anthropic SDK client without changing any code? The gateway is the high-floor adoption path from [`docs/STRATEGY.md §3`](docs/STRATEGY.md) — buyer flips one env var, savings show up on the dashboard within hours.
+
+```bash
+cp .env.example .env && $EDITOR .env   # set ANTHROPIC_API_KEY
+docker compose run --rm gateway issue-key --name "my-client" --workspace /workspace
+docker compose up -d
+curl http://127.0.0.1:8422/healthz
+```
+
+Full deployment reference (env vars, volumes, key rotation, TLS termination, cost attribution) at [`docs/gateway-deployment.md`](docs/gateway-deployment.md).
+
+## Buyer trial
+
+Once the gateway is up, point your devs' existing tools at it: flip
+`ANTHROPIC_BASE_URL` (Claude Code) or `OPENAI_BASE_URL` (Cursor, openai-python)
+to the gateway URL, hand over a `gw_…` key, and every turn is cost-stamped per
+dev, per project — no client code changes. End-to-end recipe (Claude Code,
+Cursor, raw curl/SDK) at [`docs/gateway-client-quickstart.md`](docs/gateway-client-quickstart.md).
+
 ## What it is
 
 Metis is a developer-oriented AI assistant that runs as a small Python server on your localhost, with thin clients (terminal first; desktop and web later). It sits between Claude Desktop (chat) and Cursor (editor-coupled) in scope — a workspace-aware agent that:

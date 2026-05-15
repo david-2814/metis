@@ -141,9 +141,24 @@ def _tool_use(name: str, **input: object) -> ToolUseBlock:
 async def test_register_and_unregister(bus: EventBus, workspace: Path):
     d = ToolDispatcher(bus)
     d.register(_EchoTool)
-    assert "echo" in {td.name for td in d.get_definitions()}
+    assert "echo" in {td.name for td in d.get_definitions_for_session()}
     d.unregister("echo")
-    assert d.get_definitions() == []
+    assert d.get_definitions_for_session() == []
+
+
+async def test_get_definitions_for_session_accepts_session_arg(bus: EventBus):
+    """Spec §3.4: the surface takes a session so worker-session filtering
+    can land later without rewriting callers (per routing-engine.md §6.2.1).
+    v1 ignores the arg and returns all tools; the signature must accept it.
+    """
+    from metis_core.sessions.store import Session
+
+    d = ToolDispatcher(bus)
+    d.register(_EchoTool)
+    session = Session(id="ses_test", workspace_path="/tmp", active_model=None)
+    assert {td.name for td in d.get_definitions_for_session(session)} == {"echo"}
+    # And the same call with no arg still works (default None).
+    assert {td.name for td in d.get_definitions_for_session()} == {"echo"}
 
 
 async def test_duplicate_registration_rejected(bus: EventBus):
@@ -244,7 +259,7 @@ async def test_builtins_and_memory_tools_still_register(bus: EventBus):
     d = ToolDispatcher(bus)
     register_builtins(d)
     register_memory_tools(d)
-    names = {td.name for td in d.get_definitions()}
+    names = {td.name for td in d.get_definitions_for_session()}
     assert {"read_file", "write_file", "patch_file", "list_dir", "shell"} <= names
     assert {"memory_add", "memory_replace", "memory_consolidate"} <= names
 

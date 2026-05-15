@@ -133,3 +133,7 @@ def unknown_baseline_model(model: str) -> APIError:
         400,
         f"baseline model {model!r} is not in the current price table",
     )
+
+
+def invalid_gateway_key(message: str) -> APIError:
+    return APIError("invalid_gateway_key", 400, message)

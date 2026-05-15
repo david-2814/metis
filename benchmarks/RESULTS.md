@@ -1115,6 +1115,222 @@ jq '.workloads[] | {name, quality_score, assertion_failures, actual_repriced_usd
 # (iter1 of regex, iter2 of mfr, plus the shipped runs) totaled $0.85.
 ```
 
+### Third diversity workload: `architectural-explanation-without-hallucination`
+
+**Date (UTC):** 2026-05-14
+**Test baseline:** 1101 passed (`uv run pytest -q`; +1 over the prior
+1100 from updating `test_shipped_workloads_load_clean` to include the
+new fixture name).
+**Total validation spend:** ~$0.19 (heuristic haiku $0.039 + heuristic
+sonnet $0.126 + hybrid-haiku $0.012 + llm-haiku $0.012; cache fired on
+the later runs).
+**JSON artifacts:**
+[`.runs/diversity-hallucination-haiku.json`](.runs/diversity-hallucination-haiku.json) (heuristic),
+[`.runs/diversity-hallucination-sonnet.json`](.runs/diversity-hallucination-sonnet.json) (heuristic),
+[`.runs/diversity-hallucination-haiku-hybrid.json`](.runs/diversity-hallucination-haiku-hybrid.json),
+[`.runs/diversity-hallucination-haiku-llm.json`](.runs/diversity-hallucination-haiku-llm.json).
+
+#### Motivation
+
+The original 5b-4 brief asked for 2-3 diverse workloads; Wave 5
+shipped two (regex, mfr) and **explicitly rejected** this third one
+above ("the v1 heuristic judge only checks substring *presence*, not
+absence, so it cannot penalize hallucinated class names; the workload
+would have measured omission, not fabrication"). Since then the
+hybrid + LLM judge tiers shipped, and Wave 6a-1 wired
+`--judge {hybrid,llm}` flags into the benchmark harness — so the
+hallucination dimension is in principle reachable now. This
+sub-section ships the workload, validates against haiku and sonnet
+under all three judge modes, and reports what each judge tier
+actually sees.
+
+#### What ships
+
+A new fixture under
+[`workloads/architectural-explanation-without-hallucination/`](workloads/architectural-explanation-without-hallucination/):
+
+- **Workspace:** a snapshot of `packages/metis-core/src/metis_core/routing/`
+  copied under `workspace/routing/` (11 files, no `__pycache__`).
+- **Prompt:** one turn asking the agent to explain the 7-slot routing
+  chain and reference at least four real class/function/enum names
+  from the source, citing the file each lives in.
+- **Heuristic assertions:** turn-level `contains_substring: "RoutingEngine"`
+  (the central class) and workload-level
+  `expect_substring_in_final_response: "PATTERN_RECOMMENDATION"` (a
+  distinctive UPPERCASE slot label that appears in `routing/engine.py`'s
+  module docstring at line 8).
+- **`evaluate.rubric: hybrid`** with `llm_judge_model: anthropic:claude-haiku-4-5`
+  — accepted by the schema; reachable today via
+  `scripts/benchmark.py --judge {hybrid,llm}` (6a-1's wiring) or the
+  default heuristic.
+- **`expect.max_total_cost_usd: 0.20`** — single turn, ~6 tool calls
+  for reading the routing source.
+
+#### Heuristic-judge results (default)
+
+| Model  | Quality | Conf. | LLM calls | Tool calls | `actual_repriced_usd` | Turn-level heuristic | Workload-level signal |
+|--------|--------:|------:|----------:|-----------:|----------------------:|---------------------:|----------------------|
+| haiku  | **1.00** | 0.80 | 4         | 6          | $0.0394               | 1.00 @ 0.90           | `expected_substring_present` |
+| sonnet | **0.50** | 0.80 | 4         | 7          | $0.1257               | 1.00 @ 0.90           | `expected_substring_missing` (no literal "PATTERN_RECOMMENDATION") |
+
+By the brief's numeric test (delta of 0.5), the workload **does
+discriminate**. But the direction is **inverted from the intended
+axis** — see next section.
+
+#### Critical caveat: the discrimination is stylistic, not hallucination
+
+A side-by-side grep of grounding tokens in each model's final response
+(reading the trace DB's `messages` table directly):
+
+| Grounding token                  | haiku | sonnet |
+|----------------------------------|:-----:|:------:|
+| `RoutingEngine` (engine.py)      | ✓     | ✓      |
+| `ModelRegistry` (registry.py)    | ✓     | ✓      |
+| `AvailabilityState` (availability.py) | ✓ | ✓      |
+| `_evaluate_pattern` (engine.py)  | ✓     | ✓      |
+| `_build_chain`, `_validate`      | ✓     | ✓      |
+| `TurnContext` (context.py)       | ✓     | ✓      |
+| `ProviderAvailability`           | ✓     | ✓      |
+| `PatternConfig` (policy.py)      | ✓     | ✓      |
+| `RoutingError` (engine.py)       | ✓     | ✓      |
+| `PolicyEvaluation` (real dataclass) | ✗  | **✓**  |
+| `RoutingDecision`                | ✗     | **✓**  |
+| Real lowercase `policy=` strings (`"per_message_override"`, `"manual_sticky"`, `"rule"`, `"pattern"`, `"global_default"`) | ✗ | **✓** |
+| `PATTERN_RECOMMENDATION` (the docstring UPPERCASE label at engine.py:8) | **✓** | ✗ |
+
+**Sonnet's response is more grounded by every measure except the
+substring we picked**. Sonnet cited the real `PolicyEvaluation` /
+`RoutingDecision` dataclasses, the real lowercase `policy=` string
+literals used in actual events, and the same `RoutingEngine` /
+`ModelRegistry` / `AvailabilityState` symbols haiku used. Haiku
+parroted the UPPERCASE_SLOT_LABEL convention from engine.py's module
+docstring; sonnet rendered slot names lowercase the way the
+`policy=` field literally serializes.
+
+The substring `PATTERN_RECOMMENDATION` is therefore a **stylistic
+fidelity check**, not a hallucination check. Neither model
+fabricated; the heuristic just rewards the one that copied the
+docstring convention.
+
+**This empirically confirms the 5b-4 design note** that motivated
+rejecting this workload in the first place: substring presence is
+not the right primitive for fabrication.
+
+#### Hybrid + LLM judge tiers can't fix this yet (validation finding)
+
+Re-ran haiku under `--judge hybrid --judge-escalation-threshold 0.9`
+(forcing escalation since the heuristic confidence sits at 0.9) and
+under `--judge llm` (always LLM). Per-turn LLM judge verdict:
+
+```
+score=0.5 confidence=0.3
+rationale: "Tool calls succeeded but user prompt and assistant
+            response unavailable, preventing assessment of whether
+            intent was met."
+```
+
+Workload-level LLM judge verdict:
+
+```
+score=0.0 confidence=1.0
+rationale: "Cannot evaluate without user prompt and assistant
+            response; both marked unavailable."
+```
+
+The LLM judge expects `SubjectContext.signals_extra.user_prompt_text`
+and `assistant_response_text` (see
+`packages/metis-core/src/metis_core/eval/llm_judge.py:505-533`), and
+the test suite under `packages/metis-core/tests/eval/test_llm_judge.py`
+plumbs them through. **Production code paths (session manager /
+evaluator subscriber) do not.** A grep across `packages/metis-core/`
+finds those keys only in the tests and in the consumer.
+
+So 6a-1's `--judge {hybrid,llm}` wiring is **structurally complete
+but functionally inert** for this workload — the LLM is asked to
+evaluate something it can't see. The fix is a small change in the
+session manager (or the evaluator subscriber) to populate
+`signals_extra.user_prompt_text` and `assistant_response_text` in
+the `turn.completed` event. Outside this wave's scope
+(`packages/metis-core/` is locked); flagged for a follow-up wave.
+
+#### What we're shipping anyway, and why
+
+The workload **is shipped** even though its current discrimination
+signal is brittle, because:
+
+1. **It is a forward-compatible asset.** Once the
+   `signals_extra.user_prompt_text` plumbing lands, the same fixture
+   re-runs under `--judge hybrid` and yields a real hallucination
+   verdict. No fixture change needed.
+2. **It's the only fixture in the suite that puts the heuristic /
+   LLM-judge gap under load.** Run-3's other five workloads don't
+   exercise hallucination at all — they exercise objective task
+   completion (regex passing, pytest passing, files edited). Pattern
+   store + evaluator analytics gain a workload where the *judge tier*
+   is the load-bearing knob.
+3. **It empirically validates the 5b-4 design note** with concrete
+   numbers (1.00 vs 0.50 in the *wrong* direction).
+4. **Cost is bounded** — heuristic mode adds ~$0.04 (haiku) /
+   ~$0.13 (sonnet) per run, well within the per-workload smoke
+   ceiling.
+
+#### Caveats specific to this workload
+
+- **`PATTERN_RECOMMENDATION` substring assertion is misleading** if
+  read at face value. The score-1.00-vs-0.50 delta inverts the actual
+  grounding quality. Operators reading this row should treat it as
+  "the agent named the docstring's slot labels using the docstring's
+  capitalization" — useful as a stylistic-fidelity sentinel, not a
+  hallucination probe.
+- **Pattern store impact is unclear.** This workload's structural
+  fingerprint (read-heavy, single turn) clusters near
+  `write-a-doc-from-notes`. A future wave that includes this fixture
+  in the K-NN sample may shift slot-4 recommendations on the doc
+  cluster; not yet measured.
+- **The harness's per-workload name column overflows** for
+  `architectural-explanation-without-hallucination` (47 chars vs the
+  format's 28-char field). The "turns" number butts right against
+  the workload name in the table print. Pre-existing rough edge
+  (also affects `multi-file-refactor-with-shared-types` at 37
+  chars); not touched here to avoid conflict with 6a-1's concurrent
+  harness changes.
+
+#### Reproduce
+
+```bash
+# Confirm test baseline.
+uv run pytest -q                                # expect 1101 passed
+
+# Heuristic mode (the shipped result).
+uv run python scripts/benchmark.py \
+    --workload architectural-explanation-without-hallucination \
+    --model haiku \
+    --db-path benchmarks/.runs/diversity-hallucination-haiku.db
+uv run python scripts/benchmark.py \
+    --workload architectural-explanation-without-hallucination \
+    --model sonnet \
+    --db-path benchmarks/.runs/diversity-hallucination-sonnet.db
+
+# Hybrid / LLM modes (currently inert per finding above; useful for
+# tracking the fix-it follow-up).
+uv run python scripts/benchmark.py \
+    --workload architectural-explanation-without-hallucination \
+    --model haiku --judge hybrid --judge-escalation-threshold 0.9 \
+    --db-path benchmarks/.runs/diversity-hallucination-haiku-hybrid.db
+uv run python scripts/benchmark.py \
+    --workload architectural-explanation-without-hallucination \
+    --model haiku --judge llm \
+    --db-path benchmarks/.runs/diversity-hallucination-haiku-llm.db
+
+# Inspect the eval.completed verdicts for any of the runs:
+sqlite3 benchmarks/.runs/diversity-hallucination-haiku-llm.db \
+    "SELECT type, json_extract(payload_json, '$.subject_kind'),
+            json_extract(payload_json, '$.judge_kind'),
+            json_extract(payload_json, '$.score'),
+            json_extract(payload_json, '$.signals.rationale_preview')
+     FROM events WHERE type='eval.completed'"
+```
+
 ---
 
 ## Run 3: post-§5.1 (minimum-cacheable-prefix rule wired)
@@ -1258,4 +1474,379 @@ system prompt.
 uv run pytest -q                                # expect 1038 passed
 uv run python scripts/smoke_cache.py --model haiku   # expect PASSED
 uv run python scripts/benchmark.py              # full 6-workload suite
+```
+
+---
+
+## Experiment A3: quality-differentiated routing under the LLM judge
+
+**Date (UTC):** 2026-05-14
+**Branch:** `2026-05-14`
+**Commit:** `1e0fe03` + dirty Wave-6 working tree
+**Test baseline:** 1101 passed (`uv run pytest -q`)
+**Total API spend (3 passes + retry):** **$1.026** under the per-call
+`smoke_eval.py` $0.0006 LLM-judge cost.
+**JSON artifacts:**
+[`.runs/a3-pass-a.json`](.runs/a3-pass-a.json) (haiku),
+[`.runs/a3-pass-b.json`](.runs/a3-pass-b.json) (sonnet),
+[`.runs/a3-pass-b-regex.json`](.runs/a3-pass-b-regex.json) (sonnet, regex-only retry — network-error recovery for pass B),
+[`.runs/a3-pass-c.json`](.runs/a3-pass-c.json) (no-active-model; slot 4 fires).
+**Shared patterns DB:** [`.runs/a3-patterns.db`](.runs/a3-patterns.db).
+
+### Motivation
+
+The §A1 caveat called out the structural ceiling on the original Run-2
+benchmark suite: every turn scored `success_score=1.0` under the v1
+heuristic, so slot 4's cluster aggregation
+(`(1 - cost_weight) * success_mean + cost_weight * cost_efficiency`,
+`cost_weight=0.3`) collapsed to "pick the cheaper model." A1 then
+asked: with the LLM-judge tier shipped in Wave 5 *and* the two
+discriminating diversity workloads (`regex-with-edge-cases` failure-prone
+on haiku, `multi-file-refactor-with-shared-types`) plus the
+hallucination workload from the diversity wave 2 section above, does
+slot 4 now *invert* and pick sonnet on the workloads where it succeeds
+where haiku fails?
+
+A3 is the first experiment to wire the hybrid judge end-to-end across
+both the per-turn evaluator subscriber and the workload-level
+evaluation, then run the three-pass cold/warm/slot-4 protocol against
+the full 7-workload suite (six prior + Agent 6a-5's hallucination
+fixture).
+
+### What ships in A3
+
+A minimal harness tweak in [scripts/benchmark.py](../scripts/benchmark.py)
+exposes three new CLI flags (no `metis-core` change):
+
+- `--judge {heuristic,hybrid,llm}` — chooses the per-turn evaluator
+  subscriber's `Judge` (heuristic by default for back-compat). When set
+  to `hybrid` or `llm`, the harness unregisters `setup_runtime()`'s
+  default `HeuristicJudge` and re-registers an `LLMJudge` /
+  `HybridJudge` against the same bus + trace store. The same factory
+  also feeds the workload-level `evaluate_workload_quality()` so both
+  tiers honor the flag.
+- `--judge-escalation-threshold` (default `0.7`) — passes through to
+  `HybridJudge(escalation_threshold=...)` (evaluator.md §5.3).
+- `--judge-model` (default `anthropic:claude-haiku-4-5`) — the LLM
+  judge's model id.
+
+This wires the LLM-tier infrastructure that has been on the bus since
+Wave 5 into the benchmark suite for the first time. No `metis-core`
+code was touched; the spec's invariants (heuristic-only fallback for
+`tool_cycle` / `session` subjects; per-session $0.10 / per-day $1.00
+budget caps; `signals.budget_exhausted` on overrun) ride through
+unchanged.
+
+### A3 protocol
+
+Three benchmark passes share a single `--patterns-db-path`. Each pass
+runs the full 7-workload suite under `--judge hybrid
+--judge-escalation-threshold 0.7`:
+
+| Pass | Flags                                                  | Goal                                                    |
+|------|--------------------------------------------------------|---------------------------------------------------------|
+| A    | `--model haiku  --patterns-db-path a3-patterns.db`     | Record haiku per-cluster outcomes (including failures). |
+| B    | `--model sonnet --patterns-db-path a3-patterns.db`     | Record sonnet outcomes against the same clusters.       |
+| C    | `--no-active-model --patterns-db-path a3-patterns.db`  | Slot 4 fires; reads A+B outcomes; picks per fingerprint.|
+
+### A3 transient failures
+
+Anthropic returned transient `Connection error` exceptions on two
+workloads, both during turn 3 of `multi-turn-refactor` (both passes A
+and B) and once on `regex-with-edge-cases` (pass B). The harness
+captures the error in `WorkloadResult.error` and continues with the
+remaining workloads; the partial pattern outcomes for the crashed
+session land in the DB with `success_score_count=0` because the
+evaluator subscriber didn't drain. A single retry of
+`regex-with-edge-cases` under sonnet (`a3-pass-b-regex.json`) recovered
+that workload for pass B; `multi-turn-refactor`'s 4-turn arc was not
+re-attempted because the K-NN aggregator is robust to a single missing
+model in a cluster (it falls back to the available outcomes).
+
+### A3 routing-chain breakdown
+
+| Pass            | Slot winners                         | Chosen models                     |
+|-----------------|--------------------------------------|-----------------------------------|
+| A (haiku)       | `manual_sticky` ×17                  | `claude-haiku-4-5` ×17            |
+| B (sonnet)      | `manual_sticky` ×15                  | `claude-sonnet-4-6` ×15           |
+| C (no active)   | **`pattern` ×17**, `global_default` ×1 | **`claude-haiku-4-5` ×18**        |
+
+Slot 4 (`pattern`) won **17 of 18** turn-routing decisions in Pass C —
+the routing chain is fully exercised and the K-NN aggregator returns a
+verdict on every cluster that has at least one neighbor. The single
+`global_default` win was a fingerprint with no usable neighbors.
+
+### A3 per-pass cost and quality
+
+| Workload                                          | A haiku $    | A q  | B sonnet $   | B q  | C mixed $    | C q  |
+|---------------------------------------------------|-------------:|-----:|-------------:|-----:|-------------:|-----:|
+| `architectural-explanation-without-hallucination` | 0.0354       | 1.00 | 0.1270       | 0.50 | 0.0420       | 1.00 |
+| `fix-a-bug-small`                                 | 0.0150       | 1.00 | 0.0346       | 1.00 | 0.0187       | 1.00 |
+| `intentionally-failing-task`                      | 0.0010       | 0.00 | 0.0029       | 0.00 | 0.0010       | 0.00 |
+| `multi-file-refactor-with-shared-types`           | 0.0533       | 1.00 | 0.1455       | 1.00 | 0.0635       | 1.00 |
+| `multi-turn-refactor`                             | (crashed)    |  —   | (crashed)    |  —   | 0.0790       | 1.00 |
+| `regex-with-edge-cases`                           | 0.0265       | 0.75 | 0.0954†      | 0.75 | 0.0312       | 0.25 |
+| `write-a-doc-from-notes`                          | 0.0142       | 1.00 | 0.0468       | 1.00 | 0.0149       | 1.00 |
+| **Suite total**                                   | **0.1454**   |      | **0.4522**   |      | **0.2504**   |      |
+
+† Pass B regex from the retry run (`a3-pass-b-regex.json`); the original pass B's regex crashed mid-turn.
+
+Quality scores above are the workload-level rubric verdicts (heuristic;
+the hybrid threshold 0.7 was not crossed by the workload-level
+heuristic's confidence either). Both haiku and sonnet score `0.75` on
+`regex-with-edge-cases` in passes A and B — haiku's pass-A run actually
+produced "**PASS 16/16**" but the harness's `max_tool_calls: 1`
+assertion on turn 3 docked the heuristic to 0.75 because the model
+made two tool calls (run + a grep summary). The pass-C run, on the
+same haiku model at `temperature=0.0`, instead produced "**FAIL
+15/16**" — the stochasticity caveat documented in Run 3 ("temperature
+0.0 is not strictly deterministic") shows up again here.
+
+### **The key table: Pass C `pattern.matched.chosen_model`**
+
+> "Pass C's `pattern.matched.chosen_model` per workload. Does it pick
+> sonnet on regex-edge-cases? Does it pick haiku on fix-a-bug-small?"
+
+Slot 4 fired on 17 of Pass C's 18 turn decisions. Every single one
+picked **haiku-4-5**. The `pattern` slot never chose sonnet — not on
+regex, not on the hallucination workload, not anywhere.
+
+The cluster aggregator's two typical verdicts:
+
+| Cluster shape                          | Haiku score | Sonnet score | Gap   | Winner |
+|----------------------------------------|------------:|-------------:|------:|--------|
+| Both models success_mean ≈ 1.0         | **1.000**   | 0.700        | 0.300 | haiku  |
+| Both models success_mean ≈ 0.75 (\*)   | **0.825**   | 0.525        | 0.300 | haiku  |
+
+The 0.300 gap in every cluster is the structural `cost_weight=0.3`
+contribution: when haiku and sonnet share the same `success_mean`, the
+cost-efficiency term hands haiku a flat 0.3-point advantage in every
+cluster (haiku is cheapest → cost_efficiency=1.0; sonnet most expensive
+→ cost_efficiency=0.0). `success_mean` would have to differ by
+**>0.428** (≈ 0.3 / 0.7) before sonnet could overcome that gap. It does
+not — see the next section for why.
+
+(\*) The 0.75 clusters are clusters that pulled in outcomes from the
+multi-turn-refactor connection-error sessions, which never got
+per-turn `eval.completed` updates, so the K-NN aggregator counted
+those rows at the pattern-store's initial `success_score_mean=0.0,
+success_score_count=0` value. Not a quality signal — a partial-write
+artifact from the transient network errors.
+
+### Why the differentiator does not fire
+
+This is the §A1 ceiling re-emerging in a different shape. With the
+LLM-judge tier now wired, the failure mode shifted:
+
+| Pass C eval.completed by `(subject_kind, judge_kind)` | Count | Mean score |
+|--------------------------------------------------------|------:|-----------:|
+| `(turn, heuristic)`                                    |    17 |       1.00 |
+| `(turn, hybrid)` (i.e. escalated to LLM)               |     **1** |       0.00 |
+| `(workload, heuristic)`                                |     7 |       0.75 |
+| `(tool_cycle, heuristic)`                              |    78 |       0.85 |
+
+Only **1 of 18** turn evaluations escalated to the LLM judge across
+Pass C (the single one was `intentionally-failing-task`'s refusal
+turn, where the heuristic's content-penalty path drops confidence to
+0.55 < 0.7). Every other turn — including the haiku regex turn 3 that
+**printed "FAIL 15/16"** — short-circuited at heuristic confidence
+≥ 0.9.
+
+The reason is mechanical:
+
+1. **`tool.completed.success=false` is not a v1 heuristic negative
+   signal.** The shell tool returns `ToolExecution(success=False, …)`
+   on non-zero exit, which the dispatcher emits as `tool.completed`
+   with `success=False`. The turn heuristic
+   ([eval/judge.py:154](../packages/metis-core/src/metis_core/eval/judge.py))
+   only checks for `tool.failed` events (raised on Python exceptions);
+   it doesn't read `tool.completed.success`. So haiku's regex turn 3
+   gets 5/5 positive lifecycle signals → confidence 0.9 → hybrid
+   short-circuits regardless of the runner's actual exit code.
+2. **The online subscriber doesn't forward enough text for the LLM
+   judge.** Even when the LLM judge does fire, its
+   `_build_user_message()` reads `signals_extra["user_prompt_text"]`
+   and `signals_extra["assistant_response_text"]`
+   ([eval/llm_judge.py:515-516](../packages/metis-core/src/metis_core/eval/llm_judge.py)),
+   but `SessionManager._emit_turn_completed` only stamps
+   `signals_extra={"final_response_text": …}`
+   ([sessions/manager.py:1346](../packages/metis-core/src/metis_core/sessions/manager.py)).
+   So the online LLM-judge prompt currently reads:
+
+   ```
+   USER PROMPT: (not available)
+   ASSISTANT FINAL RESPONSE: (not available)
+   TOOL ACTIVITY: ... (only the tool_name + success flag)
+   TURN LIFECYCLE: stop_reason=end_turn, tool_call_count=N
+   ```
+
+   Without the assistant text, the LLM judge has no way to spot a
+   `"FAIL 15/16"` final message vs `"PASS 16/16"`. (The smoke harness
+   `scripts/smoke_eval.py` works because *it explicitly* populates
+   `user_prompt_text` / `assistant_response_text` in
+   `signals_extra` — only the live bus path is impoverished.)
+
+Either single fix (heuristic learns `tool.completed.success=False`, or
+the signals_extra key is harmonized) would unblock the differentiator
+*for this fixture set*. Neither was in scope for A3.
+
+### Cost-per-success: the headline column
+
+`actual_$ / sum(quality_score)` for each pass (counting the workloads
+that completed; intentionally-failing-task's `score=0` is excluded as
+it would divide-by-zero):
+
+| Pass            | Sum quality (succeeded workloads) | $ spent | **Cost / quality-unit** |
+|-----------------|----------------------------------:|--------:|------------------------:|
+| A (haiku)       | 4.75 (5 of 6 working workloads)  | 0.1454  | **$0.0306**             |
+| B (sonnet)      | 4.50 (5 of 6 working workloads)  | 0.4522  | **$0.1005**             |
+| C (no active)   | 5.25 (7 of 7 workloads)           | 0.2504  | **$0.0477**             |
+
+Pass C's effective cost-per-quality-unit is **$0.0477** — between
+haiku ($0.0306) and sonnet ($0.1005), as expected when every turn
+picks haiku and the only differentiation comes from the suite's
+natural composition. **It is not the inverted-routing number A3 was
+designed to produce.** A successful differentiator would have lifted
+the haiku-leaning ratio on `regex-with-edge-cases` toward sonnet's
+without raising it on `fix-a-bug-small`.
+
+### Comparison to Run 3
+
+| Metric                                | Run 3 (haiku-only) | A3 Pass C (no active) |
+|---------------------------------------|-------------------:|----------------------:|
+| `actual_repriced_usd`                 | $0.180             | $0.250                |
+| `baseline_repriced_usd`               | $0.540             | $0.751                |
+| `savings_pct`                         | 66.7%              | 66.7%                 |
+| Slot 4 wins                           | (single-model run; chain blocked at slot 2) | **17 of 18 turns** |
+| Pattern store outcomes recorded       | 16                 | **34 (haiku + sonnet)** |
+| Quality differential at slot 4 input  | (all heuristic 1.0) | (still all heuristic 1.0) |
+| Chosen model on every turn            | haiku              | haiku                 |
+
+A3 succeeded in unblocking the routing chain — Pass C is the first
+benchmark run in this repo where slot 4 wins on essentially every turn
+and reads cross-model outcomes from the pattern store. **A3 did not
+succeed in making slot 4 prefer the higher-quality model on a
+workload class.** Run 3's `66.7%` headline is preserved exactly,
+which itself is the evidence that no quality-driven inversion happened.
+
+### A3 finding
+
+**The differentiator does not fire under hybrid-0.7 + the v1 heuristic
++ the current online signals_extra plumbing.** Slot 4 picks haiku on
+every workload — including the regex turn 3 where haiku produced
+"FAIL 15/16" — because:
+
+1. The per-turn heuristic doesn't penalize the underlying failure
+   (`tool.completed.success=False`), so the heuristic confidence
+   stays at 0.9 and the hybrid never escalates.
+2. The pattern store's outcome rows record `success_score=1.0` for
+   both haiku and sonnet on the regex cluster. Equal `success_mean` ⇒
+   the cost_efficiency tiebreaker hands haiku a flat 0.3-point margin
+   per cluster.
+3. The required `success_mean` gap for sonnet to overcome that
+   margin is `>0.428` (≈ `0.3 / 0.7`). The actual gap in the recorded
+   outcomes for this suite is `0.0`.
+
+The mechanism is wired correctly and observable end-to-end —
+`pattern.matched` events fire, `route.decided.chain` reports the
+`pattern` slot winning with the K-cluster's neighbor breakdown, the
+LLM judge does fire (once) when the heuristic confidence dips. But
+the *content* the mechanism is asked to differentiate on is
+indistinguishable to the v1 heuristic, and the LLM judge — which
+could read the difference — sees `(not available)` for the assistant
+response in the online path. The chain is plumbed; the input quality
+signal isn't.
+
+### What unblocks A3's null result
+
+Two independent paths, either of which is sufficient on its own:
+
+1. **Heuristic gains a `tool.completed.success=False` penalty.**
+   `metis-core/eval/judge.py::_evaluate_turn` would check the tool
+   completions' `success` flag (not just `tool.failed` events) and
+   add a `flags_negative.append("tool_returned_failure")` plus a
+   weight. This is a small one-file change in the metis-core that
+   would make the regex haiku turn 3 score ≈ 0.75 immediately on
+   heuristic, dropping confidence to 0.55 and triggering hybrid
+   escalation as a follow-on. Both knobs move in the right direction.
+2. **`signals_extra` carries `user_prompt_text` +
+   `assistant_response_text` from the bus subscriber.** The session
+   manager already has both — `TurnContext.user_message_text`
+   feeds the routing fingerprint, and `last_assistant_text` already
+   exists in the turn loop. Forwarding them on `turn.completed.payload
+   .signals_extra` would let the LLM judge actually see the
+   "FAIL 15/16" string. This is a metis-core sessions/manager.py
+   change, plus an evaluator/subscriber forwarding tweak. The
+   evaluator content-penalty path is the same one A2 wired via
+   `final_response_text`; this is its sibling.
+
+Either landed on its own would re-run A3 cleanly with cost in the same
+~$1 envelope and likely produce slot 4 picking sonnet on regex turn 3.
+Both deferred to a follow-up; not in scope for the A3 spec.
+
+### A3 caveats and what this experiment does NOT prove
+
+- **Per-fingerprint cluster sample sizes are small (4–6 each model).**
+  K-NN aggregation tolerates this, but a real production deployment
+  would accumulate samples over weeks/months. The 0.3-point cost-
+  efficiency tiebreaker would still dominate clusters with no quality
+  differential, regardless of sample size.
+- **Two transient network errors hit during pass B.** The regex retry
+  ran clean; `multi-turn-refactor` was left missing for both haiku and
+  sonnet's pass-A/B and only landed in pass C (haiku, via slot 4).
+  The cluster aggregator handled the gap (it picked haiku for
+  multi-turn-refactor in pass C), but the per-model sample for that
+  workload is asymmetric.
+- **The hallucination workload (`architectural-explanation-without-
+  hallucination`) showed sonnet scoring 0.50 vs haiku 1.00** in
+  Pass A vs Pass B — the *wrong* direction per the diversity-wave-2
+  section above. This is the same inversion that section already
+  flagged ("the heuristic's substring-presence check rewards the
+  *less* grounded model"). A3 inherits that limitation; the LLM judge
+  was not invoked on this workload either (confidence ≥ 0.7).
+- **`temperature=0.0` is non-deterministic in practice.** Haiku regex
+  turn 3 produced "PASS 16/16" in Pass A and "FAIL 15/16" in Pass C
+  — same model, same prompt, same temperature. The score-direction
+  finding (haiku < sonnet on regex) was not statistically
+  established by this single run.
+
+### Reproduce
+
+```bash
+# Confirm test baseline.
+uv run pytest -q                                   # expect 1101 passed
+
+# Confirm the LLM judge wire-up works against a real API.
+uv run python scripts/smoke_eval.py                # ~$0.001
+
+# A3: 3-pass experiment with hybrid judge (threshold 0.7).
+rm -f benchmarks/.runs/a3-patterns.db
+uv run python scripts/benchmark.py \
+  --model haiku  --patterns-db-path benchmarks/.runs/a3-patterns.db \
+  --db-path     benchmarks/.runs/a3-pass-a.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+uv run python scripts/benchmark.py \
+  --model sonnet --patterns-db-path benchmarks/.runs/a3-patterns.db \
+  --db-path     benchmarks/.runs/a3-pass-b.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+uv run python scripts/benchmark.py \
+  --no-active-model --patterns-db-path benchmarks/.runs/a3-patterns.db \
+  --db-path     benchmarks/.runs/a3-pass-c.db \
+  --judge hybrid --judge-escalation-threshold 0.7
+
+# Expect: ~17 pattern.matched events in pass C, all chose haiku-4-5.
+# Inspect the slot-4 verdicts:
+uv run python -c "
+import sqlite3, json, collections
+c = sqlite3.connect('benchmarks/.runs/a3-pass-c.db').cursor()
+slots = collections.Counter()
+chosen = collections.Counter()
+for r in c.execute(\"SELECT payload_json FROM events WHERE type='route.decided'\"):
+    p = json.loads(r[0])
+    chosen[p['chosen_model']] += 1
+    win = next((c for c in p.get('chain', []) if c.get('verdict') == 'chose'), None)
+    if win: slots[win['policy']] += 1
+print('slot winners:', dict(slots))
+print('chosen models:', dict(chosen))
+"
 ```

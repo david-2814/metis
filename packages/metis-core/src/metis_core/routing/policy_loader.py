@@ -22,6 +22,7 @@ Validation rules (§5.7):
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -98,7 +99,12 @@ def parse_policy_text(
         raise PolicyValidationError([f"yaml parse error: {exc}"], source=source_path) from exc
     if not isinstance(data, dict):
         raise PolicyValidationError(["routing policy root must be a mapping"], source=source_path)
-    return parse_policy(data, registry, source_path=source_path)
+    # Content-derived version surfaces via GET /sessions/{id} so the SPA can
+    # tell when the active routing.yaml has changed. Truncated sha256 of the
+    # raw yaml — opaque, stable across reloads of identical content, and
+    # changes whenever any rule, tier, or default is edited.
+    version = hashlib.sha256(raw_yaml.encode("utf-8")).hexdigest()[:12]
+    return parse_policy(data, registry, source_path=source_path, version=version)
 
 
 def parse_policy(
@@ -106,6 +112,7 @@ def parse_policy(
     registry: ModelRegistry,
     *,
     source_path: str | None = None,
+    version: str | None = None,
 ) -> RoutingPolicy:
     errors: list[str] = []
 
@@ -136,6 +143,7 @@ def parse_policy(
         rules=tuple(rules),
         workspaces=tuple(workspaces),
         source_path=source_path,
+        version=version,
     )
 
 

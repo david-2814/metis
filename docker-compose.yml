@@ -1,0 +1,49 @@
+# Metis transparent gateway — local-deployment shape.
+#
+# Uses `network_mode: host` so the gateway's loopback bind (127.0.0.1:8422,
+# v1 safety guarantee) is reachable from the host. This is the cleanest
+# fit for a single-tenant developer-laptop deployment; production-shape
+# deployments put a TLS terminator in the same network namespace. See
+# docs/gateway-deployment.md §"Production checklist" for the multi-service
+# pattern.
+#
+# Quickstart:
+#   1. cp .env.example .env  &&  edit ANTHROPIC_API_KEY (and friends)
+#   2. mkdir -p ./.metis-gateway/keys ./.metis-gateway/data
+#   3. docker compose run --rm gateway issue-key --name my-client --workspace /workspace
+#      (save the printed token)
+#   4. docker compose up
+#   5. curl http://127.0.0.1:8422/healthz
+#
+# Requires Linux or Docker Desktop ≥4.29 (host networking support on macOS).
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: infra/gateway/Dockerfile
+    image: metis-gateway:latest
+    container_name: metis-gateway
+    # host networking is required: the gateway forces 127.0.0.1 binds inside
+    # the container, so `docker run -p` port mapping cannot reach it. Sharing
+    # the host's network namespace makes the gateway's loopback the same as
+    # the host's loopback.
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      METIS_GATEWAY_HOST: "127.0.0.1"
+      METIS_GATEWAY_PORT: "${METIS_GATEWAY_PORT:-8422}"
+      METIS_GATEWAY_KEYSTORE: /etc/metis/keys.json
+      METIS_GATEWAY_DB_PATH: /var/lib/metis/metis.db
+      METIS_GATEWAY_GLOBAL_DEFAULT: "${METIS_GATEWAY_GLOBAL_DEFAULT:-anthropic:claude-sonnet-4-6}"
+    volumes:
+      # Keystore — persists issued keys across container restarts.
+      - ./.metis-gateway/keys:/etc/metis
+      # Trace DB — holds route.decided / llm.call_completed / turn.completed
+      # events tagged with gateway_key_id for cost attribution.
+      - ./.metis-gateway/data:/var/lib/metis
+      # Workspace the gateway routes for. Read-only because the gateway is
+      # per-request stateless — it does not write to the workspace.
+      - ${METIS_WORKSPACE:-./}:/workspace:ro
+    restart: unless-stopped

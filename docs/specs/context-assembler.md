@@ -1,12 +1,16 @@
 # Context Assembler Specification
 
-**Status:** Draft v2 (additive on v1)
+**Status:** Draft v3 (additive on v2; v2 additive on v1)
 **Last updated:** 2026-05-14
 **Scope:** v1 covers prompt-cache breakpoint placement; v2 (§5.1) adds
 a **minimum-cacheable-prefix** rule so the cached prefix tokenizes above
-the per-model cache floor on *every* session, not just long ones. The full
-context-assembler design (skill activation, history compression, behavior
-near the context window) is a later spec — see [`STRATEGY.md §6.5`](../STRATEGY.md).
+the per-model cache floor on *every* session, not just long ones; v3
+(§5.2) adds **skill activation** — when and how a skill body moves from
+the discovery index into context, the per-session activation budget, and
+the bridge between explicit `skill_load` activation and the
+body-as-padding pre-activation path introduced in v2 §5.1. History
+compression and behavior near the context window remain a later spec —
+see [`STRATEGY.md §6.5`](../STRATEGY.md).
 
 > **v1 motivation.** Per [`STRATEGY.md §1`](../STRATEGY.md), context
 > engineering is the single largest cost lever (the "5–10×" claim in
@@ -247,6 +251,242 @@ production traffic.
 cache tokens in Run 2 §A2 — the direction (savings or modest cost
 increase) depends on the trade-off above.
 
+### 5.2. Skill activation (v3)
+
+Per [`STRATEGY.md §1`](../STRATEGY.md), every skill loaded that isn't
+used is wasted tokens. The discovery index (~100 tokens per skill) pays
+the always-on cost; activation moves a body (~1–5K tokens) into context
+on a deliberate decision. v3 specifies what counts as "deliberate," what
+the budget is, and how activation interacts with the v2 padding rule so
+that loading a skill doesn't churn the cached prefix.
+
+#### 5.2.1. Activation paths
+
+Two paths exist, both observable on the bus via `skill.loaded`
+([`event-bus-and-trace-catalog.md §6.6`](event-bus-and-trace-catalog.md);
+[`skill-format.md §9.1`](skill-format.md)). The `load_reason` enum on
+that payload partitions them:
+
+| `load_reason`     | Path                                  | When emitted                                                    |
+|-------------------|---------------------------------------|-----------------------------------------------------------------|
+| `"always"`        | **Pre-activation** (v2 §5.1 padding)  | At session init, once per body that v2 §5.1 inlined as padding. |
+| `"on_demand"`     | **Explicit activation** (`skill_load`) | When the agent calls `skill_load(name)`. Already implemented.   |
+| `"auto_suggested"`| **Auto-activation** (description match) | **Not in v3.** Reserved for a later spec; see §5.2.6.          |
+
+**There is no description-match-driven auto-activation in v3.** The
+agent's own LM is the relevance classifier — it reads the discovery
+index and either calls `skill_search` (substring filter) or `skill_load`
+directly. Rationale:
+
+1. **Preserves agentskills.io progressive disclosure semantics.** The
+   open standard treats activation as an agent decision, not a runtime
+   classifier output.
+2. **Avoids token competition with explicit activation.** A regex /
+   substring / embedding classifier that fires on `user_message_text`
+   has its own false-positive rate; every false positive burns the
+   activation budget.
+3. **Avoids non-determinism that breaks caching.** A classifier that
+   chooses differently for the same prompt across runs invalidates
+   message-level caches that future spec work might place.
+4. **No usage data yet.** Once v3 ships and traces accumulate, an
+   evidence-based pick between substring / regex / embedding becomes
+   tractable. Until then, "agent decides" is the conservative default.
+
+#### 5.2.2. Pre-activation via v2 §5.1 padding
+
+v2 §5.1 inlines skill bodies into the stable system prefix when the
+prefix tokenizes below `MIN_CACHEABLE_PREFIX_TOKENS`. v3 formalizes
+this as **pre-activation**:
+
+1. At session init, after the stable system prompt is assembled per
+   v2 §5.1, the `SessionManager` MUST emit one `skill.loaded` event per
+   inlined body, with:
+   - `load_reason = "always"`
+   - `triggered_by_tool_use_id = None`
+   - `source`, `skill_id`, `skill_version`, `load_size_tokens` set
+     per [`skill-format.md §9.1`](skill-format.md).
+   - Same `session_id` as the session.started event; no `turn_id`
+     (emitted outside any turn).
+2. The discovery index entry for each pre-activated skill MUST be
+   annotated `[preloaded]`:
+
+   ```
+   - pdf-processing [preloaded]: Extract PDF text, fill forms, merge files. ...
+   ```
+
+   The annotation tells the agent "the body is already in this system
+   prompt; don't call `skill_load` for it." This is a substantive
+   change to the index format defined in
+   [`skill-format.md §7.1`](skill-format.md) — flagged in §5.2.7
+   below.
+3. If the agent calls `skill_load(name)` for a pre-activated skill,
+   the tool MUST return a short pointer text (not the body) of the
+   form:
+
+   ```
+   # Skill: {name} (source: {source})
+
+   This skill's body is already loaded in the system prompt (pre-activated
+   at session start). Re-read the system prompt section "# Skill: {name}"
+   for its operating instructions.
+   ```
+
+   No `skill.loaded` event fires on this call (the pre-activation event
+   already covered it; firing again would double-count in the trace).
+   The tool's return metadata MUST include
+   `{"already_preloaded": true}` so the agent can disambiguate in case
+   of future logic that branches on it.
+
+This bridges v2's padding behavior (a caching mechanism) with v3's
+activation contract (an observable trace event) without changing v2's
+byte-level placement.
+
+#### 5.2.3. Explicit activation via `skill_load`
+
+The existing tool semantics in [`skill-format.md §8.2`](skill-format.md)
+hold unchanged, **with one addition**: the tool consults the per-session
+activation budget (§5.2.4) before returning the body. If the budget is
+exhausted, the tool raises `ToolExecutionError` with a message of the
+form:
+
+```
+activation budget exhausted: {N} skills already activated this session
+(limit {MAX_EXPLICIT_ACTIVATIONS}). Already loaded: [a, b, c]. To free
+budget, summarize and discard previously loaded skill bodies in your
+next response.
+```
+
+The error surfaces as `tool.failed` per the existing tool dispatcher
+contract — no new event type is introduced. The agent sees the error
+in the next user turn (as a `tool_result` with `is_error=true`) and can
+adjust.
+
+Bodies returned by `skill_load` live as `tool_result` blocks in the
+message history, **not in the system prompt**. This is the v2-existing
+behavior and is load-bearing for §5.2.5 below.
+
+#### 5.2.4. Activation budget
+
+Three caps apply per session. All counts and sizes consider only
+**explicit** activations (`load_reason="on_demand"`); pre-activated
+skills don't count, since their bytes are already paid for by the v2
+padding rule.
+
+| Constant                              | Default | Counts what                                        |
+|---------------------------------------|---------|----------------------------------------------------|
+| `MAX_EXPLICIT_ACTIVATIONS_PER_SESSION`| 3       | Distinct skills explicitly activated. Re-loading the same skill is a no-op (already in history) and doesn't increment. |
+| `WARN_CUMULATIVE_ACTIVATION_TOKENS`   | 10000   | Sum of `load_size_tokens` across explicit activations. Crossing the threshold logs a `WARNING` and emits no event (pure telemetry). |
+| `HARD_CAP_CUMULATIVE_ACTIVATION_TOKENS` | 30000 | Sum of `load_size_tokens`. Reaching this raises `ToolExecutionError` from `skill_load` regardless of count. |
+
+Both the count cap and the token caps fire as `ToolExecutionError`
+(surfacing as `tool.failed`); the warn threshold is log-only.
+
+The defaults are **deliberately conservative**: a 200K-context model
+can fit far more, but the goal is to keep agents from running away with
+skill bodies they don't need. A session with three 5K-token skill
+bodies has already consumed ~15K tokens of input on every subsequent
+turn. The owner can revise upward after benchmark data shows the cap
+is too tight (see §5.2.7 open question 1).
+
+**Configuration.** Per-workspace overrides MAY land via
+`<workspace>/.metis/skills/config.yaml` in a future revision; v3 ships
+the defaults as module-level constants in
+`metis_core.sessions.manager`. Config-file support is deferred to keep
+v3 minimal-additive.
+
+#### 5.2.5. Eviction (deferred in v3)
+
+A loaded skill body, once in the message history, stays in history for
+the rest of the session. v3 does **not** specify mid-session eviction.
+Reasons:
+
+1. **Mutating the message history invalidates message-level caches.**
+   The provider sees a different prefix on the next request; any
+   message-cache placement (a future spec topic) would lose its hit.
+   v3 prefers the cache hit on a bloated history over the cache miss
+   on a trimmed one.
+2. **Tool-call / tool-result pairs are structurally linked.** Removing
+   a `tool_result` block for `skill_load` requires also removing the
+   corresponding `tool_use` from the assistant message, or the message
+   fails canonical validation (`canonical-message-format.md §5.1.4`).
+   Implementing this safely is non-trivial — a turn that summarizes
+   and rewrites several past message pairs is an entire feature.
+3. **The budget already bounds growth.** With three explicit
+   activations capped at 30K cumulative tokens, the worst case is
+   bounded. Sessions that exceed the cap surface the failure to the
+   agent (per §5.2.3), which can choose to ask the user for a fresh
+   session.
+
+Eviction will likely land alongside history compression (the next
+context-assembler spec topic) — both share the "rewrite past messages
+without breaking caching" problem.
+
+#### 5.2.6. Trace surface
+
+v3 reuses the existing `skill.loaded` event with no payload changes.
+The `load_reason` field is the discriminator:
+
+- `"always"` — pre-activation (v2 §5.1 padding); emitted at session
+  init, before any `turn.started`.
+- `"on_demand"` — explicit activation via `skill_load`; emitted from
+  the tool's existing path.
+- `"auto_suggested"` — not emitted in v3; reserved for the
+  description-match path.
+
+No new event types are introduced. Budget exhaustion surfaces via the
+existing `tool.failed` event (with a descriptive `error_message` per
+the tool-dispatcher contract). No `skill.unloaded` event exists,
+consistent with §5.2.5 deferring eviction.
+
+**Analytics consequence.** A future `/analytics/skills` rollup can
+project `skill.loaded` by `load_reason` to answer questions like "what
+fraction of pre-activated skill bodies were ever explicitly referenced
+by the agent" — useful for tuning §5.1's padding source priority. The
+endpoint itself is not specified in v3.
+
+#### 5.2.7. Open questions (owner sign-off)
+
+1. **Default budget numbers.** `MAX_EXPLICIT_ACTIVATIONS_PER_SESSION = 3`,
+   `HARD_CAP_CUMULATIVE_ACTIVATION_TOKENS = 30000`,
+   `WARN_CUMULATIVE_ACTIVATION_TOKENS = 10000`. These are picks, not
+   measurements. Owner should confirm or pick different numbers before
+   implementation. The benchmark suite has no current workload that
+   loads a skill, so there's no empirical signal yet — Wave 6 should
+   add a skill-using workload before tuning.
+2. **Discovery-index annotation breaks
+   [`skill-format.md §7.1`](skill-format.md).** That spec specifies
+   the index format as `- {name}: {description}` (one line per skill).
+   v3 adds an optional `[preloaded]` annotation on pre-activated
+   skills, changing the format to
+   `- {name} [preloaded]: {description}` or
+   `- {name}: {description}` depending on session state. Owner should
+   confirm this is the right surface (alternatives: a separate
+   `## Preloaded skills` block; an annotation in the body header rather
+   than the index). Cross-spec edit to `skill-format.md §7.1` lands
+   with implementation.
+3. **Auto-activation mechanism.** v3 defers `load_reason="auto_suggested"`,
+   but leaves the enum value in place. The candidate mechanisms
+   enumerated in §5.2.1 (substring / regex / embedding match against
+   `user_message_text`) all need usage data before pickable. Open
+   until the trace store has explicit-activation patterns to learn
+   from. The pattern store ([`pattern-store.md`](pattern-store.md))
+   is a candidate substrate — fingerprint inputs already include
+   `user_message_text` features.
+4. **Re-loading the same skill is a no-op.** v3 says re-calling
+   `skill_load` for an already-explicitly-loaded skill doesn't
+   re-inject the body and doesn't increment the budget. Should it
+   instead return an error (cheaper signal to the agent that it's
+   already loaded), or return the body again (no special-case
+   handling)? Owner pick. v3 specifies no-op-with-pointer; same
+   pattern as §5.2.2 for pre-activated skills.
+5. **Pre-activation event ordering.** v3 emits `skill.loaded`
+   events with `load_reason="always"` at session init. Should they
+   be ordered before or after `session.started`? v3 specifies
+   *after* (the session must exist for the event's `session_id`
+   foreign key to be valid in the trace store), but ordering inside
+   that window (before any `turn.started`) is the contract. Owner
+   confirm.
+
 ---
 
 ## 6. Validation
@@ -265,11 +505,13 @@ turn 2. Cost ≤ $0.05 per run.
 
 ## 7. Out of scope (later iterations)
 
-- **Skill activation.** Loading a skill body changes the stable prefix
-  (the discovery index gains a body) — this is OK because the cache
-  invalidates only when the prefix actually changes; activation costs one
-  extra cache write, then steady state. A future iteration may move
-  active skill bodies to a separate breakpoint.
+- **Auto-activation via description match.** v3 specifies explicit
+  (`load_reason="on_demand"`) and pre-padded (`load_reason="always"`)
+  activation; the `auto_suggested` enum value is reserved but no
+  mechanism is wired. See §5.2.7 open question 3.
+- **Mid-session skill eviction.** Loaded bodies stay in the message
+  history for session lifetime; see §5.2.5 for rationale. Will likely
+  land with history compression.
 - **History compression.** When history grows past the context window,
   some tail of `messages` is dropped or summarized. That mutates the
   message prefix and invalidates message-level caches. Out of scope until
@@ -279,6 +521,9 @@ turn 2. Cost ≤ $0.05 per run.
   thresholds, eviction strategy — all deferred.
 - **Multi-breakpoint placement on long messages.** We can use up to 4
   breakpoints; v1 uses 2 and leaves the headroom unused.
+- **Per-workspace budget overrides.** `MAX_EXPLICIT_ACTIVATIONS_PER_SESSION`
+  and the cumulative caps are module-level constants in v3;
+  `<workspace>/.metis/skills/config.yaml` overrides are deferred.
 
 ---
 
@@ -292,6 +537,11 @@ turn 2. Cost ≤ $0.05 per run.
 | 2026-05-14 | Minimum-cacheable-prefix rule with bounded padding (§5.1, v2) | v1's breakpoint placement was honest but the natural Metis prefix tokenizes below the effective haiku-4-5 cache floor on short sessions. Without padding, every short session pays full input-rate on tokens that should cache. Padding is bounded so we don't pay for a maximal prefix; sourced first from loaded skill bodies (substantive content) and falling back to a static operating-context block (universal fallback for no-skill sessions). |
 | 2026-05-14 | Targets clear the *effective* haiku-4-5 floor (~4000 actual tokens), not the documented 2048 | Live probe showed a 3320-actual-token prefix produced `cache_creation=0`; a 4957-actual-token prefix worked. Picking 4500 heuristic tokens (≈5670 actual at observed ~1.26× ratio) clears the effective floor with margin. |
 | 2026-05-14 | Static `_OPERATING_CONTEXT_PADDING` lives in the session manager, not in a separate file | The padding is load-bearing for caching but is otherwise inert text. Keeping it next to the assembly code makes the byte-stability invariant easy to enforce (module-level constant; no I/O at call time). A future v3 may move it to a per-workspace override if users want to customize. |
+| 2026-05-14 | v3 skill activation is agent-driven only; no auto-activation via description match | The agent's own LM is the relevance classifier — it reads the discovery index and decides. Description-match auto-activation (substring / regex / embedding against `user_message_text`) introduces non-determinism that breaks caches, competes with the explicit-activation budget, and has no usage data to tune against yet. `load_reason="auto_suggested"` stays reserved for a later spec once trace data accumulates. Preserves agentskills.io progressive disclosure semantics. |
+| 2026-05-14 | v2 §5.1 body-as-padding is formalized as pre-activation with `load_reason="always"` | v2 already inlines skill bodies into the stable prefix for cache-floor padding; v3 makes that observable on the bus (one `skill.loaded` per inlined body at session init) and bridges to explicit `skill_load` (which returns a pointer rather than re-injecting the body for a pre-activated skill). This makes "loaded bytes" countable in traces without double-paying the bytes in input. |
+| 2026-05-14 | Activation budget is a per-session count cap (default 3) + cumulative token caps (warn 10K / hard 30K), not a per-turn cap | Per-turn caps would prevent multi-skill workflows that legitimately need several skills loaded across early turns; per-session caps bound the long-tail cost without blocking the common case. The actual numbers are picks not measurements — owner sign-off pending; benchmark workload that exercises skills is a Wave 6 prereq. |
+| 2026-05-14 | No mid-session skill eviction in v3 | Eviction would mutate message history, invalidating any message-level cache placement a future spec adds. It also requires removing structurally-linked tool_use/tool_result pairs without breaking canonical-format validation. Defer to history-compression spec where the same problem is solved once. |
+| 2026-05-14 | Budget exhaustion surfaces as `tool.failed`, not a new event type | The tool-dispatcher contract already emits `tool.failed` with `error_message` for `ToolExecutionError`; reusing it keeps the event catalog closed-list. No new `skill.activation_rejected` event introduced. |
 
 ---
 
@@ -299,5 +549,7 @@ turn 2. Cost ≤ $0.05 per run.
 
 - [`canonical-message-format.md §7`](canonical-message-format.md) — adapter contract this spec parameterizes.
 - [`analytics-api.md §4.2`](analytics-api.md) — `/analytics/cache_effectiveness` is the validation surface.
-- [`STRATEGY.md §1`](../STRATEGY.md) — context > skills > model selection thesis.
+- [`skill-format.md §7`](skill-format.md), [§8.2](skill-format.md), [§9.1](skill-format.md) — discovery-index format, `skill_load` semantics, `skill.loaded` payload schema. v3 §5.2.2 implies an additive change to the §7.1 index format (the `[preloaded]` annotation); v3 §5.2.3 implies an additive contract on §8.2 (`skill_load` returns a pointer for pre-activated skills).
+- [`event-bus-and-trace-catalog.md §6.6`](event-bus-and-trace-catalog.md) — `skill.loaded` payload; v3 reuses with no schema change but emits `load_reason="always"` from a new session-init path.
+- [`STRATEGY.md §1`](../STRATEGY.md) — context > skills > model selection thesis; v3 specifies the second-largest lever inside the largest one.
 - [`KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — the prompt-caching gap this spec closes.

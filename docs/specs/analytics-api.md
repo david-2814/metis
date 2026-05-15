@@ -96,7 +96,7 @@ Aggregated cost and token counts. Combines what would otherwise be a separate `/
 | Parameter   | Type                                                | Required | Default |
 |-------------|-----------------------------------------------------|----------|---------|
 | `from`,`to` | ISO 8601 UTC                                        | no       | last 7d |
-| `group_by`  | `model` \| `provider` \| `session` \| `day` \| `hour` \| `none` | no | `model` |
+| `group_by`  | `model` \| `provider` \| `session` \| `day` \| `hour` \| `gateway_key` \| `none` | no | `model` |
 
 **Source:** `events` table, `type = 'llm.call_completed'`. Cost is the stamped value (matches invoice).
 
@@ -130,14 +130,15 @@ For `group_by=none`, the GROUP BY clause is omitted entirely and the response ca
 
 Every row carries the same numeric columns (`cost_usd`, `input_tokens`, `output_tokens`, `cached_input_tokens`, `cache_creation_input_tokens`, `avg_latency_ms`, `call_count`). What differs is the grouping key, summarized below:
 
-| `group_by` | Key columns                            | Shape   | Order                       |
-|------------|----------------------------------------|---------|-----------------------------|
-| `model`    | `model`, `provider`                    | array   | `cost_usd DESC`             |
-| `provider` | `provider`                             | array   | `cost_usd DESC`             |
-| `session`  | `session_id` (from events column)      | array   | `cost_usd DESC`             |
-| `day`      | `bucket` (UTC date, `YYYY-MM-DD`)      | array   | `bucket ASC` (time series)  |
-| `hour`     | `bucket` (UTC hour, `YYYY-MM-DDTHH`)   | array   | `bucket ASC` (time series)  |
-| `none`     | (no key)                               | object  | n/a (single aggregate)      |
+| `group_by`    | Key columns                            | Shape   | Order                       |
+|---------------|----------------------------------------|---------|-----------------------------|
+| `model`       | `model`, `provider`                    | array   | `cost_usd DESC`             |
+| `provider`    | `provider`                             | array   | `cost_usd DESC`             |
+| `session`     | `session_id` (from events column)      | array   | `cost_usd DESC`             |
+| `day`         | `bucket` (UTC date, `YYYY-MM-DD`)      | array   | `bucket ASC` (time series)  |
+| `hour`        | `bucket` (UTC hour, `YYYY-MM-DDTHH`)   | array   | `bucket ASC` (time series)  |
+| `gateway_key` | `gateway_key_id` (nullable; in-process agent traffic rolls up under `null`) | array | `cost_usd DESC` |
+| `none`        | (no key)                               | object  | n/a (single aggregate)      |
 
 `day`/`hour` are single-dimension time buckets — they do not also split by model. A future `group_by=day,model` (multi-key) is non-breaking but out of scope for v1. `none` returns a single JSON object as `data` rather than an array — the response envelope is otherwise unchanged.
 
@@ -504,6 +505,59 @@ Both `actual_repriced_usd` and `actual_stamped_usd` are returned so the SPA can 
 **`actual_stamped_usd` is unconditional.** It sums every row's stamped `cost_usd` regardless of whether the row's model is in the current price table — stamped values were computed at write time, so they're correct independent of `PriceTable` state. `rows_missing_from_price_table` affects only `actual_repriced_usd` (and therefore `savings_usd` / `savings_pct`).
 
 **Negative savings are a valid result.** If the user runs with an unusually expensive baseline or genuinely consumed more than the baseline would have, `savings_usd` and `savings_pct` can be negative — meaning "you spent 26% *more* than baseline." The SPA must render this case explicitly (e.g. red label, "26% over baseline"), not absolute-value, hide, or floor it to zero. The math is correct; suppressing the sign would lie about the workload.
+
+### 4.8 `GET /analytics/by_key`
+
+Per-(gateway-key) cost / token / call-count rollup with an inbound-shape breakdown per key. The companion view to `gateway.md §6` — the gateway stamps `gateway_key_id` and `inbound_shape` onto every `llm.call_completed`; this endpoint is where operators consume the rollup.
+
+**Query parameters:**
+
+| Parameter     | Type                | Required | Default |
+|---------------|---------------------|----------|---------|
+| `from`,`to`   | ISO 8601 UTC        | no       | last 7d |
+| `gateway_key` | exact-match filter  | no       | (all keys) |
+
+The `gateway_key` filter is passed via parameterized SQL placeholder; the HTTP layer additionally rejects values that don't match `^[A-Za-z0-9_-]{1,200}$` with a 400 `invalid_gateway_key` — defense in depth even though the SQL itself is safe by construction.
+
+**Source:** `events` table, `type = 'llm.call_completed'`. Costs are stamped (matches the invoice).
+
+**Algorithm:** the SQL fetches one row per call within the window, including `gateway_key_id` and `inbound_shape` from the payload. The handler aggregates in Python by `gateway_key_id` (using `Decimal` per §5.1) and tracks a per-shape sub-aggregate. Rows that originated from the in-process agent loop (CLI / TUI / `metis serve`) carry `gateway_key_id: null` and roll up under the `null` key.
+
+**Response:**
+
+```json
+{
+  "window": {"start": "...", "end": "..."},
+  "current_pricing_version": "2026-05-08",
+  "data": [
+    {
+      "gateway_key_id": "gk_01HZ...",
+      "cost_usd": 0.4231,
+      "input_tokens": 14820,
+      "output_tokens": 612,
+      "cached_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "call_count": 12,
+      "by_inbound_shape": [
+        {"inbound_shape": "openai", "call_count": 8, "cost_usd": 0.3010},
+        {"inbound_shape": "anthropic", "call_count": 4, "cost_usd": 0.1221}
+      ]
+    },
+    {
+      "gateway_key_id": null,
+      "cost_usd": 1.0512,
+      "input_tokens": 51220,
+      "output_tokens": 1842,
+      "cached_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "call_count": 30,
+      "by_inbound_shape": [{"inbound_shape": null, "call_count": 30, "cost_usd": 1.0512}]
+    }
+  ]
+}
+```
+
+Rows are sorted by `cost_usd` DESC. The `by_inbound_shape` sub-array is also `cost_usd` DESC. `inbound_shape: null` is the natural shape for in-process agent traffic (no inbound translator ran).
 
 ---
 

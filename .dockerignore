@@ -1,0 +1,62 @@
+# Build context for the gateway image — keep it small.
+#
+# What we copy: pyproject.toml, uv.lock, packages/, apps/, infra/gateway/.
+# Everything else is either dev-only, generated, or out of scope for the
+# gateway runtime.
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg
+
+# Virtualenvs (the image builds its own)
+.venv/
+**/.venv/
+
+# Secrets and local state (never bake into images)
+.env
+.env.*
+!.env.example
+.metis/
+**/.metis/
+
+# Test scratch
+**/.runs/
+benchmarks/.runs/
+
+# Tests are not needed in the runtime image. uv sync --frozen --no-dev
+# already skips dev deps, but pruning them from the build context speeds
+# up `docker build` and avoids accidental copies.
+**/tests/
+tests_shared/
+conftest.py
+
+# Docs / research / product-site / scripts are not needed in the runtime
+# image. The Dockerfile copies what it needs explicitly.
+docs/
+benchmarks/
+scripts/
+product-site/
+
+# VCS and editor noise
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+.DS_Store
+
+# CI / agent / scheduler state
+.claude/
+
+# Docs that aren't load-bearing for the image
+README.md
+AGENTS.md
+CLAUDE.md

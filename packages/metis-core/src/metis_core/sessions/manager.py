@@ -563,6 +563,19 @@ class UnknownAliasError(ValueError):
         self.alias = alias
 
 
+class OverrideError(ValueError):
+    """Malformed per-message override (routing-engine.md §9.2).
+
+    Raised when `@<alias>` opens the message but the trailing-whitespace +
+    body requirement isn't met — i.e. the message is just `@haiku` with
+    nothing after it. The turn does not start.
+    """
+
+    def __init__(self, alias: str) -> None:
+        super().__init__(f"override @{alias} requires a message body after the alias (spec §9.2)")
+        self.alias = alias
+
+
 class AmbiguousModelError(ValueError):
     """The user's model input matches multiple registered canonical ids.
 
@@ -715,6 +728,16 @@ class SessionManager:
         """Return the per-session memory store, if memory is configured."""
         return self._memory_stores.get(session_id)
 
+    def routing_policy_version(self) -> str | None:
+        """Return the loaded routing policy's opaque version, or None.
+
+        Surfaces via `GET /sessions/{id}.routing_policy_version` so clients
+        can label which rules are active and notice when the file changes.
+        Returns `None` for workspaces (deployments, really — v1 has one
+        policy per process) without a loaded `~/.metis/routing.yaml`.
+        """
+        return self._routing.policy.version
+
     def skills_for(self, session_id: str) -> Any:
         """Return the per-session skill store, if skills are configured."""
         return self._skill_stores.get(session_id)
@@ -810,6 +833,8 @@ class SessionManager:
 
         # 1. Parse per-message override.
         override = parse_per_message_override(user_text, self._registry)
+        if override.body_missing:
+            raise OverrideError(override.raw_alias or "")
         if override.is_unknown_alias:
             raise UnknownAliasError(override.raw_alias or "")
 
@@ -834,7 +859,7 @@ class SessionManager:
 
         # 3. Emit turn.started.
         history = self._store.get_messages(session_id)
-        tool_definitions = self._dispatcher.get_definitions()
+        tool_definitions = self._dispatcher.get_definitions_for_session(session)
         ctx = self._build_turn_context(
             session_id=session_id,
             turn_id=turn_id,
@@ -1673,6 +1698,7 @@ def _compose_message_with_shared(shared: str, user_text: str) -> str:
 
 # Re-export RoutingDecision for callers that want the typed result.
 __all__ = [
+    "OverrideError",
     "SessionManager",
     "TurnResult",
     "UnknownAliasError",

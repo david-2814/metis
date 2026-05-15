@@ -48,10 +48,16 @@ import yaml
 from metis_core.analytics import AnalyticsStore
 from metis_core.analytics.windows import TimeWindow
 from metis_core.eval import (
+    DEFAULT_ESCALATION_THRESHOLD,
     HeuristicJudge,
+    HybridJudge,
+    LLMJudge,
+    LLMJudgeConfig,
     WorkloadRubric,
     parse_workload_rubric,
+    register_evaluator,
 )
+from metis_core.eval.judge import Judge
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKLOADS_DIR = REPO_ROOT / "benchmarks" / "workloads"
@@ -309,6 +315,9 @@ async def run_workload(
     pattern_seed_path: Path | None = None,
     pattern_save_path: Path | None = None,
     no_active_model: bool = False,
+    judge_kind: str = "heuristic",
+    judge_escalation_threshold: float = DEFAULT_ESCALATION_THRESHOLD,
+    judge_model: str = "anthropic:claude-haiku-4-5",
 ) -> tuple[int, int, list[dict], Decimal, int, int, str]:
     """Drive one workload end-to-end. Returns (started_us, ended_us,
     per_turn_metrics, total_cost_usd, total_llm_calls, total_tool_calls, session_id).
@@ -349,6 +358,41 @@ async def run_workload(
             db_path=str(db_path),
             global_default_model=actual_model,
         )
+        # Swap the default heuristic-only evaluator for a hybrid / LLM one
+        # when requested. setup_runtime() registers HeuristicJudge by
+        # default — we unregister it and re-register against the same bus
+        # + trace store with the configured judge.
+        if judge_kind != "heuristic":
+            try:
+                runtime.evaluator.unregister()
+            except Exception:
+                pass
+            anthropic_adapter = None
+            for adapter in runtime.adapters:
+                if type(adapter).__name__ == "AnthropicAdapter":
+                    anthropic_adapter = adapter
+                    break
+            if anthropic_adapter is None:
+                raise RuntimeError(
+                    f"--judge {judge_kind} requires an Anthropic adapter; none found"
+                )
+            llm_judge = LLMJudge(
+                adapter=anthropic_adapter,
+                pricing=runtime.pricing,
+                config=LLMJudgeConfig(judge_model=judge_model),
+            )
+            if judge_kind == "llm":
+                replacement: Judge = llm_judge
+            else:  # hybrid
+                replacement = HybridJudge(
+                    llm_judge=llm_judge,
+                    heuristic=HeuristicJudge(),
+                    escalation_threshold=judge_escalation_threshold,
+                )
+            new_evaluator, _ = register_evaluator(
+                runtime.bus, runtime.trace, judge=replacement
+            )
+            runtime.evaluator = new_evaluator
         try:
             if no_active_model:
                 session = runtime.manager.create_session(workspace_path=str(ws))
@@ -416,6 +460,45 @@ async def run_workload(
     return started_us, ended_us, per_turn_metrics, total_cost, total_llm, total_tool, session_id
 
 
+def _make_judge_factory(
+    *,
+    judge_kind: str,
+    judge_escalation_threshold: float,
+    judge_model: str,
+    anthropic_api_key: str | None,
+    pricing: Any,
+) -> Any:
+    """Build a callable returning a fresh Judge for the workload-level eval.
+
+    `evaluate_workload_quality` opens a short-lived AnthropicAdapter inside
+    the factory so the surrounding bus/trace stays self-contained. Returns
+    None when judge_kind=='heuristic' (caller falls back to HeuristicJudge).
+    """
+    if judge_kind == "heuristic":
+        return None
+
+    def factory() -> Judge:
+        from metis_core.adapters.anthropic import AnthropicAdapter
+
+        if not anthropic_api_key:
+            raise RuntimeError(f"--judge {judge_kind} requires ANTHROPIC_API_KEY")
+        adapter = AnthropicAdapter(api_key=anthropic_api_key)
+        llm = LLMJudge(
+            adapter=adapter,
+            pricing=pricing,
+            config=LLMJudgeConfig(judge_model=judge_model),
+        )
+        if judge_kind == "llm":
+            return llm
+        return HybridJudge(
+            llm_judge=llm,
+            heuristic=HeuristicJudge(),
+            escalation_threshold=judge_escalation_threshold,
+        )
+
+    return factory
+
+
 async def evaluate_workload_quality(
     workload: Workload,
     *,
@@ -423,6 +506,7 @@ async def evaluate_workload_quality(
     session_id: str,
     per_turn_metrics: list[dict],
     assertion_failures: list[str],
+    judge_factory: Any = None,
 ) -> tuple[float | None, float | None]:
     """Compute the workload-level quality verdict and write it to the trace DB.
 
@@ -450,7 +534,8 @@ async def evaluate_workload_quality(
                 continue
             per_turn_scores.append(float(e.payload.get("score") or 0.0))
         final_response_text = per_turn_metrics[-1]["assistant_text"] if per_turn_metrics else ""
-        evaluator, _ = register_evaluator(bus, trace, judge=HeuristicJudge())
+        judge = judge_factory() if judge_factory is not None else HeuristicJudge()
+        evaluator, _ = register_evaluator(bus, trace, judge=judge)
         try:
             verdict = await evaluator.evaluate_workload(
                 workload_run_id=f"{workload.name}/{session_id}",
@@ -578,6 +663,30 @@ async def amain() -> int:
         "default) can win. Use together with `--patterns-db-path` pointed "
         "at a populated DB to test whether slot 4 (`pattern`) actually fires.",
     )
+    parser.add_argument(
+        "--judge",
+        choices=["heuristic", "hybrid", "llm"],
+        default="heuristic",
+        help="Judge tier wired into per-turn evaluations AND the workload-level "
+        "evaluation. 'heuristic' (default) preserves Run 3 behavior. 'hybrid' "
+        "runs the heuristic first and escalates to the LLM judge when "
+        "heuristic confidence < --judge-escalation-threshold. 'llm' bypasses "
+        "the heuristic and calls the LLM on every turn (most expensive).",
+    )
+    parser.add_argument(
+        "--judge-escalation-threshold",
+        type=float,
+        default=DEFAULT_ESCALATION_THRESHOLD,
+        help=f"Heuristic confidence below which --judge hybrid escalates to "
+        f"the LLM (default {DEFAULT_ESCALATION_THRESHOLD}). Ignored when "
+        "--judge is heuristic or llm.",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default="anthropic:claude-haiku-4-5",
+        help="LLM judge model id (default anthropic:claude-haiku-4-5). "
+        "Ignored when --judge is heuristic.",
+    )
     args = parser.parse_args()
 
     _load_dotenv(REPO_ROOT / ".env")
@@ -698,6 +807,9 @@ async def amain() -> int:
                     pattern_seed_path=seed_path,
                     pattern_save_path=save_path,
                     no_active_model=args.no_active_model,
+                    judge_kind=args.judge,
+                    judge_escalation_threshold=args.judge_escalation_threshold,
+                    judge_model=args.judge_model,
                 )
             except Exception as exc:
                 workload_results.append(
@@ -757,6 +869,13 @@ async def amain() -> int:
                 session_id=session_id,
                 per_turn_metrics=per_turn,
                 assertion_failures=assertion_failures,
+                judge_factory=_make_judge_factory(
+                    judge_kind=args.judge,
+                    judge_escalation_threshold=args.judge_escalation_threshold,
+                    judge_model=args.judge_model,
+                    anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
+                    pricing=DEFAULT_PRICE_TABLE,
+                ),
             )
             workload_results.append(
                 WorkloadResult(

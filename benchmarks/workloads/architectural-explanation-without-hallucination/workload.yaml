@@ -1,0 +1,44 @@
+name: architectural-explanation-without-hallucination
+description: >-
+  Explain how Metis's routing engine selects a model. The workspace
+  ships a snapshot of `packages/metis-core/src/metis_core/routing/`
+  under `routing/`; the agent must read those files and name real
+  symbols. Models that don't ground in the source tend to fabricate
+  plausible-sounding identifiers ("PATTERN_LOOKUP", "RouterChain",
+  "ModelSelector"); the heuristic substring assertion catches the
+  most distinctive of those (`PATTERN_RECOMMENDATION`, an UPPERCASE
+  slot policy enum that's hard to guess without reading
+  `routing/engine.py`). The per-turn `contains_substring`
+  cross-checks for `RoutingEngine` (central class name; a generic
+  answer that handwaves "the router" without naming the actual class
+  fails). Hallucination here = not opening the files. A future LLM-
+  judge tier can score fabricated symbols not in the heuristic; v1
+  leans on the two substring checks plus `min_tool_calls` to force
+  the agent to actually read the workspace.
+suite_version: 1
+turns:
+  - prompt: >-
+      The directory `routing/` in this workspace is a snapshot of
+      Metis's routing engine source code (the real
+      `packages/metis-core/src/metis_core/routing/`). Read the source
+      files and then explain how the 7-slot routing chain selects a
+      model for a turn. Your explanation MUST reference at least
+      four specific class names, function names, or enum values that
+      actually appear in the source (e.g. the central engine class,
+      the registry, the availability state type, and the slot policy
+      that consults the pattern store). Do not invent identifiers —
+      every symbol you name must be one you can point to in the
+      files. Walk through the slot order and explain what each slot
+      does. Cite the file each symbol lives in.
+    expect:
+      min_tool_calls: 3
+      max_tool_calls: 20
+      contains_substring: "RoutingEngine"
+expect:
+  max_total_cost_usd: 0.20
+  min_llm_calls: 1
+  max_hard_failures: 0
+evaluate:
+  rubric: hybrid
+  expect_substring_in_final_response: "PATTERN_RECOMMENDATION"
+  llm_judge_model: anthropic:claude-haiku-4-5

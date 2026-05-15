@@ -30,7 +30,7 @@ When working on a spec PR, scan this file for `pending review` entries against s
 - `benchmark.md` — reproducible workload suite + measurement methodology backing the savings counterfactual.
 - `deployment-shape.md` — recommendation for the replacement-agent / gateway / hybrid fork. Resolves [`STRATEGY.md §6.1`](../STRATEGY.md) when signed off.
 - `gateway.md` — skeleton for the transparent HTTP gateway surface (paired with `deployment-shape.md`).
-- `context-assembler.md` — v1 covers prompt-cache breakpoint placement; full assembler design (skill activation, history compression) is later.
+- `context-assembler.md` — v1 covers prompt-cache breakpoint placement; v2 adds the minimum-cacheable-prefix padding rule; v3 adds skill activation (explicit + pre-activation paths, per-session budget, no auto-activation in v3); history compression remains later.
 - `pattern-store.md` — per-workspace bounded SQLite store of task fingerprints + outcomes that powers routing slot 4 (`PATTERN_RECOMMENDATION`). Phase 2.5.
 - `skill-format.md` — retrospective v1 (2026-05-13) of the existing skills loader / store / tools; conforms to agentskills.io.
 - `evaluator.md` — heuristic + hybrid LLM-as-judge feedback loop; emits `eval.*` events; resolves [`STRATEGY.md §6.7`](../STRATEGY.md) when signed off. Phase 3.
@@ -62,6 +62,47 @@ When changing a spec, the dependent specs (right column whose left column is the
 ---
 
 ## Change log
+
+### 2026-05-14 — gateway.md v1 (captures shipped surface) + per-key analytics rollup
+
+- **Specs:** `gateway.md` (v0 skeleton → v1), `analytics-api.md` §4.1 + new §4.8, `server-api.md` (implicit — `GET /sessions/{id}.routing_policy_version` now populated).
+- **Change:** Rewrote `gateway.md` from v0 skeleton to v1 documentation of the shipped transparent HTTP gateway in [`apps/gateway/`](../../apps/gateway/). Documents the actual endpoint shapes (`/v1/chat/completions`, `/v1/messages`, `/healthz`), the auth scheme (`Authorization: Bearer gw_<ulid>` or `x-api-key`), the keystore at `~/.metis/gateway/keys.json` (SHA-256 hash; mode `0o600`), the per-shape translation rules, the additive `gateway_key_id` + `inbound_shape` stamps on `LLMCallCompleted` / `TurnCompleted` (gateway.md §6), and the v1 loopback-only network posture (§3.2 — reverses the original v0 "default `0.0.0.0`" plan until per-key rate limiting and audit log land). Notes the §5.3 "transparent mode" trade-off — gateway clients passing `model` always trigger the `per_message_override` slot win — recommends leaving the default as-is and tracks a future `--ignore-inbound-model` flag for the cost-optimization magic-trick mode. Added `gateway_key` to `_COST_GROUP_BY_ALLOWED` in [`analytics/store.py`](../../packages/metis-core/src/metis_core/analytics/store.py) and shipped a new `/analytics/by_key` endpoint (analytics-api.md §4.8) backed by `AnalyticsStore.by_key()` — per-(gateway_key_id) cost + token + call_count rollup with an `by_inbound_shape` sub-array per row, rows with null `gateway_key_id` (agent-loop traffic) keyed under `null`. Surfaced `routing_policy_version` on `GET /sessions/{id}` (and the `POST /sessions` 201): added a content-derived `version` field on `RoutingPolicy` (truncated sha256 of the raw yaml at parse time; `None` for `EMPTY_POLICY`); `SessionManager.routing_policy_version()` exposes it to the HTTP layer.
+- **Type:** additive. New analytics endpoint, new optional `gateway_key` group_by value, new optional response field on session endpoints, new optional `RoutingPolicy.version` (default `None` preserves call sites that construct policies directly).
+- **References to verify:**
+  - `event-bus-and-trace-catalog.md §6.3` — `LLMCallCompleted.gateway_key_id` / `inbound_shape` already land as typed optional fields. ✓
+  - `analytics-api.md §4.1 + §4.8` — group_by enum extended; new endpoint shape documented. ✓
+  - `routing-engine.md §5.7` — `RoutingPolicy` gains a `version` field; the validation rules and parser entry points are unchanged. ✓
+  - `server-api.md §4.x` — `GET /sessions/{id}` response gains a populated `routing_policy_version` field. Already declared in the shape; no schema breakage. ✓
+  - `KNOWN_ISSUES.md` — 🟡 "Per-key analytics roll-up has no HTTP surface" entry deleted (this change ships the HTTP surface). ✓
+- **Status:** verified.
+
+### 2026-05-14 — provider-adapter-contract.md v1.2 (CanonicalResponse returns content, not Message)
+
+- **Spec:** `provider-adapter-contract.md` §3.3 (CanonicalResponse shape).
+- **Change:** Bring §3.3 into line with the shipped impl. `CanonicalResponse` returns `content: list[ContentBlock]` + `model` + `provider` rather than a full `Message`. The adapter doesn't own two `Message` fields the spec previously implied it did: the `RoutingDecisionRecord` (decided upstream by the routing engine) and `Usage.cost_usd` (computed by core from the local price table per canonical-format §6.4). The caller (`SessionManager`) assembles the final canonical `Message` from the adapter's parts plus its own routing decision, cost computation, and id allocation. Adapter implementations have been on this shape since Phase 1 (`[adapters/protocol.py](../packages/metis-core/src/metis_core/adapters/protocol.py)` docstring + AGENTS.md "Implementation conventions" already noted the divergence); v1.2 closes the spec/impl gap. Substitutability is unaffected — the substitutability gate is the `(content, stop_reason, usage)` triple, not the `Message` envelope.
+- **Type:** additive (the spec catches up with shipped impl; no consumer change required — there are no callers writing to the old shape).
+- **References to verify:**
+  - `canonical-message-format.md §5` — `Message` shape unchanged. The fields the adapter previously owned in `Message` (id, role, content, metadata.routing, metadata.usage.cost_usd) are now assembled by `SessionManager`; no canonical-format edit required. ✓
+  - `streaming-protocol.md §5.6` — the streaming-side `MessageComplete` event's authoritative final content + usage shape is unchanged; it already returns content blocks rather than a `Message`. ✓
+  - `event-bus-and-trace-catalog.md §6.3` — `llm.call_completed` payload reads from `CanonicalResponse.usage` / `model`; new shape preserves those fields. ✓
+  - `KNOWN_ISSUES.md` — "`CanonicalResponse` shape divergence from spec" 🟢 entry retired by this change. ✓
+- **Status:** verified.
+
+### 2026-05-14 — context-assembler.md v3 (skill activation)
+
+- **Spec:** `context-assembler.md` §5.2 (new), §7 (skill-activation entry retired from out-of-scope; new entries for auto-activation, mid-session eviction, per-workspace budget overrides), §8 (six new decision-log entries), §9 (new references to `skill-format.md` and `event-bus-and-trace-catalog.md §6.6`).
+- **Change:** Specs the **skill activation** layer of the cost lever per [`STRATEGY.md §1`](../STRATEGY.md). Three activation paths partitioned by `skill.loaded.load_reason`: (a) **pre-activation** (`"always"`) — v2 §5.1's body-as-padding is formalized as observable activation, emitted once per inlined body at session init with `triggered_by_tool_use_id=None`; (b) **explicit activation** (`"on_demand"`) — existing `skill_load` tool path, unchanged except for the new budget check; (c) **auto-activation** (`"auto_suggested"`) — **not in v3**, reserved. No description-match-driven auto-activation in v3 (rationale: preserves agentskills.io progressive disclosure semantics; avoids non-determinism breaking caches; no usage data to tune classifier against). Per-session activation budget: `MAX_EXPLICIT_ACTIVATIONS_PER_SESSION=3` count cap, `WARN_CUMULATIVE_ACTIVATION_TOKENS=10000` log-only, `HARD_CAP_CUMULATIVE_ACTIVATION_TOKENS=30000` hard cap; all surface as `ToolExecutionError` → `tool.failed` (no new event types). Pre-activated skills don't count against budget. Discovery index entry for a pre-activated skill annotated `[preloaded]`; `skill_load(name)` for a pre-activated skill returns a pointer ("already in system prompt"), not the body, to avoid double-paying input bytes. **No mid-session eviction** in v3 — would invalidate message-level caches a future spec might place, and require unwinding structurally-linked tool_use/tool_result pairs. Deferred to history-compression spec.
+- **Type:** additive on context-assembler.md; implies two additive cross-spec changes flagged below.
+- **References to verify:**
+  - `skill-format.md §7.1` — discovery-index format currently specified as `- {name}: {description}`. v3 §5.2.2 adds an optional `[preloaded]` annotation on pre-activated skills (`- {name} [preloaded]: {description}`). Additive — readers ignoring the annotation see no behavior change. Cross-spec edit lands with implementation; flagged in `context-assembler.md §5.2.7` open question 2.
+  - `skill-format.md §8.2` — `skill_load` tool semantics gain a budget check (raises `ToolExecutionError` on exhaustion) and a pre-activated-skill special case (returns pointer text with `{"already_preloaded": true}` metadata, no body, no event re-emission). Additive: existing callers see no change in the in-budget non-preloaded case.
+  - `event-bus-and-trace-catalog.md §6.6` — `skill.loaded` payload schema unchanged. v3 emits the existing `load_reason="always"` enum value from a new path (session init, post-`session.started`, pre-first-`turn.started`). No catalog edit required.
+  - `analytics-api.md` — v3 mentions a future `/analytics/skills` rollup keyed on `load_reason` for tuning the v2 padding source priority; not specified in v3 and no analytics-api edit required.
+  - `STRATEGY.md §1` — context > skills > model selection thesis: v3 specifies the second-largest lever (skills) inside the largest (context). No narrative change required; cross-reference only.
+  - `benchmark.md` — no current workload exercises skill loading. Wave 6 should add one before tuning the default budget numbers; flagged in `context-assembler.md §5.2.7` open question 1. No spec edit required.
+- **Status:** pending owner sign-off on the five open questions in §5.2.7 (default budget numbers; `[preloaded]` annotation format vs alternatives; auto-activation deferral; re-load-as-no-op semantics; pre-activation event ordering). Cross-spec edits to `skill-format.md §7.1` / §8.2 land with implementation (Wave 6+); both are additive.
+
+---
 
 ### 2026-05-14 — context-assembler.md v2 (minimum-cacheable-prefix rule)
 
