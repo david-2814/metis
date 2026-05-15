@@ -20,20 +20,39 @@ What you got:
 
 Next steps:
 
-1. Issue your first gateway key. Run inside any pod in the deployment:
+{{- if not .Values.keystore.existingSecret }}
 
-   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "metis-gateway.fullname" . }} -c gateway -- \
-     metis gateway issue-key --keystore {{ .Values.keystore.mountPath }} \
-       --name "my-client" --workspace /workspace
+1. IMPORTANT: this release was installed against the chart's seed keystore
+   (ConfigMap `{{ include "metis-gateway.keystoreConfigMapName" . }}` with `{"keys": []}`).
+   The gateway rejects an empty keys array at startup, so the pod will
+   CrashLoopBackOff until you bundle at least one issued key.
 
-   The plaintext token is printed once. Save it.
+   Issue a key out-of-band, then upgrade to a Secret-backed keystore:
 
-   IMPORTANT: by default the keystore is mounted from a ConfigMap (`{{ include "metis-gateway.keystoreConfigMapName" . }}`),
-   which is read-only inside the pod. To persist issued keys across pod restarts:
-     a. Bundle the keys.json externally and mount via `keystore.existingSecret`, OR
-     b. Patch the ConfigMap with the updated JSON and roll the pod.
+     # Option A: locally (requires a uv-checked-out metis workspace)
+     uv run metis gateway issue-key \
+         --keystore ./keys.json \
+         --name "my-client" --workspace /workspace
 
-   See "Keystore rotation" in docs/gateway-deployment.md.
+     # Option B: via the gateway image (no local workspace needed)
+     docker run --rm -v "$PWD:/etc/metis" \
+         {{ .Values.image.repository }}:{{ .Values.image.tag }} issue-key \
+             --name "my-client" --workspace /workspace
+
+     kubectl -n {{ .Release.Namespace }} create secret generic metis-gateway-keystore \
+         --from-file=keys.json=./keys.json
+
+     helm upgrade {{ .Release.Name }} ./infra/gateway/helm/ \
+         --namespace {{ .Release.Namespace }} --reuse-values \
+         --set keystore.existingSecret=metis-gateway-keystore
+
+   See "First production smoke" in docs/gateway-deployment.md for the full recipe.
+{{- else }}
+
+1. You installed with `keystore.existingSecret={{ .Values.keystore.existingSecret }}`.
+   To rotate keys, regenerate `keys.json`, recreate the Secret, then
+   `kubectl rollout restart deploy/{{ include "metis-gateway.fullname" . }}`.
+{{- end }}
 
 2. Sanity-check the gateway over the Service:
 

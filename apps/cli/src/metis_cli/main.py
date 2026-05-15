@@ -135,9 +135,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     issue.add_argument(
         "--daily-cap-usd",
-        type=float,
+        type=str,
         default=None,
-        help="Optional per-day spend cap (gateway.md §V; enforcement is informational in v1).",
+        help=(
+            "Optional per-day spend cap (USD). Hard breaker per multi-user.md §5.1. "
+            "Must parse as a positive number."
+        ),
+    )
+    issue.add_argument(
+        "--monthly-cap-usd",
+        type=str,
+        default=None,
+        help=(
+            "Optional per-calendar-month spend cap (USD). Hard breaker per "
+            "multi-user.md §5.1. Must parse as a positive number."
+        ),
     )
     issue.add_argument(
         "--user",
@@ -233,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
                     workspace_path=args.workspace,
                     allowed_models=allowed,
                     daily_cap_usd=args.daily_cap_usd,
+                    monthly_cap_usd=args.monthly_cap_usd,
                     user_id=args.user,
                     team_id=args.team,
                 )

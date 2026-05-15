@@ -383,6 +383,25 @@ async def test_dashboard_app_js_served(seeded_client):
     assert "renderCostView" in r.text
 
 
+async def test_dashboard_app_js_includes_identity_views(seeded_client):
+    """The Wave-9 identity SPA wires per-team and per-user tiles.
+
+    Smoke check that the rewrite landed in the served static file —
+    SPA-level tests are out of scope (no SPA harness), but a string
+    presence check catches accidental deletion during refactors.
+    """
+    r = await seeded_client.get("/dashboard/app.js")
+    assert r.status_code == 200
+    for symbol in (
+        "renderIdentityView",
+        "renderTeamsTile",
+        "renderUsersTile",
+        "renderKeysTile",
+        "identityFilter",
+    ):
+        assert symbol in r.text, symbol
+
+
 async def test_dashboard_style_css_served(seeded_client):
     r = await seeded_client.get("/dashboard/style.css")
     assert r.status_code == 200

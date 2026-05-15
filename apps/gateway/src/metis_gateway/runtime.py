@@ -26,6 +26,7 @@ from metis_core.routing.profiles import standard_profile_for
 from metis_core.trace.store import TraceStore
 
 from metis_gateway.auth import Keystore
+from metis_gateway.quotas import QuotaTracker
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class GatewayRuntime:
     adapters: list[ProviderAdapter]
     db_file: Path
     global_default_model: str
+    quota_tracker: QuotaTracker | None = None
 
 
 async def setup_gateway_runtime(
@@ -159,6 +161,8 @@ async def setup_gateway_runtime(
         policy=EMPTY_POLICY,
     )
 
+    quota_tracker = QuotaTracker(db_file)
+
     return GatewayRuntime(
         bus=bus,
         trace=trace,
@@ -169,6 +173,7 @@ async def setup_gateway_runtime(
         adapters=adapters,
         db_file=db_file,
         global_default_model=global_default_model,
+        quota_tracker=quota_tracker,
     )
 
 
@@ -190,6 +195,11 @@ async def shutdown_gateway_runtime(runtime: GatewayRuntime) -> None:
         runtime.trace.close()
     except Exception:
         pass
+    if runtime.quota_tracker is not None:
+        try:
+            runtime.quota_tracker.close()
+        except Exception:
+            pass
 
 
 def default_db_path() -> Path:

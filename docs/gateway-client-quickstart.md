@@ -287,43 +287,72 @@ end-to-end.
 
 ---
 
-## 7. Per-key spend in the dashboard
+## 7. Spend-by-identity in the dashboard
 
 Once you have multiple gateway keys issued — one per dev, one per
-project, however you carved up the namespace — the **Gateway keys**
-tab in the dashboard turns the trace data into a buyer-shaped view:
+project, however you carved up the namespace — the **Spend by identity**
+tab in the dashboard turns the trace data into a buyer-shaped view.
+Three rollups share the tab; **Per-team** is the headline view for
+budget owners, **Per-user** for fairness / headcount triage, and
+**Per-key** for the original Wave-6 per-credential breakdown.
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│ Metis · Local dashboard          [Cost] [Activity] [Gateway keys]│
-├──────────────────────────────────────────────────────────────────┤
-│ [All traffic] [Agent-loop only] [Gateway only]   [Sort: cost ▼]  │
-│                                                                  │
-│ ⚠ TOP SPENDER  gk_01J...alice    63%  of all spend in this window│
-│                                                                  │
-│ PER-KEY SPEND                                                    │
-│ ────────────────────────────────────────────────────────────────│
-│ GATEWAY KEY            COST    CALLS  LAST CALL   INBOUND SHAPES │
-│ gk_01J...alice       $3.42      87   2m ago      openai 60 anthropic 27 │
-│ gk_01J...bob         $1.21      34   18m ago     anthropic 34   │
-│ agent-loop           $0.18      22   1h ago      in-process 22  │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│ Metis · Local dashboard      [Cost] [Activity] [Spend by identity]     │
+├────────────────────────────────────────────────────────────────────────┤
+│ [All] [Per-team] [Per-user] [Per-key]            [Sort: cost ▼]        │
+│                                                                        │
+│ ⚠ TOP TEAM  eng    72%  of team spend in this window                   │
+│                                                                        │
+│ PER-TEAM SPEND                                                         │
+│ ──────────────────────────────────────────────────────────────────────│
+│ TEAM         COST    CALLS  USERS  QUOTA   FILTER                      │
+│ ▾ eng       $12.42    412     5    —      [filter]                     │
+│     USER          COST     CALLS                                       │
+│     alice         $8.10     281                                        │
+│     bob           $4.32     131                                        │
+│ ▸ sales      $7.05     180     3    —      [filter]                    │
+│   untagged   $1.05      30     0    —      —                           │
+│                                                                        │
+│ ⚠ TOP DEVELOPER  alice    51%  of user spend in this window            │
+│                                                                        │
+│ PER-USER SPEND                                                         │
+│ ──────────────────────────────────────────────────────────────────────│
+│ USER         COST    CALLS  QUOTA   FILTER                             │
+│ alice       $8.10     281    —      [filter]                           │
+│ bob         $4.32     131    —      [filter]                           │
+│ carol       $7.05     180    —      [filter]                           │
+│ untagged    $1.05      30    —      —                                  │
+│                                                                        │
+│ PER-KEY SPEND                                                          │
+│ ──────────────────────────────────────────────────────────────────────│
+│ GATEWAY KEY        COST    CALLS  LAST CALL  INBOUND SHAPES            │
+│ gk_01J...alice    $3.42      87   2m ago     openai 60 anthropic 27    │
+│ gk_01J...bob      $1.21      34   18m ago    anthropic 34              │
+│ agent-loop        $0.18      22   1h ago     in-process 22             │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-Each clickable row sets a `gateway_key` filter on the Cost view, so
-clicking `gk_01J...alice` switches to **Cost** and re-renders the spend
-chart, cost-by-model chart, and total against Alice's traffic only.
-A chip near the top of the Cost view reminds you what's filtered and
-gives you a one-click way back to "all traffic".
+Click any team row to expand its per-user sub-array inline — that's the
+`by_user` array on the `/analytics/by_team` response (multi-user.md §5.2),
+so no extra round-trip. Each user inside the expansion is itself a
+clickable link that drills the **Cost** and **Activity** views down to
+that developer via `?user=<id>` on the underlying endpoints. The
+**Filter** action on a team row does the same at team granularity via
+`?team=<id>` — the filter chip at the top of the Cost view labels which
+identity (team / user / key) is currently in scope.
 
-The **All traffic / Agent-loop only / Gateway only** pills change which
-rows appear in the per-key table — useful when you want to compare
-gateway clients to in-process CLI usage. The agent-loop row aggregates
-every `llm.call_completed` that has no `gateway_key_id` stamp; it is
-not drillable in v1 because the underlying filter is an exact-match
-`= ?` and can't express IS NULL through the same parameter shape.
+The **scope pills** (`All / Per-team / Per-user / Per-key`) switch which
+tiles are visible. `All` is the default — useful for a first look at a
+multi-team deployment; switch to one of the others when you're zooming
+in on a specific dimension.
 
-The **Top spender** banner only appears when one key (or `agent-loop`)
-accounts for more than 50% of spend in the window — the threshold is
-deliberately conservative so the banner is a real signal worth talking
-about, not chart noise.
+The **Top team / Top developer / Top key** callouts only appear when one
+identity accounts for more than 50% of spend in the window — a
+deliberately conservative threshold so the banner flags real signal
+worth a conversation, not chart noise.
+
+The `Quota` column is reserved for the per-team / per-user soft- and
+hard-cap status surface (multi-user.md §6); until that ships, the column
+renders as `—`. Wire-up is one render-pass away when the cap data lands
+on `/analytics/by_team` and `/analytics/by_user`.

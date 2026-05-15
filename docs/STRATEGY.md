@@ -17,39 +17,46 @@ This doc captures the **why** behind the project — the kind of context an AI a
 
 The order of impact on a typical workload is **context > skills > model selection**. The current implementation has the inverse priority — routing is most built, skills exist as a Phase 2 wedge, the context-assembler is still architectural-diagram-only. This is a known mismatch to resolve.
 
-**Model-selection lever calibration (2026-05-14, §A3-rev finding):**
-the benchmark's `savings_pct` (66.7%) is the structural
-haiku-vs-sonnet rate-card ratio — multiply equal token counts by
-either rate and the ratio is fixed. It does not reflect a
-quality-weighted choice. The §A3-original finding (slot 4 picks
-haiku on every turn) survives §A3-rev:
-[`benchmarks/RESULTS.md §A3-rev`](../benchmarks/RESULTS.md) re-runs
-the same three-pass protocol with both originally identified
-unblocks landed (heuristic now penalizes
-`tool.completed.success=False`; `SessionManager` forwards
-`assistant_response_text` + `user_prompt_text` on
-`turn.completed.signals_extra`). Both unblocks are verifiably
-working at the per-turn level — hybrid escalations to the LLM
-judge fire on 15 turns across the three passes (vs 0 in
-§A3-original), the LLM judge returns differentiated 0.3 / 0.4 /
-0.7 / 0.8 / 1.0 scores reading real assistant text, and on
-`regex-with-edge-cases` the heuristic surfaces a +0.25 quality
-delta in sonnet's favor (Pass A haiku 0.75 vs Pass B sonnet 1.00).
-But slot 4 in Pass C still picks haiku on all 15 routed turns
-because the K-NN aggregation across mixed-workload clusters plus
-`cost_weight=0.3` consistently produces haiku-aggregated scores
-0.755–1.000 vs sonnet-aggregated 0.245–0.700. Pass C
-cost-per-quality-unit is **$0.0452** (vs §A3-original's $0.0477),
-essentially unchanged from haiku-only ($0.0426), well below sonnet
-($0.1472). The model-selection lever's *claimed* ceiling still
-depends on slot 4 inverting when haiku fails; §A3-rev identifies a
-third blocker (K-NN clustering ignores workload granularity, so
-per-workload quality signal is washed out by neighbors from other
-workloads), plus a lower-cost-weight knob (`routing/policy.py:40`
-default 0.3) that could compensate without code changes. Until
-those land, the headline `savings_pct` continues to be quoted as
-"rate-card savings *given haiku succeeds*," not "savings on
-successful work."
+**Model-selection lever calibration (2026-05-14, §A3-rev3 finding):**
+the benchmark's flat `savings_pct=66.7%` is the structural haiku-
+vs-sonnet rate-card ratio (equal-token counts × either rate). It
+does not reflect a quality-weighted choice. **§A3-rev3 is the first
+A3-series experiment where it stops being the only number.**
+[`benchmarks/RESULTS.md §A3-rev3`](../benchmarks/RESULTS.md) re-runs
+the three-pass protocol after Wave 9's one-line knob landed
+(`PatternConfig.min_confidence: 0.3 → 0.05`,
+[`routing/policy.py:63`](../packages/metis-core/src/metis_core/routing/policy.py#L63)).
+Pass C reaches slot 4 on **14 of 18 turns** (vs §A3-rev2's 3 of 16)
+and **picks sonnet on `regex-with-edge-cases` turn 2** — the hard
+"16-test edge cases" turn where haiku rubric-fails (0.19@0.80 in
+Pass A, 0.74@0.80 in Pass C). Cluster: haiku=0.784, sonnet=0.833,
+confidence=0.058 — would have been rejected under the prior 0.3
+gate. Pass C aggregate `savings_pct=62.0%` (4.7-point gap from
+flat-haiku 66.7% reflects the one sonnet pick on the expensive
+turn). Pass C quality sum **5.55 beats Pass A's 5.16 (+8%
+quality)** at cost-per-quality **$0.0477** — landing between
+haiku-only $0.0383 and sonnet-only $0.1176, with the headline that
+slot 4 routed sonnet *only* on the turn where it mattered.
+
+The savings posture moves from **"rate-card savings *given haiku
+succeeds*"** to **"differentiated routing picks the succeeding
+model on 1 of 6 evaluable workloads where it mattered; Pass C
+quality > Pass A quality at 40% of Pass B cost."** N=1 is one
+end-to-end demonstration, not a regime — the brittle parts are
+(a) the sample-size asymmetry on specific fingerprints (other
+workloads have sonnet-ahead cluster aggregates but haiku-ahead
+specific-fingerprint clusters that slot 4 saw at decision time),
+and (b) the residual per-turn-vs-workload signal divergence on
+`multi-turn-refactor`. Both are addressable in Wave 10 (more
+samples per cluster + the §A3-rev2 path #1 — wire
+`eval.completed(subject_kind=workload)` into
+`pattern.outcome_updated`).
+
+**The wedge mechanism shipped.** What's left is dialing up
+selectivity. Until Wave 10 lands, GTM headline numbers should
+quote both Pass C's flat `savings_pct=62.0%` *and* the
+sonnet-on-regex inversion (the two are reconcilable: the savings
+gap is the sonnet pick).
 
 ## 2. Buyer ≠ user
 
@@ -92,11 +99,12 @@ Trade-offs:
 Per `docs/market-research/synthesis.md` (verified 2026-05-09):
 
 - **Multi-provider + cost tracking + server/client split + Ollama** are *table stakes*, not differentiators. OpenCode (157k★), Claude Code (122k★), Cline (62k★), Goose (45k★), Aider (45k★) all do most of this.
-- **Defensible wedge** is the trio of:
+- **Defensible wedge** is the four-leg moat:
   1. Bounded agent-curated memory (Letta is the only Series-A peer; everyone else uses unbounded vector slop)
   2. Lossless canonical message format (LiteLLM has bug-of-the-week on this surface)
-  3. Task-fingerprint pattern learning + auto-derived skills (no one ships this)
-- **Cost optimization is the metric; learning is the mechanism.** The headline isn't "smart routing for cost." The headline is "the agent that gets cheaper the longer you use it because it learns your workload" — savings as the *outcome* of the differentiating mechanics.
+  3. Task-fingerprint pattern learning (no one ships this; spec at [`docs/specs/pattern-store.md`](specs/pattern-store.md); slot 4 wired Phase 2.5, differentiator demonstrated end-to-end in [`benchmarks/RESULTS.md §A3-rev3`](../benchmarks/RESULTS.md))
+  4. Auto-derived skill curation (no one ships this either; spec at [`docs/specs/skill-curator.md`](specs/skill-curator.md); Phase 4 implementation gated on Phase 2.5 agent-authored skills — `skill_save` tool + `skill.created(source="auto_generated")` event)
+- **Cost optimization is the metric; learning is the mechanism.** The headline isn't "smart routing for cost." The headline is "the agent that gets cheaper the longer you use it because it learns your workload" — savings as the *outcome* of the differentiating mechanics. Legs 3 and 4 compose: pattern learning picks the right model per task class; skill curation keeps the skill library that informs those tasks pruned and current. Each makes the other more valuable.
 
 Risks:
 - **Vercel AI SDK** shipping an Agent abstraction is the most credible "ate Metis's lunch" candidate.
@@ -121,6 +129,8 @@ Implication: the moat is execution speed + opinionated defaults + the FTS5/finge
 | 2026-05-14 | §A3 documents the model-selection lever's current ceiling | [`benchmarks/RESULTS.md §A3`](../benchmarks/RESULTS.md) — first three-pass benchmark where slot 4 fires on essentially every turn (17 of 18) reading cross-model outcomes; result: still picks haiku everywhere. Pass C cost-per-quality-unit `$0.0477` is the same shape as single-model haiku; the differentiator does not invert under hybrid-0.7 + the v1 heuristic + the current `signals_extra` plumbing. Identifies two follow-up unblocks (heuristic learns `tool.completed.success=False`; bus subscriber forwards `assistant_response_text` to the LLM judge), either sufficient alone. Adjusts §1's quoted savings posture to "rate-card savings *given haiku succeeds*." Total experiment spend: $1.026. |
 | 2026-05-14 | §A3-rev: both unblocks landed, differentiator *still* doesn't invert | [`benchmarks/RESULTS.md §A3-rev`](../benchmarks/RESULTS.md) — re-runs §A3's three-pass protocol after the two §A3 follow-up unblocks landed (heuristic penalty for `tool.completed.success=False`; `SessionManager` forwarding `user_prompt_text` + `assistant_response_text` on `turn.completed.signals_extra`). Both unblocks fire at the per-turn level: 15 hybrid escalations across passes (vs 0 in §A3-original); LLM judge produces differentiated 0.3 / 0.4 / 0.7 / 0.8 / 1.0 scores reading real assistant text; heuristic surfaces +0.25 sonnet/haiku quality delta on `regex-with-edge-cases`. But Pass C slot 4 picks haiku on all 15 routed turns (vs 17 of 17 in §A3-original) — the K-NN aggregation across mixed-workload clusters plus `cost_weight=0.3` cancels the per-workload signal (haiku-aggregated 0.755–1.000 vs sonnet-aggregated 0.245–0.700 on every cluster). Pass C cost-per-quality-unit `$0.0452`; essentially unchanged from haiku-only. Identifies a third unblock: K-NN clustering at workload granularity (or `cost_weight` reduction to ~0.1 via policy knob). Total experiment spend: $1.032. §1 quoted savings posture is unchanged ("rate-card savings *given haiku succeeds*"). |
 | 2026-05-14 | Gateway v1 shipped | Transparent HTTP gateway ([`apps/gateway/`](../apps/gateway/)) exposes `POST /v1/chat/completions` (OpenAI shape) and `POST /v1/messages` (Anthropic shape), each in sync + SSE flavors, routed via `metis_core.routing.RoutingEngine` with `gateway_key_id` + `inbound_shape` stamped on every `llm.call_completed` / `turn.completed`. Per-request stateless (no session manager / tool dispatcher / memory store / skill loader); loopback-only bind. `metis gateway issue-key` creates keys; the keystore stores SHA-256 hashes, the plaintext token is printed once. Live-validated on 2026-05-14 at ~$0.0002 / 4 calls (OpenAI + Anthropic shapes, sync + SSE) with per-key cost roll-up confirmed via direct SQL on the trace DB. This is the §3 hybrid's "gateway first" leg in production-shape; §6.3 (local-first vs SaaS) **remains open** — the gateway can be deployed in either posture and no GTM evidence has pinned the choice. Follow-on: the `group_by=gateway_key` dimension on `/analytics/cost` (gateway.md §V) is not yet wired; per-key analytics today requires direct SQL. |
+| 2026-05-14 | §A3-rev3: differentiator inverts on 1 workload | [`benchmarks/RESULTS.md §A3-rev3`](../benchmarks/RESULTS.md) — re-runs the three-pass protocol after Wave 9's one-line knob landed (`PatternConfig.min_confidence: 0.3 → 0.05`, [`routing/policy.py:63`](../packages/metis-core/src/metis_core/routing/policy.py#L63)). Pass C reaches slot 4 on **14 of 18 turns** (vs §A3-rev2's 3 of 16) and **picks sonnet on `regex-with-edge-cases` turn 2** — cluster haiku=0.784, sonnet=0.833, confidence=0.058 (above the new 0.05 gate, below the old 0.3). First end-to-end demonstration of differentiated routing in any A3 series. Pass C `savings_pct=62.0%` (vs flat-haiku 66.7%); regex row 35.5%. Pass C quality sum 5.55 beats Pass A's 5.16 (+8%) at cost-per-quality `$0.0477` (between haiku-only `$0.0383` and sonnet-only `$0.1176`). Wave 8a's three unblocks (workload-tag partition, `cost_weight=0.1`, grounding-check) remain load-bearing; Wave 9's knob is the missing piece, not a replacement. Adjusts §1's quoted savings posture from "rate-card savings *given haiku succeeds*" to "differentiated routing picks the succeeding model on 1 of 6 evaluable workloads; quality > haiku-only at 40% of sonnet-only cost." Total experiment spend: $1.138. |
+| 2026-05-14 | Skill curator specced; moat reframed as four legs | New spec [`docs/specs/skill-curator.md`](specs/skill-curator.md) (~620 lines, pattern lifted from hermes-agent's `agent/curator.py`). Periodic auxiliary-model maintenance of agent-authored skills only: six actions (pin / unpin / archive / restore / consolidate / edit); never auto-deletes (archive is `mv` to `skills-archive/`, restoration is `mv` back); user-authored skills are read-only (touchability gated by `skill.created.source ∈ {auto_generated, curator_generated}`); pinned bypasses every auto-transition; no SKILL.md frontmatter changes (state in sidecar JSON, preserves agentskills.io conformance); bounded spend via shared `BudgetTracker` (curator caps `$0.50/run`, `$1.00/day` independent of evaluator caps); one new `skill.curated` event + two run-boundary events. Defaults match Hermes empirics: weekly interval, 30-day stale soft annotation, 90-day archive hard threshold. **Implementation is Phase 4 (Wave 17), gated on Phase 2.5 agent-authored skills (`skill_save` tool + `skill.created(source="auto_generated")` event) landing first — that prereq is itself not yet planned and is also not GA-blocking.** §4 reframed: the moat now lists four legs (added "auto-derived skill curation"); legs 3 and 4 compose (pattern learning picks the right model per task class; skill curation keeps the skill library that informs those tasks pruned and current). No code changes in this entry — spec-only, AGENTS.md / CHANGES.md updated. |
 
 ## 6. Open questions (decisions deferred)
 
@@ -133,7 +143,7 @@ These are **live**. AI agents working in the repo should not unilaterally close 
 5. **Context-assembler design.** The biggest cost lever (per §1) has no spec. What's the algorithm for: skill loading (description-match vs activation), history compression vs drop, prompt-cache breakpoint placement, behavior near the context window? Each has direct $$ consequences.
 6. ~~**Pattern store mechanics.**~~ **Resolved 2026-05-14** — see [`docs/specs/pattern-store.md`](specs/pattern-store.md). Per-workspace bounded SQLite store powering routing slot 4 (`PATTERN_RECOMMENDATION`) per [`routing-engine.md §5.5`](specs/routing-engine.md); structural-only v1 fingerprint, sample-size-weighted K-NN aggregation, three new `pattern.*` event types pending catalog addition at Phase 2.5 implementation. Embedding-provider-abstract for v2 hybrid mode. §5 dated decision entry added in the same change.
 7. ~~**Evaluator scope.**~~ **Resolved 2026-05-14** — see [`docs/specs/evaluator.md`](specs/evaluator.md). Heuristic-first / hybrid-LLM-as-judge feedback loop across four subject kinds; `EvalVerdict` with a single `score` + confidence gate; append-only (re-evaluation produces new verdicts); cost-capped per session and per day; pattern-store consumption pinned in the 2026-05-14 reconciliation sweep (see CHANGES.md). §5 dated decision entry added in the same change.
-8. **Pricing model for the product itself.** Per-seat? % of savings? Free + paid features? Tied to deployment shape from §3.
+8. **Pricing model for the product itself.** Per-seat? % of savings? Free + paid features? Tied to deployment shape from §3. **Specced 2026-05-14; awaiting commercial decision** — see [`docs/specs/pricing.md`](specs/pricing.md). The spec surveys the candidate models (per-seat / per-call / %-of-savings / open-core / hybrid combinations), names the trade-offs each one creates, and recommends open-core gateway + per-seat Pro tier + reserved enterprise %-of-savings add-on. The recommendation composes with the multi-user identity layer ([`docs/specs/multi-user.md §5`](specs/multi-user.md)) and the shipped savings counterfactual ([`docs/specs/analytics-api.md §4.7`](specs/analytics-api.md)) without new metering primitives. **Question stays open until the owner ratifies a model.**
 
 ## 7. What changes about the build if §3 lands one way or the other
 

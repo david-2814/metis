@@ -85,7 +85,8 @@ Tokens are issued out-of-band via `metis gateway issue-key --name "<display>" --
 | `name` | `--name` | Display label. |
 | `workspace_path` | `--workspace` | Exactly one workspace per key in v1 (§11). |
 | `allowed_models` | `--allow-models` (optional) | Tuple of canonical model ids; non-conforming routing falls through. |
-| `daily_cap_usd` | `--daily-cap-usd` (optional) | Reserved; circuit breaker integration deferred. |
+| `daily_cap_usd` | `--daily-cap-usd` (optional) | Per-key daily spend cap. `Decimal`, must be > 0. Hard breaker (§6.4); soft alerts at 80% / 95%. |
+| `monthly_cap_usd` | `--monthly-cap-usd` (optional) | Per-key calendar-month spend cap (UTC). Same enforcement model as `daily_cap_usd`. |
 | `user_id` | `--user` (optional) | Stable per-developer identity tag (see [`multi-user.md §4.2`](multi-user.md)). `^[a-z0-9_-]+$`. Existing keys with `None` keep working. |
 | `team_id` | `--team` (optional) | Stable team identity tag ([`multi-user.md §4.2`](multi-user.md)). `^[a-z0-9_-]+$`. |
 
@@ -246,6 +247,37 @@ Additive payload fields (no new event types, no breaking changes):
 
 These additive fields drive [`analytics-api.md`](analytics-api.md) §4.1 (`group_by=gateway_key`) and §4.8 (`/analytics/by_key`), and the new `group_by=user` / `group_by=team` / `/analytics/by_team` surfaces in [`multi-user.md §5`](multi-user.md). Existing consumers ignore unknown fields.
 
+### 6.4 Quota events (multi-user.md §5)
+
+Two additional event types fire from the gateway's per-request auth path when a key carries a `daily_cap_usd` or `monthly_cap_usd`. Both are pseudonymous (stable ids, no plaintext PII).
+
+| Event type | When | Payload (new) |
+|---|---|---|
+| `quota.alert` | Spend on the key/user/team is in [80%, 95%) (`severity="warning"`) or [95%, 100%) (`severity="critical"`) of the configured cap. One event per (request, scope) — the same scope on a later request fires again, but the same scope twice in one request does not. | `scope`, `severity`, `current_usd`, `limit_usd`, `percentage`, `gateway_key_id?`, `user_id?`, `team_id?` |
+| `gateway.quota_exceeded` | Spend has reached the cap (≥100%). Emitted alongside the 429 response described below — no quota.alert is also emitted in this case. | `scope`, `current_usd`, `limit_usd`, `inbound_shape`, `gateway_key_id?`, `user_id?`, `team_id?` |
+
+`scope` is one of `key_daily`, `key_monthly`, `user_daily`, `user_monthly`, `team_daily`, `team_monthly` (multi-user.md §5.1) — v1 ships `key_daily` and `key_monthly` only; user/team scopes land when `users.json` / `teams.json` do.
+
+When the hard cap fires, the HTTP layer returns **429** with the documented body shape:
+
+```json
+{
+  "error": {
+    "code": "quota_exceeded",
+    "identity": "key",
+    "scope": "key_daily",
+    "limit_usd": "1.00",
+    "current_usd": "1.50",
+    "type": "rate_limit_error",
+    "message": "key_daily cap of $1.00 hit ($1.50 spent)"
+  }
+}
+```
+
+The shape is the same for OpenAI and Anthropic inbound clients; only the trailing `type` discriminator (always `rate_limit_error` here) is wired for shape parity. The check runs **before** routing or adapter invocation, so a capped identity never burns provider-side cost on a rejected request.
+
+Soft alerts and the hard breaker share the same SQL projection (`AnalyticsStore.cost(group_by=...)`-shaped query) running once per request through a per-request `RequestQuotaCache`. Daily windows reset at UTC midnight; monthly windows at UTC first-of-month.
+
 ---
 
 ## 7. Persistence
@@ -292,7 +324,7 @@ These are *not* features of the v1 gateway and not part of this spec's contract:
 2. **Streaming response cancellation propagation from gateway to provider for partial output.** v1 cancels on client disconnect; whether the provider charges for in-flight tokens is the provider's call.
 3. **Response caching** (semantic or exact). Different cost lever; different design (cache key, invalidation, TTL). LiteLLM and Portkey both ship this; defer until evidence it's load-bearing for our buyers.
 4. **Prompt registry / templating** (the Portkey / Helicone "Prompt" surface). Out of scope; the gateway is dumb pipe + routing.
-5. **Per-key rate limiting beyond a daily-cap circuit breaker.** Add when a buyer needs it; the existing pricing pipeline can drive a soft cap without new infrastructure. v1 stores `daily_cap_usd` but doesn't enforce it.
+5. **Per-key rate limiting beyond the daily / monthly cap circuit breaker.** v1 ships hard breakers + soft alerts on `daily_cap_usd` / `monthly_cap_usd` (§6.4); request-rate limits and IP-bucket throttles are out of scope.
 6. **Non-loopback bind.** Production deployment behind a TLS terminator is gated behind future hardening (auth/rate limiting/audit). See §3.2.
 
 ---

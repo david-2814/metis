@@ -33,6 +33,7 @@ from metis_core.pricing import DEFAULT_PRICE_TABLE
 from metis_core.routing import EMPTY_POLICY, ModelRegistry, RoutingEngine
 from metis_core.trace.store import TraceStore
 from metis_gateway.auth import GatewayKey, Keystore
+from metis_gateway.quotas import QuotaTracker
 from metis_gateway.runtime import GatewayRuntime
 
 
@@ -368,6 +369,7 @@ async def runtime(
         aliases=["haiku"],
     )
     routing = RoutingEngine(registry=registry, bus=bus, policy=EMPTY_POLICY)
+    quota_tracker = QuotaTracker(db_file)
     rt = GatewayRuntime(
         bus=bus,
         trace=trace,
@@ -378,8 +380,10 @@ async def runtime(
         adapters=[scripted_adapter],
         db_file=db_file,
         global_default_model="anthropic:claude-sonnet-4-6",
+        quota_tracker=quota_tracker,
     )
     yield rt
     await bus.drain()
     await bus.stop()
     trace.close()
+    quota_tracker.close()

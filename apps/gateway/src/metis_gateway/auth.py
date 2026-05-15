@@ -20,6 +20,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,11 @@ class GatewayKey:
 
     `user_id` / `team_id` are the optional identity tags from multi-user.md
     §4.2; both default to `None` for v1 keys issued before the field landed.
+
+    `daily_cap_usd` / `monthly_cap_usd` are optional spend caps per
+    `multi-user.md §5.1`. `Decimal` end-to-end so the quota tracker can
+    compare against summed cost without float drift. Pre-quota keys load
+    with both fields `None` (no cap → no enforcement, no soft alert).
     """
 
     key_id: str
@@ -67,7 +73,8 @@ class GatewayKey:
     name: str
     workspace_path: str
     allowed_models: tuple[str, ...] | None = None
-    daily_cap_usd: float | None = None
+    daily_cap_usd: Decimal | None = None
+    monthly_cap_usd: Decimal | None = None
     user_id: str | None = None
     team_id: str | None = None
 
@@ -145,9 +152,8 @@ class Keystore:
                 if not isinstance(allowed, list):
                     raise KeystoreError(f"keystore keys[{index}].allowed_models must be a list")
                 allowed_tuple = tuple(str(m) for m in allowed)
-            daily_cap = entry.get("daily_cap_usd")
-            if daily_cap is not None and not isinstance(daily_cap, (int, float)):
-                raise KeystoreError(f"keystore keys[{index}].daily_cap_usd must be numeric")
+            daily_cap = _parse_cap_field(entry, index=index, field_name="daily_cap_usd")
+            monthly_cap = _parse_cap_field(entry, index=index, field_name="monthly_cap_usd")
             user_id = _parse_identity_field(entry, index=index, field_name="user_id")
             team_id = _parse_identity_field(entry, index=index, field_name="team_id")
             keys.append(
@@ -157,7 +163,8 @@ class Keystore:
                     name=name,
                     workspace_path=workspace_path,
                     allowed_models=allowed_tuple,
-                    daily_cap_usd=float(daily_cap) if daily_cap is not None else None,
+                    daily_cap_usd=daily_cap,
+                    monthly_cap_usd=monthly_cap,
                     user_id=user_id,
                     team_id=team_id,
                 )
@@ -192,6 +199,44 @@ class Keystore:
 
     def __len__(self) -> int:
         return len(self._by_hash)
+
+
+def validate_cap_usd(value: Decimal | float | int | str, *, field_name: str) -> Decimal:
+    """Coerce a cap value to a strictly-positive `Decimal`.
+
+    multi-user.md §5.1 — caps are USD amounts; zero or negative is rejected
+    so a misconfigured "0.0" cap can't masquerade as "always blocked." Used
+    by both the issue-key CLI and the keystore loader so the rejection
+    message is identical at both entry points.
+    """
+    try:
+        if isinstance(value, Decimal):
+            decimal_value = value
+        elif isinstance(value, bool):
+            raise ValueError(f"{field_name} must be a positive number")
+        elif isinstance(value, (int, float)):
+            decimal_value = Decimal(str(value))
+        elif isinstance(value, str):
+            decimal_value = Decimal(value)
+        else:
+            raise ValueError(f"{field_name} must be a positive number")
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive number") from exc
+    if decimal_value <= 0:
+        raise ValueError(f"{field_name} must be > 0")
+    return decimal_value
+
+
+def _parse_cap_field(entry: dict[str, Any], *, index: int, field_name: str) -> Decimal | None:
+    raw_value = entry.get(field_name)
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, (int, float, str)) or isinstance(raw_value, bool):
+        raise KeystoreError(f"keystore keys[{index}].{field_name} must be numeric")
+    try:
+        return validate_cap_usd(raw_value, field_name=f"keys[{index}].{field_name}")
+    except ValueError as exc:
+        raise KeystoreError(str(exc)) from exc
 
 
 def _parse_identity_field(entry: dict[str, Any], *, index: int, field_name: str) -> str | None:

@@ -180,10 +180,23 @@ class EventBus:
             self._dispatch_task = None
 
     async def drain(self) -> None:
-        """Wait for the queue and all in-flight handler tasks to complete."""
-        await self._queue.join()
-        if self._pending_tasks:
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+        """Wait for the queue and all in-flight handler tasks to complete.
+
+        Loops to quiescent: handler tasks can emit new events (the pattern
+        subscriber emits `pattern.recorded`, the evaluator emits
+        `eval.completed`, the latter's handler then writes the score back
+        via `update_score`). Awaiting only the first wave of in-flight
+        tasks leaves the cascading dispatches mid-flight, which causes
+        callers that immediately detach subscribers — `shutdown_runtime` in
+        the agent loop — to drop the cascading work
+        ([`benchmarks/RESULTS.md §A3-rev3 caveats`](../../../../benchmarks/RESULTS.md)
+        and the matching regression test in `tests/patterns/test_subscriber.py`).
+        """
+        while True:
+            await self._queue.join()
+            if not self._pending_tasks:
+                return
+            await asyncio.gather(*list(self._pending_tasks), return_exceptions=True)
 
     # ---- Subscription --------------------------------------------------
 

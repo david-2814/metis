@@ -51,8 +51,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --system metis \
-    && useradd --system --gid metis --home-dir /home/metis --create-home metis
+RUN groupadd --gid 1000 metis \
+    && useradd --uid 1000 --gid 1000 --home-dir /home/metis --create-home metis
 
 # Copy the resolved venv and the workspace source. The venv contains
 # editable-install .pth entries pointing at /app/packages and /app/apps,

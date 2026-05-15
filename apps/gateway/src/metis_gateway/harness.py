@@ -128,6 +128,7 @@ class GatewayHarness:
         allowed_models: tuple[str, ...] | None,
         is_disconnected: _DisconnectProbe | None = None,
         system_prompt_volatile: str | None = None,
+        team_budget_remaining_usd: Decimal | None = None,
     ) -> GatewayCallResult:
         workspace_path = identity.workspace_path
         session_id = f"gw_{new_message_id()}"
@@ -145,6 +146,7 @@ class GatewayHarness:
             output_schema=output_schema,
             per_message_override=resolved_override,
             workspace_path=workspace_path,
+            team_budget_remaining_usd=team_budget_remaining_usd,
         )
         try:
             decision = self.routing.decide(ctx)
@@ -289,6 +291,7 @@ class GatewayHarness:
         allowed_models: tuple[str, ...] | None,
         is_disconnected: _DisconnectProbe | None = None,
         system_prompt_volatile: str | None = None,
+        team_budget_remaining_usd: Decimal | None = None,
     ) -> AsyncIterator[StreamingEvent]:
         workspace_path = identity.workspace_path
         """Stream canonical StreamingEvents while emitting the same trace
@@ -319,6 +322,7 @@ class GatewayHarness:
             output_schema=output_schema,
             per_message_override=resolved_override,
             workspace_path=workspace_path,
+            team_budget_remaining_usd=team_budget_remaining_usd,
         )
         try:
             decision = self.routing.decide(ctx)
@@ -469,6 +473,7 @@ class GatewayHarness:
         output_schema: dict | None,
         per_message_override: str | None,
         workspace_path: str,
+        team_budget_remaining_usd: Decimal | None = None,
     ) -> TurnContext:
         seed_model = per_message_override or self.global_default_model
         seed_adapter = (
@@ -508,6 +513,7 @@ class GatewayHarness:
             global_default_model=self.global_default_model,
             user_message_text=user_message_text,
             workspace_path=workspace_path,
+            team_budget_remaining_usd=team_budget_remaining_usd,
         )
 
     # ---- Event emitters ----------------------------------------------

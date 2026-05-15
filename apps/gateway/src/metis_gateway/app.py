@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import msgspec
 from metis_core.adapters.tool_id_map import ToolIdMap
@@ -44,6 +45,11 @@ from metis_gateway.harness import (
     RoutingFailedError,
     UpstreamProviderError,
     make_disconnect_probe,
+)
+from metis_gateway.quotas import (
+    QuotaExceeded,
+    RequestQuotaCache,
+    enforce_quotas,
 )
 from metis_gateway.runtime import GatewayRuntime
 from metis_gateway.translators import (
@@ -125,6 +131,19 @@ async def chat_completions(request: Request) -> Response:
             code="invalid_api_key",
         )
 
+    identity = identity_from_key(key)
+    quota_cache = _build_quota_cache(runtime)
+    if quota_cache is not None:
+        verdict = enforce_quotas(
+            bus=runtime.bus,
+            cache=quota_cache,
+            key=key,
+            identity=identity,
+            inbound_shape="openai",
+        )
+        if verdict is not None:
+            return _quota_exceeded_response(verdict, shape="openai")
+
     try:
         raw = await request.body()
     except Exception as exc:
@@ -158,14 +177,17 @@ async def chat_completions(request: Request) -> Response:
     )
 
     probe = make_disconnect_probe(request.is_disconnected)
+    team_budget_remaining = _team_budget_remaining(quota_cache, key)
 
     if parsed.stream:
         return await _stream_chat_completions(
             harness=harness,
             parsed=parsed,
             key=key,
+            identity=identity,
             probe=probe,
             tool_map=tool_map,
+            team_budget_remaining_usd=team_budget_remaining,
         )
 
     try:
@@ -178,9 +200,10 @@ async def chat_completions(request: Request) -> Response:
             stop_sequences=parsed.stop_sequences,
             output_schema=parsed.output_schema,
             requested_model=parsed.model,
-            identity=identity_from_key(key),
+            identity=identity,
             allowed_models=key.allowed_models,
             is_disconnected=probe,
+            team_budget_remaining_usd=team_budget_remaining,
         )
     except RoutingFailedError as exc:
         return _openai_error(
@@ -212,8 +235,10 @@ async def _stream_chat_completions(
     harness: GatewayHarness,
     parsed,
     key,
+    identity,
     probe,
     tool_map: ToolIdMap,
+    team_budget_remaining_usd,
 ) -> Response:
     """Drive `GatewayHarness.stream(...)` and return an SSE StreamingResponse.
 
@@ -230,9 +255,10 @@ async def _stream_chat_completions(
         stop_sequences=parsed.stop_sequences,
         output_schema=parsed.output_schema,
         requested_model=parsed.model,
-        identity=identity_from_key(key),
+        identity=identity,
         allowed_models=key.allowed_models,
         is_disconnected=probe,
+        team_budget_remaining_usd=team_budget_remaining_usd,
     )
 
     try:
@@ -297,6 +323,19 @@ async def messages(request: Request) -> Response:
             "invalid or missing API key", status=401, type_="authentication_error"
         )
 
+    identity = identity_from_key(key)
+    quota_cache = _build_quota_cache(runtime)
+    if quota_cache is not None:
+        verdict = enforce_quotas(
+            bus=runtime.bus,
+            cache=quota_cache,
+            key=key,
+            identity=identity,
+            inbound_shape="anthropic",
+        )
+        if verdict is not None:
+            return _quota_exceeded_response(verdict, shape="anthropic")
+
     try:
         raw = await request.body()
     except Exception as exc:
@@ -325,9 +364,17 @@ async def messages(request: Request) -> Response:
     )
 
     probe = make_disconnect_probe(request.is_disconnected)
+    team_budget_remaining = _team_budget_remaining(quota_cache, key)
 
     if parsed.stream:
-        return await _stream_messages(harness=harness, parsed=parsed, key=key, probe=probe)
+        return await _stream_messages(
+            harness=harness,
+            parsed=parsed,
+            key=key,
+            identity=identity,
+            probe=probe,
+            team_budget_remaining_usd=team_budget_remaining,
+        )
 
     try:
         result = await harness.call(
@@ -340,9 +387,10 @@ async def messages(request: Request) -> Response:
             stop_sequences=parsed.stop_sequences,
             output_schema=None,
             requested_model=parsed.model,
-            identity=identity_from_key(key),
+            identity=identity,
             allowed_models=key.allowed_models,
             is_disconnected=probe,
+            team_budget_remaining_usd=team_budget_remaining,
         )
     except RoutingFailedError as exc:
         return _anthropic_error(str(exc), status=503, type_="overloaded_error")
@@ -362,7 +410,9 @@ async def _stream_messages(
     harness: GatewayHarness,
     parsed,
     key,
+    identity,
     probe,
+    team_budget_remaining_usd,
 ) -> Response:
     """Drive `GatewayHarness.stream(...)` and return Anthropic SSE.
 
@@ -380,9 +430,10 @@ async def _stream_messages(
         stop_sequences=parsed.stop_sequences,
         output_schema=None,
         requested_model=parsed.model,
-        identity=identity_from_key(key),
+        identity=identity,
         allowed_models=key.allowed_models,
         is_disconnected=probe,
+        team_budget_remaining_usd=team_budget_remaining_usd,
     )
 
     try:
@@ -554,6 +605,78 @@ def _anthropic_error_from_adapter(exc: UpstreamProviderError) -> Response:
     if cls == ErrorClass.SERVER_ERROR:
         return _anthropic_error(str(adapter_error), status=503, type_="overloaded_error")
     return _anthropic_error(str(adapter_error), status=500, type_="api_error")
+
+
+# ---------------------------------------------------------------------------
+# Quota helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_quota_cache(runtime: GatewayRuntime) -> RequestQuotaCache | None:
+    """Per-request quota cache; `None` when the runtime has no tracker.
+
+    The agent-loop runtime (`metis serve`) doesn't ship a tracker
+    today; this guard lets the gateway HTTP path stay agnostic of
+    whether quotas are wired.
+    """
+    if runtime.quota_tracker is None:
+        return None
+    return RequestQuotaCache(runtime.quota_tracker)
+
+
+def _team_budget_remaining(quota_cache: RequestQuotaCache | None, key) -> Decimal | None:
+    """The team's monthly headroom (cap minus team's month spend), or None.
+
+    Drives the `team_budget_remaining_lt` routing predicate. v1 uses the
+    key's `monthly_cap_usd` as the team budget proxy because
+    `teams.json` (multi-user.md §4.2) is not built yet — every key in
+    a team typically shares the same cap. Returns `None` (which
+    evaluates to "no constraint") when the key has no team binding or
+    no monthly cap.
+    """
+    if quota_cache is None or key.team_id is None or key.monthly_cap_usd is None:
+        return None
+    status = quota_cache.status(
+        identity_kind="team",
+        identity_value=key.team_id,
+        window="monthly",
+        cap_usd=key.monthly_cap_usd,
+    )
+    return status.remaining_usd()
+
+
+def _quota_exceeded_response(verdict: QuotaExceeded, *, shape: str) -> Response:
+    """Render a `QuotaExceeded` as the documented 429 body.
+
+    multi-user.md §5 / gateway.md §6.4:
+
+        {"error": {"code": "quota_exceeded", "identity": "user|team|key",
+                   "limit_usd": ..., "current_usd": ...}}
+
+    Shape-specific framing matches the existing error envelopes — OpenAI
+    clients see the canonical `error.code` shape; Anthropic clients see
+    the same shape (the body is shared between both inbound shapes per
+    gateway.md §6.4).
+    """
+    body = {
+        "error": {
+            "code": "quota_exceeded",
+            "identity": verdict.identity_kind,
+            "scope": verdict.scope,
+            "limit_usd": format(verdict.limit_usd, "f"),
+            "current_usd": format(verdict.current_usd, "f"),
+            "message": (
+                f"{verdict.scope} cap of ${verdict.limit_usd} hit (${verdict.current_usd} spent)"
+            ),
+        }
+    }
+    if shape == "anthropic":
+        # Anthropic clients also expect a `type` discriminator on the error
+        # envelope (gateway.md §8). 429 maps to `rate_limit_error`.
+        body["error"]["type"] = "rate_limit_error"
+    else:
+        body["error"]["type"] = "rate_limit_error"
+    return _json(body, status=429)
 
 
 __all__ = [

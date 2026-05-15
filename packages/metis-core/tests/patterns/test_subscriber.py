@@ -417,3 +417,75 @@ async def test_submit_turn_workload_id_flows_into_pattern_recorded(
         assert foo_sig != bar_sig
     finally:
         store.close()
+
+
+async def test_drain_processes_eval_completed_cascade_before_returning(
+    bus, event_log, tmp_path: Path
+) -> None:
+    """Regression for the §A3-rev3 outcome-update bug.
+
+    With both the evaluator and the pattern subscriber attached, a single
+    `turn.completed` event sets off a cascade: pattern subscriber records
+    an outcome row (and emits `pattern.recorded`), evaluator emits
+    `eval.started` + `eval.completed`, and pattern subscriber's
+    `_on_eval_completed` handler applies the score via `update_score`.
+
+    The cascade lives in handler tasks emitting new events. `bus.drain()`
+    has to await *every level* of that cascade — not just the first wave
+    of in-flight tasks — or callers that detach subscribers immediately
+    after drain (as `shutdown_runtime` does) drop the score before it
+    lands on the outcome row. Symptom in the wild:
+    `success_score_count = 0` on a `pattern.recorded` row whose matching
+    `eval.completed` is durable in the trace DB
+    (see [`benchmarks/RESULTS.md §A3-rev3 caveats`](../../benchmarks/RESULTS.md)).
+    """
+    from metis_core.eval import register_evaluator
+    from metis_core.patterns.fingerprint import (
+        build_structural_features,
+        structural_signature,
+    )
+    from metis_core.trace.store import TraceStore
+
+    trace_db = tmp_path / "trace.db"
+    trace = TraceStore(trace_db)
+    trace_handle = trace.attach_to(bus, name="trace-store")
+    store = PatternStore(tmp_path)
+    try:
+        subscriber = PatternEventSubscriber(
+            store_factory=lambda _ws: store,
+            workspace_resolver=lambda _sid: str(tmp_path),
+            bus=bus,
+        )
+        subscriber.attach()
+        evaluator, _ = register_evaluator(bus, trace)
+
+        session_id = "sess_cascade"
+        turn_id = "turn_cascade"
+        subscriber.set_fingerprint_inputs(turn_id, _fingerprint_inputs(str(tmp_path)))
+        _emit_route(bus, session_id=session_id, turn_id=turn_id, model="m_a")
+        _emit_turn_completed(bus, session_id=session_id, turn_id=turn_id, cost=0.01)
+
+        # One drain call must walk the full cascade: pattern.recorded +
+        # eval.started + eval.completed + the eval.completed handler that
+        # writes update_score. After this returns we detach immediately
+        # (mirroring `shutdown_runtime` in apps/cli/.../runtime.py).
+        await bus.drain()
+        evaluator.unregister()
+        subscriber.detach()
+
+        # The outcome row must carry the eval score. If drain returned
+        # before the cascading eval.completed reached `_on_eval_completed`,
+        # `success_score_count` stays at 0.
+        sig = structural_signature(build_structural_features(_fingerprint_inputs(str(tmp_path))))
+        fp_id = store._lookup_fingerprint_by_sig(sig, None)
+        row = store._lookup_outcome(fp_id, "m_a")
+        assert row is not None
+        assert row["success_score_count"] >= 1, (
+            f"eval.completed score never reached the outcome row "
+            f"(success_score_count={row['success_score_count']}); "
+            f"drain() likely returned before the cascade finished."
+        )
+    finally:
+        bus.unsubscribe(trace_handle)
+        store.close()
+        trace.close()

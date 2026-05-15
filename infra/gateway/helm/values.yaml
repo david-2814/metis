@@ -214,8 +214,12 @@ keystore:
   # the METIS_GATEWAY_KEYSTORE env var below.
   mountPath: /etc/metis/keys.json
   # -- Seed contents for the ConfigMap-backed keystore when existingSecret
-  # is empty. Leave as "{}" — issue real keys with `metis gateway
-  # issue-key` and roll them in via existingSecret in production.
+  # is empty. The gateway REJECTS an empty `keys` array at startup, so the
+  # default below is only useful for `helm template` rendering and chart
+  # tests. For a real install: issue a key with `metis gateway issue-key`
+  # out-of-band, wrap it in a Secret, and set `keystore.existingSecret`
+  # (recipe under "Kubernetes via helm > Quickstart" in
+  # docs/gateway-deployment.md).
   seed: |
     {
       "keys": []

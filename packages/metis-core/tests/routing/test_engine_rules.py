@@ -11,6 +11,7 @@ Verifies:
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 import pytest
 from metis_core.events.bus import EventBus, EventFilter, Subscription
@@ -22,6 +23,7 @@ from metis_core.routing.policy import (
     MessageMatches,
     RoutingPolicy,
     Rule,
+    TeamBudgetRemainingLt,
     WorkspaceScope,
 )
 
@@ -313,4 +315,56 @@ async def test_no_policy_behaves_like_before(bus, event_log, registry):
     await bus.drain()
     await bus.stop()
     assert decision.chosen_model == "anthropic:claude-sonnet-4-6"
+    assert decision.chain[2].verdict == "not_applicable"
+
+
+# ---- team_budget_remaining_lt rule (multi-user.md §6.1) -----------------
+
+
+async def test_team_budget_remaining_lt_rule_routes_to_cheaper_model(bus, event_log, registry):
+    """A configured rule using `team_budget_remaining_lt` must win the rule
+    slot when the team's headroom drops below the threshold, so Opus turns
+    fall back to Sonnet/Haiku before the gateway hard breaker fires."""
+    policy = _policy(
+        rules=[
+            Rule(
+                name="team-eng-headroom-soft-cap",
+                when=TeamBudgetRemainingLt(threshold_usd=10.0),
+                use="anthropic:claude-haiku-4-5",
+            )
+        ]
+    )
+    engine = RoutingEngine(registry=registry, bus=bus, policy=policy)
+    ctx = _ctx(
+        user_message_text="hi",
+        team_budget_remaining_usd=Decimal("5.00"),
+    )
+    decision = engine.decide(ctx)
+    await bus.drain()
+    await bus.stop()
+    assert decision.chosen_model == "anthropic:claude-haiku-4-5"
+    assert decision.winner_index == 2
+    rule_eval = decision.chain[2]
+    assert rule_eval.verdict == "chose"
+    assert rule_eval.rule_name == "team-eng-headroom-soft-cap"
+
+
+async def test_team_budget_remaining_lt_rule_skips_when_no_team_binding(bus, event_log, registry):
+    """Agent-loop traffic — `team_budget_remaining_usd is None` — never
+    trips the predicate; the rule is skipped and routing falls through."""
+    policy = _policy(
+        rules=[
+            Rule(
+                name="team-eng-headroom-soft-cap",
+                when=TeamBudgetRemainingLt(threshold_usd=10.0),
+                use="anthropic:claude-haiku-4-5",
+            )
+        ]
+    )
+    engine = RoutingEngine(registry=registry, bus=bus, policy=policy)
+    ctx = _ctx(user_message_text="hi")  # no team_budget_remaining_usd
+    decision = engine.decide(ctx)
+    await bus.drain()
+    await bus.stop()
+    assert decision.chosen_model == "anthropic:claude-sonnet-4-6"  # global default
     assert decision.chain[2].verdict == "not_applicable"

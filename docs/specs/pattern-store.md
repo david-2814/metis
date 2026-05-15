@@ -1,13 +1,19 @@
 # Pattern Store Specification
 
-**Status:** Draft v1 (specs-only; no implementation yet)
-**Last updated:** 2026-05-13
+**Status:** v1 implemented (Phase 2.5; routing slot 4 wired); v2 contract drafted in §16 (Phase 4 implementation pending §A3-rev3)
+**Last updated:** 2026-05-14
 
 > **v1 scope.** Per-workspace, bounded SQLite-backed store of task fingerprints
 > + outcomes that powers routing slot 4 (`PATTERN_RECOMMENDATION`) per
 > `routing-engine.md §5.5`. Phase 2.5 wedge. Embedding-provider-agnostic;
 > v1 default fingerprint is purely structural (no embeddings). Multi-user
 > aggregation is Phase 3+ and explicitly out of scope.
+>
+> **v2 scope (§16).** Hybrid fingerprint with a pluggable `EmbeddingProvider`,
+> a bounded embedding cache, and a blended cosine-plus-Jaccard similarity.
+> Implementation contingent on §A3-rev3 (Wave 9 candidate) failing to
+> invert slot 4 under v1's structural-only fingerprint after Wave 8a's
+> three unblocks. If §A3-rev3 inverts, v2 stays specs-only.
 
 ---
 
@@ -355,11 +361,15 @@ The rationale for each field:
 | `workload_id`                    | Optional caller-supplied tag (`str \| None`, default `None`). When the caller is the benchmark harness (one workload per run) it's the workload name; agent-loop sessions leave it `None`. A near-keyed partition for K-NN — see §5.3. |
 
 **v2 hybrids** add an embedding vector over the user message text, with
-the structural features still used as a hard pre-filter (an "auth bug"
-embedding shouldn't match a "format JSON" turn even if texts are
-superficially similar). Hybrid mode is **not** in v1; the schema admits
-it (`Fingerprint.kind`, `embedding`, `embedding_provider`) so v2 lands
-as a data-only addition, not a contract change.
+the structural features still used as a regularizer in the similarity
+blend (an "auth bug" embedding shouldn't match a "format JSON" turn
+even if texts are superficially similar). Hybrid mode is **not** in
+v1; the schema admits it (`Fingerprint.kind`, `embedding`,
+`embedding_provider`) so v2 lands as a data-only addition, not a
+contract change. The full v2 implementation contract — the
+`EmbeddingProvider` Protocol, three concrete providers, the embedding
+cache, the blended-similarity formula, the `fingerprint_version`
+config flag, and the trade-off surface — is in §16.
 
 ### 5.3 Similarity
 
@@ -398,9 +408,9 @@ that K-NN was mixing workloads because `intent_tags` is empty on most
 turns, washing out the cluster signal.
 
 For v2 hybrid fingerprints, similarity blends structural Jaccard with
-cosine over the embedding vector (`α * jaccard_score + (1-α) * cosine`,
-`α` configurable). v2 is out of scope here; the weights are listed in
-Open Questions §13.
+cosine over the embedding vector. The full formula and the `α = 0.6`
+default are specified in §16.5; this section's v1 weighted-Jaccard
+remains the structural half of the v2 blend.
 
 `workspace_hash` is **not** included — within a workspace it would
 always match; across workspaces queries are forbidden in v1.
@@ -644,8 +654,8 @@ The routing engine's pattern policy, evaluating slot 4, calls:
 ```python
 recommendation = pattern_store.recommend(
     fingerprint = compute_fingerprint(turn_context),
-    cost_weight = workspace_config.pattern.cost_weight,    # default 0.3
-    min_confidence = workspace_config.pattern.min_confidence,  # default 0.3
+    cost_weight = workspace_config.pattern.cost_weight,    # default 0.1
+    min_confidence = workspace_config.pattern.min_confidence,  # default 0.05
     min_sample_size = workspace_config.pattern.min_sample_size,  # default 5
     k = 10,
 )
@@ -774,14 +784,28 @@ event (consistent with `event-bus §3.5` on bus diagnostics in logs).
 ### 9.4 Cost-weight resolution
 
 The `cost_weight`, `min_confidence`, and `min_sample_size` knobs come
-from `routing.yaml` (per `routing-engine.md §5.1`):
+from `routing.yaml` (per `routing-engine.md §5.1`). Current defaults
+(see `routing/policy.py:PatternConfig`):
 
 ```yaml
 pattern:
-  cost_weight: 0.3
-  min_confidence: 0.3
+  cost_weight: 0.1        # was 0.3 before 2026-05-14 (§A3-rev)
+  min_confidence: 0.05    # was 0.3 before 2026-05-14 (§A3-rev2)
   min_sample_size: 5
 ```
+
+The `min_confidence` default scales with `cost_weight`. The confidence
+formula is `(top_score - runner_up_score) / top_score`. Under the prior
+`cost_weight=0.3` regime, the cost-efficiency term alone produced
+~0.35 confidence on tied-quality clusters, so `min_confidence=0.3`
+acted as a noise gate. Under `cost_weight=0.1` the same near-tied
+clusters produce ~0.10 confidence, so the legacy gate suppresses
+genuine cluster inversions: §A3-rev2 Pass C turn 2 on
+`write-a-doc-from-notes` aggregated `sonnet=0.900` vs `haiku=0.842`
+(confidence `0.064`) and was gated off by the legacy `0.3`. At `0.05`
+slot 4 fires; cluster-empty / zero-score / fewer-than-K cases still
+gate off in `aggregation.py`. See `benchmarks/RESULTS.md §A3-rev2
+finding` for the data trail.
 
 Resolution is per-workspace first, then global (per `routing-engine.md
 §5.1` "Workspace `pattern` config replaces the corresponding global
@@ -1100,19 +1124,19 @@ These are **live**; AI agents shouldn't unilaterally close them.
 decision. The questions below are the ones that surfaced during this
 draft.
 
-1. **Embedding provider in v2.** When (if) v2 adds embeddings, which
-   provider? OpenAI's `text-embedding-3-small` is cheapest; local
-   sentence-transformers avoid external dependency but adds a heavy
-   binary. The schema admits either; the choice has GTM consequences
-   (a buyer who self-hosts everything dislikes external embedding
-   API calls).
+1. **Embedding provider in v2.** ~~When (if) v2 adds embeddings, which
+   provider?~~ **Resolved 2026-05-14 in §16.3:** three providers
+   ship (OpenAI `text-embedding-3-small`, Cohere `embed-multilingual-v3.0`,
+   local `sentence-transformers/all-MiniLM-L6-v2`); selection is per
+   workspace via `PatternConfig.embedding_provider`; unset means
+   structural-only.
 
-2. **Embedding cost amortization.** Embedding cost per turn is
-   non-zero. Should pattern lookup at routing time embed the fresh
-   user message synchronously (latency added to the 5ms routing
-   budget) or asynchronously (route this turn without pattern; record
-   the fingerprint for next time)? Sync is simpler; async is cheaper.
-   Deferred to v2.
+2. **Embedding cost amortization.** ~~Embedding cost per turn is
+   non-zero...~~ **Resolved 2026-05-14 in §16.7:** `embedding_strategy`
+   knob exposes sync (default; OK at human latency) and async (gateway
+   path) modes. The cache (§16.4) brings the steady-state per-turn
+   cost to ~$0 and latency to ~1ms; cache miss costs are documented
+   in §16.7.1.
 
 3. **Fingerprint feature weights.** The Jaccard weights in §5.3 are an
    educated guess. They should be tuned against the benchmark suite
@@ -1297,10 +1321,10 @@ Example workspace config:
 
 ```yaml
 pattern:
-  cost_weight: 0.3
-  min_confidence: 0.3
+  cost_weight: 0.1              # default 0.1 since 2026-05-14 (§A3-rev)
+  min_confidence: 0.05          # default 0.05 since 2026-05-14 (§A3-rev2)
   min_sample_size: 5
-  min_eval_confidence: 0.5      # NEW; default 0.5
+  min_eval_confidence: 0.5      # default 0.5
 ```
 
 ### 15.5 Feedback loop
@@ -1339,7 +1363,770 @@ no direct surface needed between the specs.
 
 ---
 
-## 16. References
+## 16. v2 hybrid fingerprint: implementation contract
+
+**Status:** Draft 2026-05-14. Specs-only. Implementation deferred to
+Phase 4, contingent on §A3-rev3 (Agent 9a-7) failing to invert slot 4
+under v1's structural-only fingerprint after the Wave 8a unblocks
+landed. If §A3-rev3 inverts cleanly, v2 stays on the shelf.
+
+This section converts the v2 sketch in §5.2, §13.1, and §13.2 into a
+concrete implementation contract: an `EmbeddingProvider` Protocol, three
+concrete provider impls, an on-disk embedding cache, a blended-similarity
+formula, a `fingerprint_version` flag with a forward-only migration path,
+and the routing-time cost/latency surface that v2 introduces.
+
+The v1 fingerprint (§5) does not change. v2 is **additive**: a v2
+workspace uses hybrid fingerprints; a v1 workspace continues to use
+structural-only fingerprints; the two stores interoperate (the K-NN
+falls back to the structural-only score when either side lacks an
+embedding — see §16.5.3).
+
+### 16.1 Why v2 (the wedge §A3-rev2 didn't unblock)
+
+[`benchmarks/RESULTS.md §A3-rev2`](../../benchmarks/RESULTS.md) shipped
+three structural-only unblocks (Wave 8a-1 workload-tagged fingerprints,
+8a-2 `cost_weight=0.3 → 0.1`, 8a-3 grounding-check rubric primitive) and
+the differentiator still didn't invert: slot 4 emitted `not_applicable`
+on all 18 routed turns of Pass C. The K-NN itself was reading correctly
+(on `write-a-doc-from-notes` Pass C turn 2 the K-NN aggregated
+sonnet=0.900 ahead of haiku=0.842 — the first time in any A3 series),
+but the confidence gap formula `(top - runner_up) / top` produced values
+0.030–0.231 under `cost_weight=0.1`, all below the unchanged
+`min_confidence=0.3` gate.
+
+§A3-rev3 (Agent 9a-7) is the Wave 9 candidate that lowers
+`PatternConfig.min_confidence` to ~0.05 (or reshapes the confidence
+formula) and lets the v1 structural-only K-NN actually fire slot 4.
+**If §A3-rev3 inverts, v2 is unnecessary.** This section exists so v2
+is implementation-ready if it doesn't — specifically, if §A3-rev3
+reveals that the K-NN's same-workload partition is too brittle to
+generalize off the benchmark suite (real user turns rarely carry a
+`workload_id`, so the v1 `_structural_jaccard` path runs with mostly
+empty `intent_tags` and washes out the cluster signal).
+
+The v2 hybrid fingerprint addresses the wash-out directly: an
+embedding over the user message text captures semantic shape even when
+`intent_tags` is empty, so K-NN aggregation gets a real signal on
+non-benchmark traffic.
+
+### 16.2 `EmbeddingProvider` Protocol
+
+The v2 entry point is a Protocol so the choice of provider is a
+per-workspace config decision, not a code change. Implementations must
+be **deterministic** (same input → same vector — or near enough that
+two calls don't push the cache hit rate below the §16.7.2 target) and
+**stable** (`provider_id` persists across provider versions so cached
+vectors survive process restarts).
+
+```python
+class EmbeddingProvider(Protocol):
+    """v2 fingerprint embedding provider.
+
+    Pluggable per-workspace via `PatternConfig.embedding_provider`.
+    The provider_id forms part of the cache key (§16.4) and the
+    `fingerprints.embedding_provider` column; changing the id
+    invalidates cached vectors and forces re-embedding on next use.
+    """
+
+    @property
+    def provider_id(self) -> str:
+        """Stable identifier, e.g. "openai:text-embedding-3-small"
+        or "local:sentence-transformers:all-MiniLM-L6-v2".
+
+        Format: "<vendor>:<model>[:<variant>]". The id is opaque to
+        the pattern store; it just round-trips through the cache key
+        and the fingerprint row."""
+
+    @property
+    def dim(self) -> int:
+        """Output vector dimension. Constant across calls for a given
+        provider_id. The pattern store stores this on the fingerprint
+        row (`embedding_dim`) and rejects writes whose vector length
+        disagrees."""
+
+    @property
+    def max_input_tokens(self) -> int:
+        """Maximum input length the provider accepts. The pattern
+        store's caller MUST truncate longer inputs before calling
+        `embed()` — the provider is allowed to reject (or silently
+        truncate) over-length inputs and the result wouldn't be
+        deterministic. v2 truncates `user_message_text` to the first
+        `max_input_tokens` tokens (approximated as `max_input_tokens *
+        4` UTF-8 bytes since v2 doesn't carry a tokenizer per
+        provider; see §16.11 open question 4)."""
+
+    async def embed(self, text: str) -> tuple[float, ...]:
+        """Compute the L2-normalized embedding for `text`.
+
+        Returns a tuple of length `dim`. L2-normalized so cosine
+        similarity reduces to a dot product (§16.5.1). Pure
+        inference; no side effects on the provider. Async because
+        the API-backed impls are network-bound; local providers
+        offload to a thread pool internally."""
+
+    async def aclose(self) -> None:
+        """Release provider resources (HTTP client connections,
+        local model handles). The pattern store calls this on
+        `PatternStore.close()`."""
+```
+
+Implementations live under
+`packages/metis-core/src/metis_core/patterns/embedders/` (new
+subpackage; out of scope here, Phase 4). The Protocol is a `typing.Protocol`
+with `@runtime_checkable` so duck-typed test stubs work without
+inheritance.
+
+### 16.3 Concrete provider implementations
+
+Three providers ship in v2. Selection is `PatternConfig.embedding_provider:
+str | None`; the string is interpreted as the `provider_id` and resolved
+via a registry built into `metis_core.patterns.embedders.__init__`. None
+means structural-only (§16.6).
+
+| `provider_id`                                      | Vendor                       | Dim   | Cost / 1M tokens | Latency (cache miss)    | Notes                                                                  |
+|----------------------------------------------------|------------------------------|-------|------------------|-------------------------|------------------------------------------------------------------------|
+| `openai:text-embedding-3-small`                    | OpenAI API                   | 1536  | $0.02            | 50–150ms (US-region)    | Cheapest hosted. Supports `dimensions` param down to 512 (Phase 4 opt-in). |
+| `cohere:embed-multilingual-v3.0`                   | Cohere API                   | 1024  | $0.10            | 80–200ms                | Multilingual surface; better for non-English user messages.            |
+| `local:sentence-transformers:all-MiniLM-L6-v2`     | sentence-transformers local  | 384   | $0 (compute only)| 30–80ms CPU; 5–10ms GPU | No API; adds ~80MB binary download + Torch dependency. Lower dim but adequate K-NN selectivity per published benchmarks. |
+
+**Construction.** Each impl takes its configuration via a typed
+`EmbedderConfig` dataclass (API key env var name, base URL override,
+local model checkpoint path) read from the same `routing.yaml`
+namespace as the rest of the pattern config (§16.6). API-backed
+providers reuse the existing `httpx` async client pool; the local
+provider wraps `sentence_transformers.SentenceTransformer` with an
+`asyncio.to_thread` shim. A misconfigured provider (missing API key,
+unreadable checkpoint) raises at `PatternStore.__init__` time so the
+workspace fails fast on first session, not at first turn.
+
+**Determinism caveat.** Hosted providers are *nominally* deterministic
+(both vendors document this in their API docs) but minor non-determinism
+under load is occasionally observed. The cache (§16.4) absorbs this:
+once a (text, provider_id) pair is cached, all subsequent same-input
+turns get the exact same vector regardless of upstream drift.
+
+**Provider lock-in stance.** No provider is a "default"; an unset
+`embedding_provider` keeps the workspace on v1 structural-only.
+Selecting `local:sentence-transformers:*` is the recommended choice
+for buyers who self-host everything (per `STRATEGY.md §6.2`); the
+hosted options exist for users who already pay for those APIs and
+don't want a 200MB Torch install.
+
+### 16.4 Embedding cache
+
+Embedding calls dominate v2's per-turn cost and latency. The cache
+brings the steady-state per-turn embedding cost to ~$0 and latency to
+~$1ms after the first ~K turns of a workload converge (§16.7.2).
+
+#### 16.4.1 Cache key
+
+The cache key is `(provider_id, SHA-256(user_message_text))`. The same
+SHA-256 pre-image is used as the v1 fingerprint's structural dedup
+basis — see §5.2 — so re-running an identical user message in the same
+workspace under v2 hits both caches (structural signature + embedding)
+without recomputation.
+
+#### 16.4.2 SQLite schema (new table; additive to §7.1)
+
+A single new table is added to `<workspace>/.metis/patterns.db`. **No
+migration on the existing `fingerprints` or `outcomes` tables** —
+those continue under the v1 schema. The new table is created on the
+first v2 write; v1 workspaces never see it.
+
+```sql
+CREATE TABLE IF NOT EXISTS embedding_cache (
+  text_sha256       TEXT NOT NULL,                  -- SHA-256(user_message_text), hex
+  provider_id       TEXT NOT NULL,
+  embedding_blob    BLOB NOT NULL,                  -- packed float32 (4 * dim bytes)
+  embedding_dim     INTEGER NOT NULL,
+  created_at_us     INTEGER NOT NULL,               -- unix micros
+  last_used_at_us   INTEGER NOT NULL,               -- bumped on read; drives LRU
+  use_count         INTEGER NOT NULL DEFAULT 1,     -- read counter; debugging
+  PRIMARY KEY (text_sha256, provider_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_embcache_last_used  ON embedding_cache(last_used_at_us);
+CREATE INDEX IF NOT EXISTS idx_embcache_created    ON embedding_cache(created_at_us);
+```
+
+The `embedding_blob` uses packed float32 (not JSON) because vectors
+are dense (every entry is non-zero post-L2-normalization) and JSON
+encoding doubles storage for no benefit. Reading is `np.frombuffer(blob,
+dtype=np.float32, count=embedding_dim)` (or the pure-Python `struct.unpack`
+equivalent if v2 chooses not to add NumPy as a hard dependency — see
+§16.11 open question 3).
+
+`schema_version` in `store_meta` is bumped from `"1"` to `"2"` when
+the embedding cache table is created. v1 readers tolerating
+`schema_version="2"` is the back-compat path — v1 code reads
+`schema_version`, accepts `"2"`, and ignores the unknown table.
+
+#### 16.4.3 Eviction
+
+The cache is bounded the same way the outcomes table is bounded
+(§6 — eviction is a feature):
+
+| Cap                | Default          | Trigger                                   |
+|--------------------|------------------|-------------------------------------------|
+| `cache_max_rows`   | 10,000 vectors   | Hard cap; auto-evict on overflow          |
+| `cache_max_age`    | 180 days         | Continuous trim; rows past this age go first |
+
+Eviction policy mirrors §6.3:
+
+1. **Age-first.** Rows with `created_at_us` older than `cache_max_age`
+   evict before any others.
+2. **LRU among remaining.** Evict by oldest `last_used_at_us` (not
+   `created_at_us`) — a vector that's still hot stays cached even if
+   it was written months ago.
+3. **Use-count tie-break.** Among rows with equal `last_used_at_us`,
+   evict the row with the lowest `use_count`.
+
+The cache caps are independent of the outcomes caps (§6) — a workspace
+might have 5,000 unique fingerprints (each from a unique user message)
+but only 8,000 cached vectors after eviction. There is **no foreign
+key** between `embedding_cache` and `fingerprints`; a cache miss after
+fingerprint eviction is fine, and a cache hit on a never-recorded
+fingerprint is fine (the cache is upstream of the fingerprint write).
+
+A new event `pattern.embedding_cache_evicted` is **not** added in v2;
+cache eviction is a routine maintenance signal and would flood the bus
+on workloads with high churn. Cache size is observable via
+`PatternStore.size()` (extended with `embedding_cache_rows: int` in
+v2 — see §16.6.3).
+
+#### 16.4.4 Cache-miss flow
+
+On a v2 K-NN query:
+
+1. Compute `text_sha256 = SHA-256(user_message_text)`.
+2. `SELECT embedding_blob, embedding_dim FROM embedding_cache
+   WHERE text_sha256 = ? AND provider_id = ?`.
+3. **Hit:** decode the vector, bump `last_used_at_us` and `use_count`,
+   proceed to §16.5 blended similarity.
+4. **Miss:** invoke `await provider.embed(text)`, insert into the
+   cache (`INSERT OR REPLACE`), proceed to §16.5.
+
+The miss path is the only place an `EmbeddingProvider.embed()` call
+fires. Recording-time writes (§10.4 phase 1 / phase 2) **do not**
+embed — the embedding only matters for K-NN retrieval, and the
+recording-side cost is already paid by the routing-time embed of the
+same `user_message_text`.
+
+### 16.5 Blended similarity
+
+For v2 hybrid fingerprints, similarity blends cosine over the embedding
+vector with the v1 weighted-Jaccard score:
+
+```
+similarity(A, B) = α * cosine(A.embedding, B.embedding)
+                 + (1 - α) * weighted_jaccard(A.structural, B.structural)
+```
+
+with `α = PatternConfig.embedding_blend_alpha`, default **0.6**.
+
+#### 16.5.1 Cosine similarity
+
+Vectors are L2-normalized by the provider (§16.2), so cosine reduces
+to dot product:
+
+```python
+def cosine(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+    if len(a) != len(b):
+        raise ValueError("dim mismatch")
+    return sum(x * y for x, y in zip(a, b))
+```
+
+Range is `[-1.0, 1.0]` in principle; in practice modern sentence
+embeddings sit in `[0.0, 1.0]` for non-adversarial inputs. The blend
+formula doesn't rescale — a negative cosine pulls `similarity` down,
+which is the correct behavior (semantically opposite messages should
+score worse than disjoint ones).
+
+#### 16.5.2 Why α = 0.6 (embedding-dominant)
+
+The default tilts toward embeddings for three reasons:
+
+1. **Structural Jaccard is sparse on non-benchmark turns.** The §A3-rev2
+   experience shows `intent_tags`, `file_extensions`, and `tool_names`
+   are often empty on the first turn of a session — the v1
+   `_structural_jaccard` score collapses to 0.15 (the `has_images` +
+   `estimated_input_tokens_bucket` floor) for two unrelated turns and
+   to 0.20–0.30 for two superficially related ones. Embeddings discriminate
+   better in this regime.
+
+2. **Embeddings carry the user's stated intent in compressed form.**
+   "Refactor the auth middleware to drop session token storage" and
+   "Move the session-token writes out of the auth middleware" embed
+   very close even though they share zero tokens with the v1 regex
+   `intent_tags = ("refactor",)` intersection.
+
+3. **Structural is still load-bearing as a regularizer.** When the
+   embedding is noisy (a user message that happens to share vocabulary
+   with a different domain — "test the auth flow" vs "test the JSON
+   parser"), the structural `file_extensions` and `file_path_buckets`
+   columns pull the score apart. 40% weight is enough to break
+   superficial vocabulary ties.
+
+The 0.6 default is a starting point — §16.11 open question 1 calls
+out that the value should be tuned against the benchmark suite once
+v2 lands. **`α = 0` reduces v2 to v1 exactly** (structural-only;
+useful for A/B comparison). **`α = 1` is embedding-only** — flagged
+as a footgun in §16.11 q2 because it removes the regularizer.
+
+#### 16.5.3 Mixed-version stores (v1 rows + v2 rows)
+
+A v2 workspace will have a mix of pre-flag-flip outcomes (recorded
+under v1, no embedding column populated) and post-flag-flip outcomes
+(v2 hybrid, embedding set). The similarity function handles this:
+
+```python
+def similarity(a: Fingerprint, b: Fingerprint, alpha: float) -> float:
+    structural_score = weighted_jaccard(a.structural, b.structural)
+    if a.embedding is None or b.embedding is None:
+        # Either side missing an embedding — fall back to v1.
+        return structural_score
+    if a.embedding_dim != b.embedding_dim:
+        # Provider changed mid-workspace; treat as fallback.
+        return structural_score
+    return alpha * cosine(a.embedding, b.embedding) + (1 - alpha) * structural_score
+```
+
+This makes the migration path forward-only and lossless: old rows stay
+queryable, new rows get the blended score, and the K-NN naturally
+weighs newer hybrid neighbors above older structural-only ones when
+their embeddings agree with the query.
+
+#### 16.5.4 Workload-id partition (v1 §5.3) interaction
+
+The v1 workload-id near-keyed partition still wins when both sides
+carry a `workload_id` (§5.3). The full v2 score is:
+
+```python
+def similarity_v2(a, b, alpha):
+    base = blended_similarity(a, b, alpha)   # the §16.5.0 formula
+    if a.workload_id is None or b.workload_id is None:
+        return base
+    cluster = 1.0 if a.workload_id == b.workload_id else 0.0
+    return _WORKLOAD_BLEND_WEIGHT * cluster + (1 - _WORKLOAD_BLEND_WEIGHT) * base
+```
+
+`_WORKLOAD_BLEND_WEIGHT` is the existing `0.85` constant from
+`similarity.py`. Benchmark runs (which always set `workload_id`)
+continue to land same-workload neighbors near 1.0; agent-loop traffic
+(which leaves `workload_id=None`) gets the pure v2 blended score.
+
+### 16.6 `PatternConfig.fingerprint_version` and migration
+
+The v2 toggle is one field on a new `PatternConfig` struct that
+collects the routing-time knobs that were previously scattered across
+`routing.yaml::pattern.*`. The struct is shipped with v2 but the v1
+knobs (`cost_weight`, `min_confidence`, `min_sample_size`,
+`min_eval_confidence`) move into it without changing semantics.
+
+```python
+class PatternConfig(msgspec.Struct, frozen=True):
+    """Per-workspace pattern-routing config. Resolved by the routing
+    engine from `<workspace>/.metis/routing.yaml::pattern.*` with
+    global-then-workspace precedence per routing-engine.md §5.1."""
+
+    # --- v1 (existing) ---
+    cost_weight: float = 0.1                   # was 0.3 pre-Wave 8a; see A3-rev2
+    min_confidence: float = 0.3                # Wave 9 candidate: 0.05; see §16.6.4
+    min_sample_size: int = 5
+    min_eval_confidence: float = 0.5           # see §15.4
+
+    # --- v2 (new) ---
+    fingerprint_version: Literal["v1", "v2"] = "v1"
+    embedding_provider: str | None = None      # provider_id; e.g. "openai:text-embedding-3-small"
+    embedding_blend_alpha: float = 0.6         # §16.5
+    embedding_strategy: Literal["sync", "async"] = "sync"   # §16.7.3
+    embedding_cache_max_rows: int = 10_000
+    embedding_cache_max_age_days: int = 180
+```
+
+#### 16.6.1 Forward-only migration
+
+A workspace upgrades from v1 to v2 by:
+
+1. Editing `routing.yaml` to set `pattern.fingerprint_version: v2` and
+   `pattern.embedding_provider: <provider_id>`.
+2. Restarting the agent / gateway / server process (the
+   `PatternStore.__init__` reads the config once; no live reload in v2).
+3. New turns recorded under v2 get hybrid fingerprints; old outcomes
+   continue to be queried under the §16.5.3 fallback rule.
+
+There is **no migration script**. The pattern store doesn't backfill
+embeddings for existing rows — re-embedding old user messages would
+re-charge the embedding API and may not be worth it for cold rows.
+v1 rows age out under §6.3 over the 180-day window; the store
+converges to pure-v2 naturally.
+
+#### 16.6.2 Downgrade
+
+Setting `fingerprint_version: v1` after running v2 leaves the v2 rows
+in place. The K-NN reads them but the similarity falls back to
+structural-only (§16.5.3 — `embedding` is set on the row but the
+*query* fingerprint has `embedding=None`, so the fallback fires). No
+data loss; no surprise behavior. The `embedding_cache` table is left
+on disk; it is dead weight under v1 but bounded so it can't grow.
+
+#### 16.6.3 `PatternStore` API additions
+
+The Protocol surface adds:
+
+```python
+class PatternStore:
+    # ... existing v1 surface ...
+
+    def __init__(
+        self,
+        workspace_path: str | Path,
+        *,
+        caps: PatternCaps | None = None,
+        config: PatternConfig | None = None,
+        embedder: EmbeddingProvider | None = None,
+        now: Callable[[], datetime] | None = None,
+    ) -> None: ...
+
+    # find_k_nearest, recommend become async to accommodate the embed path.
+    # The sync wrappers (`find_k_nearest_sync`, `recommend_sync`) call
+    # `asyncio.run(...)` under the hood for code paths that need sync;
+    # the routing engine consumes the async surface directly (see §16.7.3).
+
+    async def find_k_nearest(self, fingerprint: Fingerprint, k: int) -> tuple[NeighborMatch, ...]: ...
+    async def recommend(self, fingerprint: Fingerprint, *, cost_weight: float,
+                        min_confidence: float, min_sample_size: int,
+                        k: int = 10) -> PatternRecommendation: ...
+
+    # Cache stats (v2 only):
+    def cache_size(self) -> EmbeddingCacheSize:
+        """Cached vector count + oldest-row age. Used by /patterns status."""
+
+    def cache_clear(self) -> int:
+        """Drop all cached vectors (e.g., after a provider change). Used by /patterns cache clear."""
+```
+
+`StoreSize` (§4) gains a parallel struct:
+
+```python
+@dataclass(frozen=True)
+class EmbeddingCacheSize:
+    rows: int
+    oldest_row_age_days: float | None
+    total_bytes: int                  # sum of len(embedding_blob) — disk footprint
+```
+
+#### 16.6.4 Slot-4 confidence gate interaction
+
+§A3-rev2 identified `min_confidence=0.3` as the load-bearing gate that
+slot 4 currently doesn't clear under `cost_weight=0.1`. v2's
+embedding-dominated similarity is expected to produce sharper
+clusters (higher per-cluster intra-similarity, lower inter-cluster
+similarity), which should raise the per-model score spread and pull
+the confidence gap above the gate without needing the Wave 9
+`min_confidence: 0.05` flip.
+
+**This is a hypothesis, not a load-bearing promise.** v2's headline
+benchmark (§16.10 test 5) is "does v2 produce a measurably tighter
+cluster-score distribution than v1 on the same workload set?" If the
+hypothesis fails, Wave 9 (`min_confidence`) and v2 (embedding) are
+independent fixes that can both ship; if it holds, v2 alone may
+inverts slot 4 on agent-loop traffic without touching the gate.
+
+### 16.7 Live API cost in the routing critical path
+
+v2's biggest semantic shift from v1: the routing engine's slot 4 now
+makes a (cached) live API call. v1's slot 4 was pure CPU on a SQLite
+JOIN. The trade-off is in §16.9.
+
+#### 16.7.1 Per-turn cost
+
+`openai:text-embedding-3-small` priced 2026-05-14 at $0.02 / 1M input
+tokens. A user message embedded under v2 is typically 50–500 tokens
+(the first user turn of a session in the benchmark suite averages
+~120 tokens). At 200 tokens / turn the per-turn embedding cost is
+`200 / 1_000_000 * 0.02 = $0.000004` ≈ **$4 per 1M turns**. The
+embedding cost is dominated by the LLM call cost itself by ~5 orders
+of magnitude.
+
+Cohere is 5× the OpenAI cost (~$20 / 1M turns). The local provider is
+free at the API boundary but adds CPU/GPU pressure on the host.
+
+#### 16.7.2 Cache hit rate target
+
+The miss path's cost and latency only matter on the first sighting of
+each unique `user_message_text`. For typical agent workloads, repeated
+prompts are common (the user iterates on the same task, the agent's
+own composed prompts converge to similar shapes), so the cache hit
+rate climbs fast.
+
+**Target: ≥80% cache hit rate within 100 turns of a workload.**
+
+The rationale is empirical-from-v1: §A3-rev2 patterns DBs show ~3,000
+unique structural fingerprints accumulated across 100s of benchmark
+turns, and `structural_sig` collisions on identical user messages are
+common (re-runs of the same workload, multi-turn refactors that
+reissue similar prompts). Embeddings are keyed by a tighter cache key
+(exact text, not the structural projection), so the hit rate is
+*lower* than v1's structural dedup rate, but the empirical ratio of
+total turns to unique text in benchmark suite v1 is ~3:1, which
+implies a steady-state ~67% hit rate — close to the 80% target after
+a workload's "vocabulary" stabilizes.
+
+The target is **non-load-bearing**. If real workloads converge to a
+worse hit rate (e.g., agents that never repeat themselves), the cache
+still amortizes the cost across repeated workloads run from the same
+workspace; the steady-state cost is bounded by §16.7.1 anyway.
+
+A v2 health-check projection (deferred to Phase 4) over the trace
+store would surface `cache_hit_rate_per_workspace` on
+`/analytics/patterns` once §16.10 test 4 lands.
+
+#### 16.7.3 Sync vs async embed strategy
+
+The routing engine's slot evaluation is synchronous in v1 — slot 4
+returns within ~1ms by reading SQLite directly. v2's embed call on a
+cache miss is 50–200ms. Two strategies, configurable via
+`embedding_strategy`:
+
+- **`sync` (default).** Slot 4 awaits the embed call. On cache miss,
+  the routing decision is delayed by the embed latency. The 5ms
+  budget from `routing-engine.md §2.1.8` is intentionally violated
+  on cache miss; the budget reverts to 5ms on cache hit. Acceptable
+  for human-driven agent loops where 200ms is invisible against
+  multi-second LLM latency; *not* acceptable for the gateway
+  surface which may serve high-QPS clients.
+- **`async`.** Slot 4 short-circuits to `not_applicable` when the
+  embedding cache misses, and the embed call fires asynchronously
+  in the background (writing into the cache for the next turn).
+  The first turn for each unique user message gets v1 routing; the
+  second and subsequent turns get full v2 routing. Trades immediate
+  accuracy for tail-latency predictability. Recommended for the
+  gateway path (`gateway.md §2`).
+
+The routing engine consumes the `recommend()` future regardless;
+`embedding_strategy` lives inside the `PatternStore` and is
+transparent to the routing engine itself (the store returns
+`PatternRecommendation(chosen_model=None, ...)` on async miss the
+same way it returns it on empty store).
+
+### 16.8 Events (no new types in v2)
+
+v2 reuses the three v1 pattern events (§10). The `fingerprint_kind`
+field on `pattern.recorded` / `pattern.matched` already discriminates
+`"structural"` vs `"hybrid"` per §10.1 / §10.2 — v1's catalog
+addition is forward-compatible with v2 by construction.
+
+No new event type for embedding cache miss/hit is added in v2: routing
+critical-path events should not flood the bus at v2 traffic rates. A
+debug log line at DEBUG level is enough; aggregate hit-rate analytics
+live in the §16.7.2 projection (Phase 4 deferred surface).
+
+### 16.9 Trade-off: v2 is not strictly cheaper than v1
+
+v2 buys cluster-quality and slot-4 inversion at the cost of a routing-time
+API call. **It is qualitatively different from v1, not strictly better.**
+The trade-offs:
+
+| Dimension                         | v1 (structural)                                | v2 (hybrid)                                                          |
+|-----------------------------------|------------------------------------------------|----------------------------------------------------------------------|
+| Routing budget (cache hit)        | ~1ms SQLite scan                               | ~1ms SQLite scan + cache lookup                                      |
+| Routing budget (cache miss)       | n/a (always hit)                               | 50–200ms (sync) or short-circuit + bg embed (async)                  |
+| Per-turn cost                     | $0                                             | ~$0.000004 (OpenAI) to $0 (local)                                    |
+| External dependency               | None                                           | Embedding API / 80MB local model binary                              |
+| Cluster quality on benchmark suite| §A3-rev2: K-NN reads correctly, doesn't invert | Hypothesis: tighter clusters; pending §16.10 test 5 to confirm        |
+| Cluster quality on agent traffic  | Empty `intent_tags` → washes out               | Embedding captures intent → discriminates                            |
+| Privacy                           | Workspace-local                                | API providers see hashed-but-recoverable user messages on cache miss |
+| Sync-mode tail latency            | Predictable ~1ms                               | Bimodal (~1ms on hit, ~100ms on miss)                                |
+| Maintenance burden                | One table; one similarity function             | Two tables; provider registry; cache eviction sweep; vendor SDK pins |
+
+The honest framing is "v2 is the move once v1 is provably stuck."
+§A3-rev3 (Agent 9a-7) is the load-bearing experiment that answers
+"is v1 stuck?" before v2 spends complexity budget.
+
+### 16.10 Test plan
+
+The tests below are **specified**, not implemented. Implementation
+lands with Phase 4; the test count is what the implementation owes.
+
+1. **`EmbeddingProvider` Protocol contract test.** Given a
+   `runtime_checkable` Protocol, any class implementing
+   `provider_id` / `dim` / `max_input_tokens` / `embed` /
+   `aclose` `isinstance(x, EmbeddingProvider) is True`. Negative
+   case: missing `dim` raises.
+
+2. **`EmbeddingProvider` determinism test.** For each shipped impl
+   (with the API impls behind an env-gated marker), `embed(text)` ==
+   `embed(text)` byte-for-byte. The local provider is fully
+   deterministic under a fixed PYTHONHASHSEED; the API providers are
+   tested via a `responses=`-style HTTP record/replay fixture so the
+   determinism check verifies the cache key construction, not the
+   provider's wire output.
+
+3. **Cosine similarity unit test.** `cosine([1, 0, 0], [1, 0, 0]) ==
+   1.0`; `cosine([1, 0, 0], [0, 1, 0]) == 0.0`; `cosine([1, 0, 0],
+   [-1, 0, 0]) == -1.0`. Dim mismatch raises `ValueError`. Length
+   verified against an L2-normalized input pair to confirm cosine =
+   dot product under §16.2's normalization invariant.
+
+4. **Blend math unit test.** `α = 0` ⇒ output == structural Jaccard;
+   `α = 1` ⇒ output == cosine; `α = 0.6, cosine = 0.8, jaccard = 0.4`
+   ⇒ output == 0.64. Workload-id partition (§16.5.4) interaction:
+   same-workload pair with `α = 0.6, cosine = 0.0, jaccard = 0.0`
+   still scores ≥ `_WORKLOAD_BLEND_WEIGHT` (=0.85). Mixed-version
+   pair (one side `embedding=None`) falls back to pure Jaccard
+   regardless of `α`.
+
+5. **v2 fingerprint cluster differs from v1 on the same input set
+   (the headline test of why v2 is worth implementing).** Fixture: a
+   curated 60-turn set drawn from the §A3-rev2 patterns DBs spanning
+   all 6 benchmark workloads + 4 "off-benchmark" agent-loop traces.
+   For each turn, compute the v1 fingerprint and a v2 fingerprint with
+   the local provider. Compute the pairwise similarity matrix under
+   v1 and under v2 (`α=0.6`). Assertion: the average intra-cluster
+   similarity (same-workload pairs) under v2 is **at least 0.10
+   higher** than under v1, AND the average inter-cluster similarity
+   (different-workload pairs) is **at least 0.05 lower** under v2
+   than under v1. Both deltas measure cluster tightening; failing
+   either delta is a "v2 doesn't pay for itself" signal that justifies
+   pulling v2 from Phase 4.
+
+6. **Cache hit on identical text.** Two `find_k_nearest` calls with
+   the same `user_message_text` issue one `provider.embed` call.
+
+7. **Cache miss on different text.** Two calls with different text
+   issue two `embed` calls.
+
+8. **Cache miss on different provider_id.** Two calls with same text
+   but different configured providers issue two embed calls (cache
+   key includes `provider_id`).
+
+9. **Cache TTL eviction.** A row with `created_at_us` older than
+   `cache_max_age_days` is evicted on the next eviction pass; a
+   `find_k_nearest` that would have hit it now misses.
+
+10. **Cache size cap auto-evicts LRU first.** Filling the cache to
+    `cache_max_rows + 1` evicts exactly one row; the evicted row is
+    the one with the oldest `last_used_at_us`.
+
+11. **Mixed-version store K-NN.** Outcomes recorded under v1 (no
+    embedding) coexist with v2 outcomes; `find_k_nearest` over a v2
+    query returns both, scored under §16.5.3's fallback rule for v1
+    neighbors and the blended rule for v2 neighbors.
+
+12. **Provider-mismatch fallback.** A v2 fingerprint embedded under
+    provider X compared against a v2 fingerprint embedded under
+    provider Y falls back to structural-only per §16.5.3 (the
+    `embedding_dim` mismatch path).
+
+13. **`fingerprint_version` flag default is v1.** A `PatternConfig()`
+    constructed without args returns `fingerprint_version="v1"`; a
+    `PatternStore` initialized without `embedder=` runs v1 even if
+    `fingerprint_version="v2"` is set (the embedder is required at
+    construction; an unset embedder under v2 raises at init).
+
+14. **Async-mode short-circuit.** Under `embedding_strategy="async"`,
+    a first call with a cache-miss `user_message_text` returns
+    `chosen_model=None` immediately and schedules a background embed;
+    a second call with the same text after `await asyncio.sleep(0.5)`
+    hits the now-populated cache and returns a real recommendation.
+
+15. **Schema-version bump on first v2 write.** A v1 patterns DB
+    (`schema_version="1"`, no `embedding_cache` table) opened by a v2
+    `PatternStore` is upgraded in-place: `schema_version` becomes
+    `"2"` and `embedding_cache` is created. No existing rows are
+    touched. Reopening the same DB under a v1 process succeeds
+    (`schema_version="2"` is tolerated; unknown table ignored).
+
+### 16.11 Open questions (v2-specific)
+
+These are live; the spec doesn't unilaterally close them.
+
+1. **Default `embedding_blend_alpha`.** 0.6 is an educated guess
+   informed by the §16.5.2 sparsity argument. Should be tuned
+   against the §16.10 test-5 fixture once v2 lands. Candidate range:
+   `[0.4, 0.8]`.
+
+2. **`α = 1` (embedding-only) — disallowed?** Removing the structural
+   regularizer is a footgun on workspaces with vocabulary-overlap
+   noise; `α = 0` is fine (it reduces to v1). The spec currently
+   allows both; consider gating `α ≥ 1.0` behind a warning.
+
+3. **NumPy as a hard dep.** Packed float32 ops are cleaner with NumPy
+   (`np.frombuffer`, `np.dot`). The current `metis-core` has no NumPy
+   dependency. v2 either adds NumPy or implements cosine via
+   `struct.unpack` + a manual loop. The local sentence-transformers
+   provider transitively requires NumPy anyway, so a v2 install that
+   uses the local provider already pulls it in — the question is
+   whether the API providers should also force the dependency.
+   **Tentative call:** add NumPy as a hard `metis-core` dep when v2
+   lands; the savings benchmark suite already pulls it via
+   sentence-transformers in some test runs.
+
+4. **Tokenizer per provider.** §16.2's `max_input_tokens` is
+   provider-specific; v2 truncates by byte length (`max_input_tokens
+   * 4`) as a coarse approximation. A provider with a non-Latin
+   user-message workload (Cohere multilingual case) under-truncates
+   under this rule. The proper fix is per-provider tokenizers; v2's
+   coarse rule is a documented limitation.
+
+5. **Persist embedding on `fingerprints` row vs cache-only.**
+   §16.4.2's cache is keyed by `text_sha256`. The `fingerprints`
+   table's `embedding_blob` column (existing in v1 schema, currently
+   always NULL) could *also* hold the vector. The v2 spec proposes
+   **populating both** — the `fingerprints.embedding_blob` is the
+   "long-term" copy that survives cache eviction, and the
+   `embedding_cache` is the "fast lookup" copy for K-NN queries.
+   This doubles storage but the vectors are tiny (1536 × 4 = 6KB per
+   v3-small embedding; 10k rows = ~60MB max). The alternative
+   (cache-only) would force re-embedding when the cache evicts a
+   vector that the K-NN still needs. **Tentative call:** populate
+   both; revisit if disk footprint complaints land.
+
+6. **Re-embedding after a provider change.** If a workspace changes
+   `embedding_provider` mid-life (e.g., switching from OpenAI to
+   local), all existing fingerprint rows have embeddings under the
+   old `provider_id`. The K-NN's §16.5.3 fallback handles this
+   gracefully (provider-mismatch → structural-only), but the
+   workspace effectively loses v2 quality on legacy turns. Should
+   there be a `metis patterns reembed` CLI that re-runs the new
+   provider over historical user messages? Deferred — manual eviction
+   + natural age-out works for v2.
+
+7. **Cross-workspace embeddings.** A single user with multiple
+   workspaces has duplicate cached embeddings if their prompts
+   overlap. Phase 3+ sync could dedup the cache cross-workspace
+   (the cache key is provider+SHA-256, both workspace-independent).
+   v2: no, keep workspace-local. Consistent with the §13.5 isolation
+   stance.
+
+8. **Async-mode background embed lifecycle.** Under `embedding_strategy="async"`,
+   the background embed is `asyncio.create_task(...)` with no explicit
+   cancellation. If the process exits before the embed completes, the
+   in-flight call leaks. v2 implementation owes a `PatternStore.aclose()`
+   that awaits outstanding background tasks; the contract is in
+   §16.6.3 (`aclose` added to the close path) but the spec doesn't
+   pin the timeout. Tentative: 5s graceful, then cancel.
+
+### 16.12 Decision log additions
+
+| Date       | Decision                                                                  | Rationale                                                                                  |
+|------------|---------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
+| 2026-05-14 | v2 spec firmed up; implementation contingent on §A3-rev3 outcome           | Wave 9 needs an implementation-ready v2 if `min_confidence` flip doesn't invert slot 4.    |
+| 2026-05-14 | Three concrete providers: OpenAI / Cohere / local sentence-transformers    | Cost + latency + dependency-weight spectrum; buyer with self-host preference picks local.  |
+| 2026-05-14 | `embedding_blend_alpha = 0.6` default (embedding-dominant)                 | Structural Jaccard is sparse on non-benchmark turns; embeddings discriminate better there. |
+| 2026-05-14 | Cache keyed by `(provider_id, SHA-256(user_message_text))`                 | Same pre-image as v1 structural dedup; survives process restarts; per-provider isolation.  |
+| 2026-05-14 | Cache TTL = 180 days; size cap = 10k rows                                  | Mirrors outcomes table caps (§6) so v2's cache aging matches the rest of the store.        |
+| 2026-05-14 | `fingerprint_version: v1` is the default; v2 is opt-in per workspace       | Forward-only migration; v1 workspaces never see the v2 code path.                          |
+| 2026-05-14 | Schema bumps to `"2"`; new `embedding_cache` table only — no v1 row edits  | v1 readers tolerate `schema_version="2"`; no destructive migration; clean downgrade path.  |
+| 2026-05-14 | No new event types; v1's `pattern.recorded.fingerprint_kind` discriminates | Catalog stability; debug-level logging for cache miss/hit, not bus events.                 |
+| 2026-05-14 | Mixed-version K-NN falls back to structural-only on missing embedding      | Migration is forward-only and lossless; the K-NN converges to v2 as v1 rows age out.       |
+| 2026-05-14 | `embedding_strategy` knob: sync default for agent loop, async for gateway  | Sync is fine at human latency; async is required at gateway-QPS for the 5ms budget.        |
+
+---
+
+## 17. References
 
 - `routing-engine.md §4.1`, §5.5, §11.6 — slot 4 ordering, K-NN math,
   open question on pattern-driven tier resolution.
@@ -1353,10 +2140,15 @@ no direct surface needed between the specs.
   `pricing_version` on stored cost.
 - `canonical-message-format.md §9.1` — SQLite session/message store
   pattern; pattern store mirrors the SQLite-WAL approach.
-- `STRATEGY.md §4`, §6.6 — pattern store named as the third
-  differentiating leg + open question.
+- `STRATEGY.md §4`, §6.2, §6.6 — pattern store named as the third
+  differentiating leg + open question; §6.2 self-hosting buyer profile
+  motivates the local-sentence-transformers option in §16.3.
 - `benchmark.md` — once the workload suite runs end-to-end, it is the
-  validation surface for fingerprint feature weights (§13.3).
+  validation surface for fingerprint feature weights (§13.3) and the
+  §16.10 test 5 cluster-tightening fixture.
+- `benchmarks/RESULTS.md §A3-rev2` — the failure case (slot 4 emitting
+  `not_applicable` after the Wave 8a unblocks) that motivates the v2
+  contract in §16.
 - `evaluator.md` (parallel draft) — the upstream source of
   `success_score`; reconcile in Wave 4 (§15).
 - [Letta core blocks](https://docs.letta.com/concepts/memory) — the

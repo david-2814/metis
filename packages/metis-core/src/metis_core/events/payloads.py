@@ -472,6 +472,65 @@ class EvalFailed(msgspec.Struct, frozen=True):
     judge_latency_ms: int
 
 
+# --- §6.4 Gateway quota domain (multi-user.md §5, §7.2) ---------------------
+
+QuotaScopeLiteral = Literal[
+    "key_daily",
+    "key_monthly",
+    "user_daily",
+    "user_monthly",
+    "team_daily",
+    "team_monthly",
+]
+
+QuotaSeverityLiteral = Literal["warning", "critical"]
+
+InboundShapeLiteral = Literal["openai", "anthropic"]
+
+
+class QuotaAlert(msgspec.Struct, frozen=True):
+    """`quota.alert` per multi-user.md §5 / gateway.md §6.4.
+
+    Soft alert emitted when an authenticated request lands on a key /
+    user / team whose spend has crossed a configured warn threshold
+    (`warning` at 80%, `critical` at 95%) but is still below the hard
+    breaker (1.0). One event per request that crosses the threshold —
+    no alert when spend stays under 80%, no alert when the hard breaker
+    fires (the `gateway.quota_exceeded` event covers that case).
+
+    `current_usd` and `limit_usd` are Decimals (the same convention as
+    `EvalCompleted.judge_cost_usd`). `percentage` is `float(current/limit)`,
+    convenient for SPA rendering.
+    """
+
+    scope: QuotaScopeLiteral
+    severity: QuotaSeverityLiteral
+    current_usd: Decimal
+    limit_usd: Decimal
+    percentage: float
+    gateway_key_id: str | None = None
+    user_id: str | None = None
+    team_id: str | None = None
+
+
+class GatewayQuotaExceeded(msgspec.Struct, frozen=True):
+    """`gateway.quota_exceeded` per multi-user.md §7.2.
+
+    Hard-cap rejection: an inbound gateway request hit a configured cap
+    and the harness short-circuited before routing/adapter invocation.
+    The HTTP layer concurrently returns 429 with the documented body
+    (gateway.md §6.4); this event is the audit trail.
+    """
+
+    scope: QuotaScopeLiteral
+    current_usd: Decimal
+    limit_usd: Decimal
+    inbound_shape: InboundShapeLiteral
+    gateway_key_id: str | None = None
+    user_id: str | None = None
+    team_id: str | None = None
+
+
 # --- §6.10 Bus meta-events --------------------------------------------------
 
 
@@ -534,6 +593,9 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     "eval.started": (EvalStarted, Sensitivity.PSEUDONYMOUS),
     "eval.completed": (EvalCompleted, Sensitivity.USER_CONTROLLED),
     "eval.failed": (EvalFailed, Sensitivity.PSEUDONYMOUS),
+    # gateway quota (Phase 3 — multi-user.md §5, §7.2)
+    "quota.alert": (QuotaAlert, Sensitivity.PSEUDONYMOUS),
+    "gateway.quota_exceeded": (GatewayQuotaExceeded, Sensitivity.PSEUDONYMOUS),
     # bus
     "bus.subscriber_registered": (BusSubscriberRegistered, Sensitivity.PSEUDONYMOUS),
     "bus.subscriber_unregistered": (BusSubscriberUnregistered, Sensitivity.PSEUDONYMOUS),

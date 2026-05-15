@@ -292,7 +292,7 @@ tiers:
 # Pattern store weighting (§5.5)
 pattern:
   cost_weight: 0.1        # 0.0 = pure quality, 1.0 = pure cost (default 0.1)
-  min_confidence: 0.3
+  min_confidence: 0.05    # default 0.05 — scaled to match cost_weight=0.1 (see §5.5)
   min_sample_size: 5
 
 rules:
@@ -433,6 +433,8 @@ If `top_score == 0`, confidence is 0. The pattern policy returns `None` if `conf
 **Default rationale.** The `cost_weight` default of 0.1 (was 0.3 prior to 2026-05-14) is itself a value judgment — but a documented one. A user prototyping wants higher; a user shipping production code may want lower (closer to pure quality). The point is that the tradeoff is *visible*, not hidden, and the user can see and override it.
 
 The default was lowered from 0.3 → 0.1 after the §A3-rev benchmark run (see `benchmarks/RESULTS.md`). At 0.3 the cost-efficiency term required a success delta of ~0.43 to flip the chooser when the cheapest model also scored 1.0 on cost_efficiency — larger than the 0.15–0.30 cluster-level quality deltas the LLM judge produced in real data. The result was slot 4 picking the cheaper model on every routed turn regardless of evidence. At 0.1 a quality delta of ~0.143 is enough to invert the ranking, which the observed deltas do clear. The scoring formula is unchanged — only the default of the blend constant moved. Workspaces that depended on the prior cost-bias must restate `cost_weight: 0.3` in their `routing.yaml`.
+
+The `min_confidence` default was lowered from 0.3 → 0.05 in the same wave (2026-05-14) after the §A3-rev2 benchmark run. The two knobs are coupled: confidence is `(top_score - runner_up_score) / top_score`, and `score` itself is `(1 - cost_weight) * success + cost_weight * cost_efficiency`. Under the legacy `cost_weight=0.3`, the cost-efficiency term alone — independent of any quality delta — produced ~0.35 confidence on tied-quality clusters where the two models had different costs, so `min_confidence=0.3` acted as a noise gate without suppressing genuine signal. Under `cost_weight=0.1` the same tied-quality clusters produce ~0.10 confidence, and the legacy `0.3` gate suppresses real cluster inversions: §A3-rev2 Pass C turn 2 on `write-a-doc-from-notes` aggregated `sonnet=0.900` ahead of `haiku=0.842` (the first cluster-level inversion in any A3 series) with confidence `0.064`, and slot 4 emitted `not_applicable`. At `0.05` the gate scales down with the cost-weight reduction so real inversions can fire; cluster-empty / zero-score / fewer-than-K-cluster cases still gate off in `aggregation.py`. Workspaces that depended on the prior tighter gate restate `min_confidence: 0.3` in their `routing.yaml`.
 
 ### 5.6 Tie-breaking against configured rules
 

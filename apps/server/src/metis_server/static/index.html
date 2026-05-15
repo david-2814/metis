@@ -17,7 +17,7 @@
         <div class="toggle" id="audience" role="tablist" aria-label="View">
           <button data-view="cost" class="on" role="tab">Cost</button>
           <button data-view="activity" role="tab">Activity</button>
-          <button data-view="keys" role="tab">Gateway keys</button>
+          <button data-view="identity" role="tab">Spend by identity</button>
         </div>
         <div class="toggle" id="window" role="tablist" aria-label="Time window">
           <button data-window="today" role="tab">Today</button>
@@ -29,10 +29,16 @@
     </header>
 
     <main id="view-root" aria-busy="false">
-      <!-- Active-key filter chip (Cost / Activity drill-down) -->
-      <div id="key-filter-chip" class="key-chip hidden">
-        <span>Filtered to <code id="key-filter-id">—</code></span>
-        <button id="key-filter-clear" type="button">clear</button>
+      <!-- Active identity-filter chip (Cost / Activity drill-down).
+           Replaces the Wave-6 key-only chip; the kind label distinguishes
+           team / user / key so a buyer can see what they're filtered to. -->
+      <div id="identity-filter-chip" class="key-chip hidden">
+        <span>
+          Filtered to
+          <span class="filter-kind" id="identity-filter-kind">key</span>
+          <code id="identity-filter-id">—</code>
+        </span>
+        <button id="identity-filter-clear" type="button">clear</button>
       </div>
 
       <!-- Cost view -->
@@ -93,37 +99,92 @@
         </div>
       </section>
 
-      <!-- Gateway keys view -->
-      <section id="view-keys" class="view hidden">
+      <!-- Spend-by-identity view: per-team + per-user + per-key rollups
+           share the same chrome. The identity-scope pills switch which
+           of the three tiles are visible. Default is "All" so the buyer
+           lands on the team-level headline + the breakdown without
+           hunting for it. -->
+      <section id="view-identity" class="view hidden">
         <div class="card">
           <div class="keys-toolbar">
-            <div class="toggle pills" id="keys-source" role="tablist" aria-label="Traffic source">
-              <button data-keys-filter="all" class="on" role="tab">All traffic</button>
-              <button data-keys-filter="agent" role="tab">Agent-loop only</button>
-              <button data-keys-filter="gateway" role="tab">Gateway only</button>
+            <div class="toggle pills" id="identity-scope" role="tablist" aria-label="Identity scope">
+              <button data-identity-scope="all" class="on" role="tab">All</button>
+              <button data-identity-scope="team" role="tab">Per-team</button>
+              <button data-identity-scope="user" role="tab">Per-user</button>
+              <button data-identity-scope="key" role="tab">Per-key</button>
             </div>
-            <div class="toggle pills" id="keys-sort" role="tablist" aria-label="Sort">
-              <button data-keys-sort="cost" class="on" role="tab">Sort: cost</button>
-              <button data-keys-sort="call_count" role="tab">Sort: calls</button>
+            <div class="toggle pills" id="identity-sort" role="tablist" aria-label="Sort">
+              <button data-identity-sort="cost" class="on" role="tab">Sort: cost</button>
+              <button data-identity-sort="call_count" role="tab">Sort: calls</button>
             </div>
           </div>
 
-          <div id="top-spender" class="top-spender hidden">
-            <span class="ts-label">Top spender</span>
-            <code id="top-spender-id">—</code>
-            <span class="ts-share" id="top-spender-share">—</span>
-            <span class="ts-hint">of all spend in this window</span>
+          <!-- Per-team tile -->
+          <div class="identity-tile" id="tile-team">
+            <div id="top-spender-team" class="top-spender hidden">
+              <span class="ts-label">Top team</span>
+              <code id="top-spender-team-id">—</code>
+              <span class="ts-share" id="top-spender-team-share">—</span>
+              <span class="ts-hint">of team spend in this window</span>
+            </div>
+            <h2>Per-team spend</h2>
+            <div id="teams-table" class="keys-table identities-table"></div>
+            <div class="empty hidden" id="teams-empty">
+              No team-tagged traffic in this window.
+            </div>
+            <div class="hint">
+              Click a team row to expand its per-user breakdown; use the
+              <em>Filter</em> action to narrow the Cost &amp; Activity views to
+              that team. Rows with no <code>team_id</code> are agent-loop traffic
+              or pre-multi-user gateway keys.
+            </div>
           </div>
 
-          <h2>Per-key spend</h2>
-          <div id="keys-table" class="keys-table"></div>
-          <div class="empty hidden" id="keys-empty">
-            No traffic in this window matching the selected filter.
+          <!-- Per-user tile -->
+          <div class="identity-tile" id="tile-user">
+            <div id="top-spender-user" class="top-spender hidden">
+              <span class="ts-label">Top developer</span>
+              <code id="top-spender-user-id">—</code>
+              <span class="ts-share" id="top-spender-user-share">—</span>
+              <span class="ts-hint">of user spend in this window</span>
+            </div>
+            <h2>Per-user spend</h2>
+            <div id="users-table" class="keys-table identities-table"></div>
+            <div class="empty hidden" id="users-empty">
+              No user-tagged traffic in this window.
+            </div>
+            <div class="hint">
+              Click a user row to filter the Cost &amp; Activity views to that
+              developer. Rows with no <code>user_id</code> are agent-loop or
+              pre-multi-user traffic.
+            </div>
           </div>
-          <div class="hint">
-            Click a gateway-key row to filter the Cost &amp; Activity views to its
-            traffic. Agent-loop rows roll up in-process traffic (CLI / TUI / <code>metis serve</code>)
-            and have no key id.
+
+          <!-- Per-key tile (Wave-6 view, preserved) -->
+          <div class="identity-tile" id="tile-key">
+            <div class="keys-toolbar inner">
+              <div class="toggle pills" id="keys-source" role="tablist" aria-label="Traffic source">
+                <button data-keys-filter="all" class="on" role="tab">All traffic</button>
+                <button data-keys-filter="agent" role="tab">Agent-loop only</button>
+                <button data-keys-filter="gateway" role="tab">Gateway only</button>
+              </div>
+            </div>
+            <div id="top-spender" class="top-spender hidden">
+              <span class="ts-label">Top key</span>
+              <code id="top-spender-id">—</code>
+              <span class="ts-share" id="top-spender-share">—</span>
+              <span class="ts-hint">of all spend in this window</span>
+            </div>
+            <h2>Per-key spend</h2>
+            <div id="keys-table" class="keys-table"></div>
+            <div class="empty hidden" id="keys-empty">
+              No traffic in this window matching the selected filter.
+            </div>
+            <div class="hint">
+              Click a gateway-key row to filter the Cost &amp; Activity views to its
+              traffic. Agent-loop rows roll up in-process traffic (CLI / TUI /
+              <code>metis serve</code>) and have no key id.
+            </div>
           </div>
         </div>
       </section>

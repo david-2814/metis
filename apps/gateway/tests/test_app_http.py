@@ -279,6 +279,101 @@ async def test_trace_events_stamp_null_identity_for_untagged_v1_key(
         conn.close()
 
 
+async def test_hard_breaker_returns_429_with_documented_body(
+    client, scripted_adapter, runtime, tmp_path
+) -> None:
+    """multi-user.md §5 / gateway.md §6.4 — once a key's daily cap is
+    exceeded, subsequent requests must short-circuit before routing with
+    HTTP 429 and the documented error body."""
+    from decimal import Decimal
+
+    from metis_gateway.auth import GatewayKey, Keystore, hash_bearer_token
+
+    token = "gw_capped_token"
+    runtime.keystore = Keystore(
+        [
+            GatewayKey(
+                key_id="gk_capped",
+                secret_hash=hash_bearer_token(token),
+                name="capped",
+                workspace_path=str(tmp_path),
+                # Cap so low that one normal call exhausts it ($0.00001 /
+                # 1k input tokens at the test pricing isn't quite zero).
+                daily_cap_usd=Decimal("0.00001"),
+            )
+        ]
+    )
+
+    # First call goes through (spend = 0 < $0.00001).
+    scripted_adapter.push_response(text="ok", input_tokens=10_000, output_tokens=2_000)
+    r1 = await client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"model": "haiku", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r1.status_code == 200
+    await runtime.bus.drain()
+
+    # Second call: cap is now exceeded → 429 with body shape from §6.4.
+    r2 = await client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"model": "haiku", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r2.status_code == 429
+    body = r2.json()
+    assert body["error"]["code"] == "quota_exceeded"
+    assert body["error"]["identity"] == "key"
+    assert body["error"]["scope"] == "key_daily"
+    assert "limit_usd" in body["error"]
+    assert "current_usd" in body["error"]
+    # Adapter wasn't called on the rejected request — only the first call seeded
+    # the scripted adapter, never a second.
+    assert len(scripted_adapter.requests) == 1
+
+    await runtime.bus.drain()
+    import json as _json
+    import sqlite3
+
+    conn = sqlite3.connect(runtime.db_file)
+    try:
+        rows = conn.execute(
+            "SELECT payload_json FROM events WHERE type = 'gateway.quota_exceeded'"
+        ).fetchall()
+        payloads = [_json.loads(r[0]) for r in rows]
+    finally:
+        conn.close()
+    assert len(payloads) == 1
+    assert payloads[0]["scope"] == "key_daily"
+    assert payloads[0]["gateway_key_id"] == "gk_capped"
+    assert payloads[0]["inbound_shape"] == "openai"
+
+
+async def test_back_compat_uncapped_key_passes_through(
+    client, bearer_token, scripted_adapter, runtime
+) -> None:
+    """A key with no caps continues to authenticate and route exactly as
+    before — no quota check fires, no 429, no extra events."""
+    scripted_adapter.push_response(text="ok")
+    r = await client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {bearer_token}"},
+        json={"model": "haiku", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200
+    await runtime.bus.drain()
+
+    import sqlite3
+
+    conn = sqlite3.connect(runtime.db_file)
+    try:
+        types = [row[0] for row in conn.execute("SELECT type FROM events ORDER BY id").fetchall()]
+    finally:
+        conn.close()
+    assert "gateway.quota_exceeded" not in types
+    assert "quota.alert" not in types
+
+
 async def test_anthropic_endpoint_stamps_identity_too(
     client, scripted_adapter, runtime, tmp_path
 ) -> None:

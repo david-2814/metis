@@ -12,6 +12,7 @@ them will ever match in v1.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from metis_core.routing.context import TurnContext
@@ -29,6 +30,7 @@ from metis_core.routing.policy import (
     Not,
     Predicate,
     SkillsMatchingMessageIncludes,
+    TeamBudgetRemainingLt,
     TimeOfDayBetween,
     WorkspacePathMatches,
 )
@@ -63,6 +65,13 @@ def evaluate(predicate: Predicate, ctx: TurnContext) -> bool:
     if isinstance(predicate, CostTodayExceedsUsd):
         # Daily-cost accumulator isn't wired in v1.
         return False
+    if isinstance(predicate, TeamBudgetRemainingLt):
+        # Set by the gateway harness (multi-user.md §6.1). The agent path
+        # leaves it None and the predicate is False — there is no team
+        # binding to cap.
+        if ctx.team_budget_remaining_usd is None:
+            return False
+        return ctx.team_budget_remaining_usd < Decimal(str(predicate.threshold_usd))
     if isinstance(predicate, AnyOf):
         return any(evaluate(p, ctx) for p in predicate.predicates)
     if isinstance(predicate, AllOf):

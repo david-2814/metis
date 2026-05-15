@@ -1,6 +1,6 @@
 # Multi-User / Team Identity & Rollups Specification
 
-**Status:** Draft v1 — spec only. Phase 3 implementation pending.
+**Status:** v1 — §3, §4 (gateway identity stamping), §5 (analytics rollups), and §5.1 + §6.1 + §6.3 (key-scoped quota caps with hard breakers, soft alerts at 80%/95%, and the `team_budget_remaining_lt` routing predicate) shipped. User/team-scoped caps and `users.json` / `teams.json` storage land in a follow-on (see §8.1).
 **Last updated:** 2026-05-14
 
 > Adds a per-user / per-team identity layer on top of the existing per-(gateway-key) cost attribution shipped in [`gateway.md`](gateway.md) §3.3 / §6. Extends [`analytics-api.md`](analytics-api.md) with `group_by=user` and `group_by=team`, a new `/analytics/by_team` rollup, and `?user=` / `?team=` filter parameters on existing endpoints. Adds routing-rule predicates and gateway-level circuit breakers for per-user and per-team budget caps. Closes the "multi-user from day one is real" requirement called out in [`STRATEGY.md §2`](../STRATEGY.md) and the "team-level rollups" follow-on listed in [`gateway.md §11`](gateway.md).

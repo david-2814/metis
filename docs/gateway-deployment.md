@@ -265,11 +265,21 @@ Every `llm.call_completed` and `turn.completed` event carries the
 These dimensions roll up through `/analytics/by_key` (one row per key,
 with a per-inbound-shape sub-array) and `/analytics/cost?group_by=gateway_key`
 (plain cost rows keyed by `gateway_key_id`). For a buyer-facing visual
-view, point a browser at the `metis serve` dashboard's **Gateway keys**
-tab — same DB, same numbers, no extra wiring. The dashboard's per-key
-table is the recommended surface for per-tenant cost monitoring;
-clicking a row drills the Cost view down to that key's traffic via the
-`?gateway_key=<id>` filter on `/analytics/cost`.
+view, point a browser at the `metis serve` dashboard's **Spend by
+identity** tab — same DB, same numbers, no extra wiring. The tab
+ships three rollups in one place: **Per-team** (`/analytics/by_team`,
+with an expand-on-click per-user breakdown), **Per-user**
+(`/analytics/cost?group_by=user`), and **Per-key** (the original
+Wave-6 view, `/analytics/by_key`). Click-through filters the **Cost**
+and **Activity** views to that identity via `?team=<id>` / `?user=<id>` /
+`?gateway_key=<id>` — letting an operator monitor spend per tenant
+(team), per developer (user), or per credential (key) with the same
+chrome and no separate report tooling.
+
+Per-team and per-user attribution requires `--user` / `--team` on
+`issue-key` (multi-user.md §4.2); pre-multi-user keys roll up under
+the `untagged` bucket in those tiles. The per-key tile works on every
+key regardless of whether it carries identity tags.
 
 ### Non-loopback bind (deferred)
 
@@ -343,7 +353,7 @@ before any non-laptop deployment.
 | `Deployment.proxy`       | Sidecar (`alpine/socat:1.8.0.0`) listens on 0.0.0.0:8423 inside the pod and forwards to 127.0.0.1:8422. This bridges the gateway's loopback bind (v1 safety guarantee) so the Service can reach it. |
 | `Ingress`                | OFF. Enable explicitly and provide a TLS cert (cert-manager / cloud LB / sealed Secret). |
 | `Secret` (providers)     | Chart-managed by default with inline keys, OR `provider.existingSecret` to consume one you manage. The chart fails install if no provider key is provided either way (the gateway refuses to start without one). |
-| `ConfigMap` (keystore)   | Seeded empty `{ "keys": [] }`. Mount a Secret instead via `keystore.existingSecret` for production. |
+| `ConfigMap` (keystore)   | Seeded empty `{ "keys": [] }`. **The gateway rejects an empty keystore at startup**, so the seed is for `helm template` rendering only — for a real install, issue at least one key out-of-band and pass it via `keystore.existingSecret` (recipe in [Quickstart](#quickstart)). |
 | `PersistentVolumeClaim`  | 1Gi RWO for the trace DB. The cluster default StorageClass is used unless `persistence.storageClass` is set. |
 | `HorizontalPodAutoscaler`| OFF. CPU-based scaling 1→3 when enabled (see caveat below on shared trace DB).         |
 | `PodDisruptionBudget`    | `minAvailable: 1` so cluster autoscalers / upgrade tools wait for a replacement before evicting. |
@@ -351,6 +361,11 @@ before any non-laptop deployment.
 | `ServiceAccount`         | Chart-managed, no extra RBAC. Reuse an existing one via `serviceAccount.name` + `serviceAccount.create=false`. |
 
 ### Quickstart
+
+The gateway refuses to start with an empty `keys.json` (auth.py rejects
+`{"keys": []}`), so the working order is **issue a key out-of-band, then
+install**. The chart's seed ConfigMap is fine for `helm template`
+rendering but is not a valid install-time keystore.
 
 ```bash
 # 1. Build + push the gateway image to a registry your cluster can pull.
@@ -361,27 +376,48 @@ docker push your-registry.example.com/metis-gateway:0.1.0
 # 2. Create a namespace.
 kubectl create namespace metis-gateway
 
-# 3. Install the chart. Pin a real image tag, NOT `latest` (the chart
+# 3. Issue your first gateway key BEFORE the install. Save the printed
+#    token — only the SHA-256 hash is persisted. Either run the CLI
+#    locally against a uv workspace…
+mkdir -p ./.metis-gateway
+uv run metis gateway issue-key \
+    --keystore ./.metis-gateway/keys.json \
+    --name "my-client" --workspace /workspace
+# → prints `token: gw_…` once.
+
+#    …or use the gateway image's issue-key subcommand if you don't have
+#    uv installed:
+# docker run --rm -v "$PWD/.metis-gateway:/etc/metis" \
+#     your-registry.example.com/metis-gateway:0.1.0 issue-key \
+#         --name "my-client" --workspace /workspace
+
+# 4. Wrap the keystore in a Secret. (A ConfigMap also works, but Secret
+#    matches how keys.json is treated in production paths.)
+kubectl -n metis-gateway create secret generic metis-gateway-keystore \
+    --from-file=keys.json=./.metis-gateway/keys.json
+
+# 5. Install the chart. Pin a real image tag, NOT `latest` (the chart
 #    ships with `latest` as a placeholder).
 helm install metis-gateway ./infra/gateway/helm/ \
     --namespace metis-gateway \
     --set image.repository=your-registry.example.com/metis-gateway \
     --set image.tag=0.1.0 \
-    --set provider.anthropicApiKey="${ANTHROPIC_API_KEY}"
+    --set provider.anthropicApiKey="${ANTHROPIC_API_KEY}" \
+    --set keystore.existingSecret=metis-gateway-keystore
 
-# 4. Wait for the pod to come up.
+# 6. Wait for the pod to come up.
 kubectl -n metis-gateway wait deploy/metis-gateway --for=condition=Available --timeout=120s
 
-# 5. Issue your first gateway key. Save the printed token.
-kubectl -n metis-gateway exec deploy/metis-gateway -c gateway -- \
-    metis gateway issue-key --keystore /etc/metis/keys.json \
-        --name "my-client" --workspace /workspace
-# → prints `token: gw_…` once.
-
-# 6. Smoke-test over a port-forward.
+# 7. Smoke-test over a port-forward.
 kubectl -n metis-gateway port-forward svc/metis-gateway 8422:8422 &
 curl http://127.0.0.1:8422/healthz
 ```
+
+To rotate or add keys later, regenerate `keys.json` with
+`metis gateway issue-key`, recreate the Secret (`kubectl create secret
+... --dry-run=client -o yaml | kubectl apply -f -`), and
+`kubectl rollout restart deploy/metis-gateway`. See
+[Keystore rotation without a restart](#keystore-rotation-without-a-restart).
 
 ### Common values.yaml overrides
 
@@ -463,14 +499,169 @@ The chart was validated with helm 4.2.0:
 ```bash
 helm lint infra/gateway/helm/
 # → 1 chart(s) linted, 0 chart(s) failed
+
 helm template test infra/gateway/helm/ \
     --set provider.anthropicApiKey=sk-ant-stub
 # → 8 manifests rendered (NetworkPolicy / PDB / ServiceAccount / Secret /
 #   ConfigMap / PVC / Service / Deployment)
+
+helm template test infra/gateway/helm/ \
+    --set provider.anthropicApiKey=sk-ant-stub \
+    --set keystore.existingSecret=metis-gateway-keystore
+# → 7 manifests rendered (the seed ConfigMap drops out when a Secret
+#   keystore is supplied)
 ```
 
-Do this before merging chart changes; the install side is the buyer's
-responsibility.
+Do this before merging chart changes. End-to-end install validation is
+captured in [First production smoke](#first-production-smoke-kind-2026-05-15)
+below.
+
+### First production smoke (kind, 2026-05-15)
+
+The chart was deployed end-to-end against a `kind` 0.31.0 cluster
+(`kindest/node:v1.35.0`) on macOS / Docker Desktop 29.2.0, using helm
+4.2.0 and kubectl v1.34.1. Cluster spinup → first 200 OK on `/healthz`
+took ~3 minutes after the first image build (Docker layer cache cold).
+Full transcript:
+
+```bash
+# 1. Create the cluster + load the locally-built image.
+kind create cluster --name metis-gateway-smoke --wait 2m
+docker build -t metis-gateway:dev -f infra/gateway/Dockerfile .
+kind load docker-image metis-gateway:dev --name metis-gateway-smoke
+
+# 2. Issue a key out-of-band, wrap it in a Secret.
+kubectl create namespace metis-gateway
+mkdir -p /tmp/metis-gateway-smoke
+uv run metis gateway issue-key \
+    --keystore /tmp/metis-gateway-smoke/keys.json \
+    --name "smoke-client" --workspace /workspace \
+  | grep -E "^(key_id|token):" > /tmp/metis-gateway-smoke/issue.out
+TOKEN=$(awk '/^token:/ {print $2}' /tmp/metis-gateway-smoke/issue.out)
+kubectl -n metis-gateway create secret generic metis-gateway-keystore \
+    --from-file=keys.json=/tmp/metis-gateway-smoke/keys.json
+
+# 3. Install with dev overrides.
+helm install metis-gateway ./infra/gateway/helm/ \
+    --namespace metis-gateway \
+    --set image.repository=metis-gateway \
+    --set image.tag=dev \
+    --set image.pullPolicy=Never \
+    --set provider.anthropicApiKey="$ANTHROPIC_API_KEY" \
+    --set keystore.existingSecret=metis-gateway-keystore
+
+# 4. Wait + port-forward.
+kubectl -n metis-gateway wait deploy/metis-gateway \
+    --for=condition=Available --timeout=120s
+kubectl -n metis-gateway port-forward svc/metis-gateway 18422:8422 &
+curl --silent http://127.0.0.1:18422/healthz
+# → {"status":"ok","uptime_seconds":…}
+
+# 5. Real-API smoke: 4 calls (OpenAI sync + SSE, Anthropic sync + SSE)
+#    against the canonical haiku id so routing slot 1 actually wins
+#    (see "Bare model names route to global_default" pitfall below).
+for shape in chat messages; do
+  for stream in false true; do
+    case "$shape:$stream" in
+      chat:false)
+        curl -sf http://127.0.0.1:18422/v1/chat/completions \
+          -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+          -d '{"model":"anthropic:claude-haiku-4-5","max_tokens":16,
+               "messages":[{"role":"user","content":"respond with OK"}]}' ;;
+      chat:true)
+        curl -sNf http://127.0.0.1:18422/v1/chat/completions \
+          -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+          -d '{"model":"anthropic:claude-haiku-4-5","max_tokens":16,"stream":true,
+               "messages":[{"role":"user","content":"respond with OK"}]}' ;;
+      messages:false)
+        curl -sf http://127.0.0.1:18422/v1/messages \
+          -H "x-api-key: $TOKEN" -H "anthropic-version: 2023-06-01" \
+          -H "content-type: application/json" \
+          -d '{"model":"anthropic:claude-haiku-4-5","max_tokens":16,
+               "messages":[{"role":"user","content":"respond with OK"}]}' ;;
+      messages:true)
+        curl -sNf http://127.0.0.1:18422/v1/messages \
+          -H "x-api-key: $TOKEN" -H "anthropic-version: 2023-06-01" \
+          -H "content-type: application/json" \
+          -d '{"model":"anthropic:claude-haiku-4-5","max_tokens":16,"stream":true,
+               "messages":[{"role":"user","content":"respond with OK"}]}' ;;
+    esac
+    echo
+  done
+done
+
+# 6. Per-key spend rollup (the gateway image does not expose /analytics/*;
+#    point `metis serve` at a VACUUM INTO snapshot of the same trace DB).
+POD=$(kubectl -n metis-gateway get pod -o name | head -1 | sed 's|pod/||')
+kubectl -n metis-gateway exec $POD -c gateway -- \
+    python3 -c "import sqlite3; con=sqlite3.connect('/var/lib/metis/metis.db');
+con.execute('PRAGMA wal_checkpoint(TRUNCATE)');
+con.execute('VACUUM INTO \"/tmp/snapshot.db\"')"
+kubectl -n metis-gateway cp metis-gateway/$POD:/tmp/snapshot.db \
+    /tmp/metis-gateway-smoke/metis.db -c gateway
+uv run metis serve /tmp/metis-gateway-smoke \
+    --port 18430 --db-path /tmp/metis-gateway-smoke/metis.db &
+sleep 3
+curl -sf http://127.0.0.1:18430/analytics/by_key | python3 -m json.tool
+```
+
+Measured outcome:
+
+- 4 haiku calls spent **$0.00012** total ($3e-5 each) at pricing
+  version `2026-05-08+openrouter-e7aa08510daa`.
+- `/analytics/by_key` returned a single row keyed on the issued
+  `gateway_key_id`, with a `by_inbound_shape` sub-array showing 2 calls
+  per shape, matching the wire mix.
+- All 6 events fired on every call: `route.decided`,
+  `llm.call_started`, `llm.call_completed`, `turn.completed`, plus
+  `bus.subscriber_registered` at startup. `gateway_key_id` and
+  `inbound_shape` were stamped on every `llm.call_completed` and
+  `turn.completed` payload.
+
+Two chart changes landed during this validation:
+
+- **Dockerfile uid pinned to 1000.** The image previously created the
+  `metis` user with `useradd --system` (dynamic uid, observed as 999
+  in 3.13-slim). The chart's default `runAsUser: 1000` then could not
+  read the `/etc/metis/keys.json` mount because `/etc/metis` is mode
+  0750 owned by uid 999. Pinning the image uid/gid to 1000 in
+  [`infra/gateway/Dockerfile`](../infra/gateway/Dockerfile) keeps the
+  image and the chart's documented default in sync.
+- **NOTES.txt + Quickstart reordered.** Both used to recommend
+  `kubectl exec deploy/metis-gateway -c gateway -- metis gateway
+  issue-key …` *after* `helm install`. The pod will not reach Ready
+  with the seed `{"keys": []}` keystore (the gateway rejects an empty
+  keys array at startup), so the exec recipe is unreachable. The flow
+  is now: issue out-of-band → Secret → install.
+
+### Pitfalls a buyer will hit
+
+These are the rough edges to expect when doing the install yourself.
+None of them require source changes; they're a function of v1
+gateway semantics and chart defaults.
+
+| Pitfall                                                             | What happens                                                                                                                                                                                                                                              | Workaround                                                                                                                                                                                                              |
+|---------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Empty seed keystore blocks first start**                          | `CrashLoopBackOff` with `keystore must contain a non-empty 'keys' array`. The chart's default ConfigMap is `{"keys": []}`, and the gateway refuses to start on it.                                                                                        | Issue at least one key out-of-band (`uv run metis gateway issue-key …` or `docker run … issue-key`), wrap it in a Secret, install with `--set keystore.existingSecret=metis-gateway-keystore`.                          |
+| **Bare model names route to global_default**                        | A client sending `model: "claude-haiku-4-5"` (the public Anthropic name) lands in slot 7 (`global_default = anthropic:claude-sonnet-4-6`). The response body still echoes `claude-haiku-4-5` because translators echo the client's `requested_model`, so the discrepancy is invisible client-side — but the upstream call (and the billed cost) is sonnet. | Send the canonical id (`anthropic:claude-haiku-4-5`) or one of the gateway-side aliases (`haiku`, `fast`, `sonnet`, `balanced`, `opus`, `deep`, `gpt5`, `mini`) — both win routing slot 1. Or set a `workspace_default` in `.metis/routing.yaml` to anchor the chosen model when bare names are used. |
+| **`/analytics/*` is not on the gateway image**                      | `curl http://gateway/analytics/by_key` → 404. The gateway is per-request stateless (gateway.md §2) and does not host the analytics surface.                                                                                                              | Spin up `metis serve` against the same DB to expose `/analytics/cost` / `/analytics/by_key`. Easiest: `kubectl exec … 'PRAGMA wal_checkpoint(TRUNCATE); VACUUM INTO /tmp/snapshot.db'`, `kubectl cp` it out, `metis serve --db-path` against the snapshot. |
+| **Raw `kubectl cp` of `metis.db` returns stale data**               | If you `kubectl cp` the trace DB while the gateway is taking traffic, SQLite WAL writes that haven't been checkpointed yet stay in `metis.db-wal`. The copied `.db` shows older events than the live one.                                                | Force a checkpoint and snapshot first: `kubectl exec … python3 -c "import sqlite3; sqlite3.connect('/var/lib/metis/metis.db').execute('PRAGMA wal_checkpoint(TRUNCATE)')"` then `VACUUM INTO /tmp/snapshot.db`, then `kubectl cp`. |
+| **PVC `ReadWriteOnce` blocks horizontal scaling**                   | The default PVC is `ReadWriteOnce`. Setting `replicaCount > 1` or enabling `autoscaling` will get a second replica stuck `Pending` ("volume already attached to a node").                                                                                | Stay at `replicaCount: 1` (the documented v1 shape) or switch the storage class to one that supports `ReadWriteMany` and accept SQLite-on-network-FS caveats. Better long-term fix is to externalize the trace DB, tracked under [Observability](#observability). |
+| **NetworkPolicy is silently ignored on plain kind**                 | kind's default CNI (kindnet) does not enforce `NetworkPolicy` egress. The chart's deny-by-default policy renders but has no effect; calls still reach Anthropic.                                                                                          | Test the NetworkPolicy on a cluster with Calico / Cilium / Antrea. On kind, install Calico (`kubectl apply -f …`) before relying on the policy. The egress rule itself is correct (TCP 443 to any IP plus DNS to kube-system). |
+
+### Cleanup
+
+```bash
+# Tear down the helm release + namespace.
+helm uninstall metis-gateway --namespace metis-gateway
+kubectl delete namespace metis-gateway
+
+# Drop the kind cluster.
+kind delete cluster --name metis-gateway-smoke
+
+# Local files.
+rm -rf /tmp/metis-gateway-smoke ./.metis-gateway
+```
 
 ### The loopback-bind tax in Kubernetes
 
@@ -502,7 +693,8 @@ Service will not reach the gateway. The probes will keep working.
 |----------------------------------------------------------------------|------------------------------------------------------------------------------------------|
 | `helm install` fails with "set provider.existingSecret OR at least one of provider.\*ApiKey" | None of the three inline provider keys is set AND no existing Secret is referenced. The gateway refuses to start without a key (runtime.py:84), so the chart fails install early. |
 | Pod stuck `CrashLoopBackOff` with "gateway keystore not found"      | `keystore.existingSecret` is set but the Secret doesn't have a key named `keys.json`. Recreate with `--from-file=keys.json=./keys.json`. |
-| Service connects but every request returns 401 from gateway          | Keystore is empty (default seed is `{ "keys": [] }`). Issue a key via `kubectl exec deploy/metis-gateway -c gateway -- metis gateway issue-key …`, then either rebuild the ConfigMap or roll to `keystore.existingSecret`. |
+| Pod stuck `CrashLoopBackOff` with `keystore must contain a non-empty 'keys' array` | The chart's seed keystore is `{ "keys": [] }`, and the gateway rejects an empty array at startup. Issue a key out-of-band, wrap it in a Secret, and reinstall with `--set keystore.existingSecret=…` — see the [Quickstart](#quickstart). |
+| Service connects but every request returns 401 from gateway          | The keystore Secret you bundled doesn't have an entry matching the bearer token the client is sending. Re-issue the key against the same keystore file you bundled, recreate the Secret (`--dry-run=client -o yaml \| kubectl apply -f -`), and `kubectl rollout restart deploy/metis-gateway`. |
 | Port collision: gateway pod stuck `Error`, "address already in use" | You set `proxy.listenPort` equal to `gatewayPort`. The proxy binds `0.0.0.0:listenPort` and the gateway binds `127.0.0.1:gatewayPort` in the same pod network namespace — a wildcard bind claims every interface. Keep the two ports different (defaults are 8423 / 8422). |
 | NetworkPolicy blocks all egress, including provider APIs              | Your cluster CNI does not enforce NetworkPolicy egress (some default to ingress-only). Verify with `kubectl describe networkpolicy metis-gateway`; if your CNI ignores egress rules, the NetworkPolicy is advisory. Calico / Cilium enforce both. |
 

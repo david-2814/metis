@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from decimal import Decimal
 
 import pytest
 from metis_core.routing.context import TurnContext
@@ -20,6 +21,7 @@ from metis_core.routing.policy import (
     MessageMatches,
     Not,
     SkillsMatchingMessageIncludes,
+    TeamBudgetRemainingLt,
     TimeOfDayBetween,
     WorkspacePathMatches,
 )
@@ -107,6 +109,38 @@ def test_file_extensions_returns_false_in_v1():
 def test_cost_today_returns_false_in_v1():
     ctx = _ctx()
     assert evaluate(CostTodayExceedsUsd(threshold_usd=5.0), ctx) is False
+
+
+# ---- team_budget_remaining_lt (multi-user.md §6.1) ----------------------
+
+
+def test_team_budget_remaining_lt_fires_when_headroom_below_threshold():
+    """The predicate evaluates True when the team's remaining headroom is
+    strictly less than the threshold — drives configured-rule routing to a
+    cheaper model as the team approaches its monthly cap."""
+    ctx = _ctx(team_budget_remaining_usd=Decimal("4.99"))
+    assert evaluate(TeamBudgetRemainingLt(threshold_usd=5.0), ctx) is True
+
+
+def test_team_budget_remaining_lt_does_not_fire_at_or_above_threshold():
+    ctx = _ctx(team_budget_remaining_usd=Decimal("5.00"))
+    assert evaluate(TeamBudgetRemainingLt(threshold_usd=5.0), ctx) is False
+    ctx = _ctx(team_budget_remaining_usd=Decimal("100.00"))
+    assert evaluate(TeamBudgetRemainingLt(threshold_usd=5.0), ctx) is False
+
+
+def test_team_budget_remaining_lt_returns_false_when_no_team_binding():
+    """Agent-loop traffic / pre-multi-user keys leave the field None — the
+    predicate is False so a rule that mentions it never fires."""
+    ctx = _ctx()  # team_budget_remaining_usd defaults to None
+    assert evaluate(TeamBudgetRemainingLt(threshold_usd=5.0), ctx) is False
+
+
+def test_team_budget_remaining_lt_handles_zero_headroom():
+    """A team that overshot its cap (clamped to zero by `remaining_usd`)
+    still trips the predicate — the cheaper-model fallback should engage."""
+    ctx = _ctx(team_budget_remaining_usd=Decimal("0"))
+    assert evaluate(TeamBudgetRemainingLt(threshold_usd=5.0), ctx) is True
 
 
 # ---- time_of_day_between ------------------------------------------------

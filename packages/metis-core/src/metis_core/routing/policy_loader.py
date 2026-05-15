@@ -46,6 +46,7 @@ from metis_core.routing.policy import (
     RoutingPolicy,
     Rule,
     SkillsMatchingMessageIncludes,
+    TeamBudgetRemainingLt,
     TierMap,
     TimeOfDayBetween,
     WorkspacePathMatches,
@@ -192,7 +193,10 @@ def _parse_pattern(raw: Any, field: str, errors: list[str]) -> PatternConfig:
         errors.append(f"{field}: must be a mapping")
         return PatternConfig()
     # Fall through to the PatternConfig dataclass defaults so the single
-    # source of truth for the default `cost_weight` is `policy.PatternConfig`.
+    # source of truth for `cost_weight` / `min_confidence` / `min_sample_size`
+    # defaults is `policy.PatternConfig` (see its docstring for the rationale
+    # behind the 2026-05-14 cost_weight 0.3 → 0.1 and min_confidence 0.3 →
+    # 0.05 migrations).
     defaults = PatternConfig()
     cost_weight = raw.get("cost_weight", defaults.cost_weight)
     min_conf = raw.get("min_confidence", defaults.min_confidence)
@@ -329,6 +333,7 @@ _LEAF_PREDICATES = {
     "workspace_path_matches",
     "time_of_day_between",
     "cost_today_exceeds_usd",
+    "team_budget_remaining_lt",
 }
 _COMPOUND = {"any_of", "all_of", "not"}
 _ALL_KEYS = _LEAF_PREDICATES | _COMPOUND
@@ -381,6 +386,8 @@ def _parse_predicate(raw: Any, prefix: str, errors: list[str]) -> Predicate | No
         return _parse_time_window(value, prefix, errors)
     if key == "cost_today_exceeds_usd":
         return _parse_float(value, prefix, errors, factory=CostTodayExceedsUsd)
+    if key == "team_budget_remaining_lt":
+        return _parse_float(value, prefix, errors, factory=TeamBudgetRemainingLt)
     if key == "any_of":
         return _parse_list_predicate(value, prefix, errors, factory=AnyOf)
     if key == "all_of":

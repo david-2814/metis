@@ -183,3 +183,120 @@ def test_issue_key_command_exits_nonzero_on_validation_failure(
     assert rc == 1
     captured = capsys.readouterr()
     assert "error:" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# multi-user.md §5 — daily / monthly cap CLI plumbing
+# ---------------------------------------------------------------------------
+
+
+def test_issue_key_persists_daily_and_monthly_caps_as_decimal(tmp_path: Path) -> None:
+    """`--daily-cap-usd` / `--monthly-cap-usd` round-trip through the keystore
+    JSON as Decimal-stable strings so reload doesn't drift via float."""
+    from decimal import Decimal
+
+    keystore_path = tmp_path / "keys.json"
+    key_id, plaintext = issue_key(
+        keystore_path=keystore_path,
+        name="capped",
+        workspace_path=str(tmp_path),
+        daily_cap_usd="0.50",
+        monthly_cap_usd="50.00",
+    )
+
+    raw = json.loads(keystore_path.read_text(encoding="utf-8"))
+    entry = next(k for k in raw["keys"] if k["key_id"] == key_id)
+    # Persisted as Decimal-as-string (analytics/store.py convention) so reload
+    # via Decimal(str(value)) is exact.
+    assert entry["daily_cap_usd"] == "0.50"
+    assert entry["monthly_cap_usd"] == "50.00"
+
+    store = Keystore.from_file(keystore_path)
+    matched = store.authenticate(plaintext)
+    assert matched is not None
+    assert matched.daily_cap_usd == Decimal("0.50")
+    assert matched.monthly_cap_usd == Decimal("50.00")
+
+
+def test_issue_key_only_writes_set_cap_fields(tmp_path: Path) -> None:
+    """An untagged key must not write `daily_cap_usd: null` — keystore stays
+    forwards/backwards compatible with pre-quota readers."""
+    keystore_path = tmp_path / "keys.json"
+    issue_key(
+        keystore_path=keystore_path,
+        name="untouched",
+        workspace_path=str(tmp_path),
+    )
+    entry = json.loads(keystore_path.read_text(encoding="utf-8"))["keys"][0]
+    assert "daily_cap_usd" not in entry
+    assert "monthly_cap_usd" not in entry
+
+
+def test_issue_key_rejects_zero_or_negative_cap(tmp_path: Path) -> None:
+    keystore_path = tmp_path / "keys.json"
+    with pytest.raises(IssueKeyError, match="must be > 0"):
+        issue_key(
+            keystore_path=keystore_path,
+            name="bad",
+            workspace_path=str(tmp_path),
+            daily_cap_usd="0",
+        )
+    with pytest.raises(IssueKeyError, match="must be > 0"):
+        issue_key(
+            keystore_path=keystore_path,
+            name="bad",
+            workspace_path=str(tmp_path),
+            monthly_cap_usd="-1.5",
+        )
+
+
+def test_issue_key_rejects_unparseable_cap(tmp_path: Path) -> None:
+    with pytest.raises(IssueKeyError, match="positive number"):
+        issue_key(
+            keystore_path=tmp_path / "keys.json",
+            name="bad",
+            workspace_path=str(tmp_path),
+            daily_cap_usd="abc",
+        )
+
+
+def test_issue_key_command_prints_caps_when_set(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = issue_key_command(
+        keystore_path=tmp_path / "keys.json",
+        name="capped",
+        workspace_path=str(tmp_path),
+        daily_cap_usd="0.50",
+        monthly_cap_usd="50.00",
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "daily_cap_usd: 0.50" in captured.out
+    assert "monthly_cap_usd: 50.00" in captured.out
+
+
+def test_keystore_back_compat_loads_legacy_float_daily_cap(tmp_path: Path) -> None:
+    """A pre-quota keystore file that stored `daily_cap_usd` as a JSON number
+    must still load (the field type widened from float to Decimal)."""
+    from decimal import Decimal
+
+    keystore_path = tmp_path / "keys.json"
+    legacy = {
+        "keys": [
+            {
+                "key_id": "gk_legacy",
+                "secret_hash": "a" * 64,
+                "name": "legacy",
+                "workspace_path": str(tmp_path),
+                "daily_cap_usd": 0.25,
+            }
+        ]
+    }
+    keystore_path.write_text(json.dumps(legacy), encoding="utf-8")
+    store = Keystore.from_file(keystore_path)
+    key = store.get_by_id("gk_legacy")
+    assert key is not None
+    # Legacy float coerces via Decimal(str(0.25)) -> exact "0.25".
+    assert key.daily_cap_usd == Decimal("0.25")
+    assert key.monthly_cap_usd is None

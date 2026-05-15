@@ -39,6 +39,20 @@ class PatternConfig:
     the ranking, which the observed deltas do clear. See routing-engine.md
     §5.5 and benchmarks/RESULTS.md §A3-rev unblock #2.
 
+    `min_confidence` defaults to `0.05` (was `0.3` before 2026-05-14). The
+    §A3-rev2 benchmark run produced the first cluster-level inversion in
+    any A3 series — on `write-a-doc-from-notes` Pass C turn 2 the K-NN
+    aggregated `sonnet=0.900` ahead of `haiku=0.842`. The confidence
+    formula `(top - runner_up) / top` evaluates to `0.064` on that gap,
+    well below the legacy `0.3` gate that was calibrated for the older
+    `cost_weight=0.3` regime where the cost-efficiency term alone
+    produced ~0.35 confidence on tied-quality clusters. With
+    `cost_weight=0.1` the same near-tied data produces ~0.10 confidence,
+    so the gate must scale down with it. At `0.05` slot 4 fires on real
+    cluster inversions; cluster-empty / zero-score / fewer-than-K-cluster
+    cases still gate off in `aggregation.py`. See routing-engine.md §5.5
+    and benchmarks/RESULTS.md §A3-rev2 finding.
+
     `min_eval_confidence` is the consumer-side confidence gate from
     `pattern-store.md §15.4`: verdicts with `confidence < min_eval_confidence`
     are recorded but excluded from K-cluster success aggregation. Default
@@ -46,7 +60,7 @@ class PatternConfig:
     """
 
     cost_weight: float = 0.1
-    min_confidence: float = 0.3
+    min_confidence: float = 0.05
     min_sample_size: int = 5
     min_eval_confidence: float = 0.5
 
@@ -134,6 +148,24 @@ class CostTodayExceedsUsd:
     threshold_usd: float
 
 
+@dataclass(frozen=True)
+class TeamBudgetRemainingLt:
+    """Team budget headroom soft predicate (multi-user.md §6.1).
+
+    Evaluates True when the team's remaining monthly budget (cap minus
+    current month spend) is below `threshold_usd`. Lets a configured
+    rule route Opus turns to Sonnet when the team is approaching its
+    monthly cap — softer than the gateway's hard breaker (which
+    short-circuits the request entirely).
+
+    Returns False when the turn has no team binding or no team-level
+    cap is configured (`TurnContext.team_budget_remaining_usd is None`)
+    — agent-loop traffic and pre-multi-user keys never trip this rule.
+    """
+
+    threshold_usd: float
+
+
 # Compound predicates.
 
 
@@ -164,6 +196,7 @@ Predicate = (
     | SkillsMatchingMessageIncludes
     | FileExtensionsInContext
     | CostTodayExceedsUsd
+    | TeamBudgetRemainingLt
     | AnyOf
     | AllOf
     | Not

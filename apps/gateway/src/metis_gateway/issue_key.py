@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import json
 import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from metis_core.canonical.ids import next_monotonic_ulid
 
-from metis_gateway.auth import hash_bearer_token, validate_identity_tag
+from metis_gateway.auth import hash_bearer_token, validate_cap_usd, validate_identity_tag
 
 
 class IssueKeyError(Exception):
@@ -34,7 +35,8 @@ def issue_key(
     name: str,
     workspace_path: str,
     allowed_models: tuple[str, ...] | None = None,
-    daily_cap_usd: float | None = None,
+    daily_cap_usd: Decimal | float | None = None,
+    monthly_cap_usd: Decimal | float | None = None,
     user_id: str | None = None,
     team_id: str | None = None,
 ) -> tuple[str, str]:
@@ -56,6 +58,19 @@ def issue_key(
     if team_id is not None:
         try:
             team_id = validate_identity_tag(team_id, field_name="--team")
+        except ValueError as exc:
+            raise IssueKeyError(str(exc)) from exc
+
+    daily_cap_decimal: Decimal | None = None
+    if daily_cap_usd is not None:
+        try:
+            daily_cap_decimal = validate_cap_usd(daily_cap_usd, field_name="--daily-cap-usd")
+        except ValueError as exc:
+            raise IssueKeyError(str(exc)) from exc
+    monthly_cap_decimal: Decimal | None = None
+    if monthly_cap_usd is not None:
+        try:
+            monthly_cap_decimal = validate_cap_usd(monthly_cap_usd, field_name="--monthly-cap-usd")
         except ValueError as exc:
             raise IssueKeyError(str(exc)) from exc
 
@@ -89,8 +104,12 @@ def issue_key(
     }
     if allowed_models:
         entry["allowed_models"] = list(allowed_models)
-    if daily_cap_usd is not None:
-        entry["daily_cap_usd"] = float(daily_cap_usd)
+    if daily_cap_decimal is not None:
+        # Persist as the canonical Decimal-as-string shape so reload via
+        # `Keystore.from_dict` round-trips without float drift.
+        entry["daily_cap_usd"] = format(daily_cap_decimal, "f")
+    if monthly_cap_decimal is not None:
+        entry["monthly_cap_usd"] = format(monthly_cap_decimal, "f")
     if user_id is not None:
         entry["user_id"] = user_id
     if team_id is not None:
@@ -115,7 +134,8 @@ def issue_key_command(
     name: str,
     workspace_path: str,
     allowed_models: tuple[str, ...] | None = None,
-    daily_cap_usd: float | None = None,
+    daily_cap_usd: Decimal | float | None = None,
+    monthly_cap_usd: Decimal | float | None = None,
     user_id: str | None = None,
     team_id: str | None = None,
 ) -> int:
@@ -127,6 +147,7 @@ def issue_key_command(
             workspace_path=workspace_path,
             allowed_models=allowed_models,
             daily_cap_usd=daily_cap_usd,
+            monthly_cap_usd=monthly_cap_usd,
             user_id=user_id,
             team_id=team_id,
         )
@@ -139,6 +160,10 @@ def issue_key_command(
         print(f"user:   {user_id}")
     if team_id is not None:
         print(f"team:   {team_id}")
+    if daily_cap_usd is not None:
+        print(f"daily_cap_usd: {daily_cap_usd}")
+    if monthly_cap_usd is not None:
+        print(f"monthly_cap_usd: {monthly_cap_usd}")
     print(
         "save the token now — only the hash is persisted, and it cannot be recovered.",
         file=sys.stderr,
