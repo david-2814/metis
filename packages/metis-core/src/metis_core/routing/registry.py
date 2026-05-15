@@ -30,6 +30,9 @@ class DuplicateAliasError(ValueError):
         )
 
 
+DelegationTier = str  # "fast" | "balanced" | "deep" by convention (delegation.md §4.2)
+
+
 @dataclass(frozen=True)
 class ModelEntry:
     model_id: str  # canonical "provider:name"
@@ -43,6 +46,16 @@ class ModelEntry:
     customization layer customers use to override them. See
     `docs/standard-model-profiles.md` for the curated vocabulary and the
     defaults shipped for known models."""
+    can_delegate: bool = False
+    """Whether the `delegate()` tool is registered when this model is the
+    active planner model (delegation.md §3.1, §4.2). Default `False` so
+    delegation stays opt-in per registry. A worker session never sees the
+    tool regardless of this flag (§5.6)."""
+    delegation_tier: str | None = None
+    """When non-`None`, this model is a candidate for `delegate(tier=...)`
+    via `ModelRegistry.model_for_tier`. Convention is `fast` / `balanced`
+    / `deep` (delegation.md §4.2). Multiple models can share a tier; the
+    first registered wins."""
 
 
 class ModelRegistry:
@@ -59,6 +72,8 @@ class ModelRegistry:
         adapter: ProviderAdapter,
         aliases: list[str] | None = None,
         task_profile: list[str] | None = None,
+        can_delegate: bool = False,
+        delegation_tier: str | None = None,
     ) -> ModelEntry:
         capabilities = adapter.capabilities_for(model_id)
         entry = ModelEntry(
@@ -67,6 +82,8 @@ class ModelRegistry:
             capabilities=capabilities,
             aliases=tuple(aliases or ()),
             task_profile=tuple(task_profile or ()),
+            can_delegate=can_delegate,
+            delegation_tier=delegation_tier,
         )
         self._entries[model_id] = entry
         # The model id itself is its own alias.
@@ -112,6 +129,22 @@ class ModelRegistry:
         if ":" not in model_id:
             return model_id
         return model_id.split(":", 1)[0]
+
+    def can_delegate(self, model_id: str) -> bool:
+        """Whether `model_id` is a planner-capable model (delegation.md §3.1)."""
+        entry = self._entries.get(model_id)
+        return bool(entry and entry.can_delegate)
+
+    def model_for_tier(self, tier: str) -> str | None:
+        """First registered model with `delegation_tier == tier`, or None.
+
+        Convention tiers: `fast` / `balanced` / `deep` (delegation.md §4.2).
+        Caller resolves "tier unsupported" → `no_model_available_for_tier`.
+        """
+        for entry in self._entries.values():
+            if entry.delegation_tier == tier:
+                return entry.model_id
+        return None
 
     def list_models(self) -> list[str]:
         return sorted(self._entries.keys())

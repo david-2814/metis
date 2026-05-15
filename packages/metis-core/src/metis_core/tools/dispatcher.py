@@ -184,6 +184,8 @@ class ToolDispatcher:
         memory: object | None = None,
         skills: object | None = None,
         skill_activations: object | None = None,
+        worker_spawner: object | None = None,
+        is_worker: bool = False,
     ) -> ToolResultBlock:
         """Run a tool_use end-to-end. Always returns a ToolResultBlock; never
         raises for tool failures (errors come back as is_error result blocks).
@@ -270,6 +272,7 @@ class ToolDispatcher:
                 session_id=session_id,
                 turn_id=turn_id,
                 parent_event_id=parent_event_id,
+                is_worker=is_worker,
             )
             if decision != ConfirmationDecision.ALLOW:
                 err_cls = (
@@ -313,6 +316,8 @@ class ToolDispatcher:
             skills=skills,
             skill_activations=skill_activations,
             bus=self._bus,
+            worker_spawner=worker_spawner,
+            is_worker=is_worker,
         )
         in_flight = _InFlight(tool=tool, context=context)
         self._in_flight.setdefault(session_id, []).append(in_flight)
@@ -505,6 +510,7 @@ class ToolDispatcher:
         session_id: str,
         turn_id: str,
         parent_event_id: str | None,
+        is_worker: bool = False,
     ) -> ConfirmationDecision:
         request_id = str(next_monotonic_ulid())
         expires_at = datetime.fromtimestamp(time.time() + self._confirmation_timeout, tz=UTC)
@@ -531,6 +537,7 @@ class ToolDispatcher:
             tool_name=definition.name,
             side_effects=definition.side_effects,
             input_summary=_summarize(tool_use.input),
+            is_worker=is_worker,
         )
         try:
             decision = await asyncio.wait_for(

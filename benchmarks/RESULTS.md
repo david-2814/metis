@@ -3146,3 +3146,284 @@ for i, t in enumerate(turns, 1):
 "
 ```
 
+
+## Experiment A3-rev4: v2 embeddings + delegation — partial v2 wiring blocks Q1 inversion; Q2 delegation doesn't fire
+
+Two questions, one re-run of the §A3-rev3 protocol on a shared `a3rev4-patterns.db`:
+
+  - **Q1.** Does the v2 hybrid embedding fingerprint
+    (`PatternConfig.fingerprint_version="v2"`, opt-in via routing.yaml)
+    *generalize the inversion* §A3-rev3 hit on `regex-with-edge-cases`
+    turn 2 — sonnet picked because the K-NN saw cross-model outcomes —
+    to more workloads?
+  - **Q2.** Does the delegation MVP (sonnet planner +
+    `delegation_tier="balanced"`, haiku worker `delegation_tier="fast"`)
+    produce measurable cost-per-quality savings on a multi-step workload
+    (`multi-turn-refactor`)?
+
+Wave-10 changes used by this experiment:
+  - Pattern store v2 (`fingerprint_version="v2"`,
+    `embedding_provider="openai:text-embedding-3-small"`) wired through
+    `routing.yaml` → `PatternConfig.__post_init__`, the routing
+    engine's slot-4 cache-only lookup, and a recording-side
+    `attach_embedding_for_recording()` warm-up after `store.record()`
+    (so `_turn_outcomes[turn_id]` is set before any embedding fetch
+    yields — see Part A's [packages/metis-core/tests/patterns/test_subscriber.py:test_one_turn_with_multiple_tool_calls_lands_eval_score_after_bus_stop](../packages/metis-core/tests/patterns/test_subscriber.py)).
+  - Delegation v1 MVP (Wave 10): planner registered with
+    `can_delegate=True`, worker registered with
+    `delegation_tier="fast"`. Benchmark flag `--delegation-policy
+    sonnet-planner-haiku-worker` does the re-registration after
+    `setup_runtime` returns.
+
+Two new bus / shutdown fixes landed alongside this experiment so the
+v2 wiring could be measured at all:
+  - [apps/cli/src/metis_cli/runtime.py:shutdown_runtime](../apps/cli/src/metis_cli/runtime.py)
+    now drains *before* detaching subscribers, closing the §A3-rev3
+    `architectural-explanation-without-hallucination` outcome-update
+    bug (the per-turn eval cascade was dispatched to no-subscribers
+    when the caller hadn't drained first).
+  - [packages/metis-core/src/metis_core/events/bus.py:EventBus.stop](../packages/metis-core/src/metis_core/events/bus.py)
+    drains before setting `_stopping=True`. The previous order
+    deadlocked when shutdown emitted unregister events that were still
+    in queue at `stop()` time — the dispatch loop's
+    `while not self._stopping` check exited on the first iteration,
+    leaving `drain()`'s `queue.join()` blocked on unfinished tasks.
+
+### A3-rev4 per-pass aggregate (4-pass real-API spend $1.30)
+
+| Pass | Description | Workloads | Cost | Notes |
+|------|-------------|----------:|-----:|-------|
+| A | haiku, v2 | 7 | $0.23 | 1 transient retry on `multi-turn-refactor` |
+| B | sonnet, v2 | 7 | $0.69 | clean run |
+| C | --no-active-model, v2 | 7 | $0.33 | 2 retries: NetworkError on `multi-file-refactor`, RateLimitError on `multi-turn-refactor` |
+| D | --no-active-model + --delegation-policy on `multi-turn-refactor` only | 1 | $0.05 | scoped to multi-turn-refactor (Q2 candidate) |
+
+Total: **$1.30** real-API spend (within the $1-2.50 budget).
+
+### A3-rev4 Pass C slot-4 outcomes (Q1 — the inversion question)
+
+26 turns total across the primary Pass C run + the 2 retried workloads.
+Slot 4 wins: **20 of 26 turns**. Pattern-slot **sonnet picks: 0**.
+
+| Workload | Pattern-slot wins | Sonnet picks | Cluster snapshot (best-conf turn) |
+|----------|------------------:|-------------:|-----------------------------------|
+| architectural-explanation-without-hallucination | 1 (only) | 0 | haiku 1.000 / sonnet 0.900 / conf 0.100 |
+| fix-a-bug-small | 2 of 3 | 0 | haiku 0.964 / sonnet 0.756 / conf 0.216 |
+| intentionally-failing-task | 1 (only) | 0 | haiku 1.000 / sonnet 0.900 / conf 0.100 |
+| multi-file-refactor-with-shared-types | 5 of 6 | 0 | haiku 0.940 / sonnet 0.833 / conf 0.114 |
+| multi-turn-refactor | 5 of 5 | 0 | haiku 0.910 / sonnet 0.570 / conf 0.374 |
+| regex-with-edge-cases | 1 of 3 | 0 | haiku 0.910 / sonnet 0.810 / conf 0.110 |
+| write-a-doc-from-notes | 1 of 2 | 0 | haiku 1.000 / sonnet 0.900 / conf 0.100 |
+
+Compare to §A3-rev3 (Pass C, same protocol, v1 fingerprints): **1**
+sonnet pick (`regex-with-edge-cases` turn 2 — haiku 0.784 / sonnet
+0.833 / conf 0.058). §A3-rev4 **reduced** the inversion count to 0.
+
+### A3-rev4 per-workload patterns-DB cluster means (cross-pass aggregate)
+
+| Workload | Haiku mean | Haiku n | Sonnet mean | Sonnet n | Δ (sonnet − haiku) | Direction |
+|----------|----------:|--------:|------------:|---------:|-------------------:|-----------|
+| architectural-explanation-without-hallucination | 1.000 | 2 | 1.000 | 1 | +0.000 | tie (Part A fix lets it accumulate at all) |
+| fix-a-bug-small | 0.933 | 6 | 1.000 | 3 | +0.067 | sonnet ahead |
+| intentionally-failing-task | 1.000 | 2 | 1.000 | 1 | +0.000 | tie (failure-by-design) |
+| multi-file-refactor-with-shared-types | 0.809 | 11 | 0.925 | 4 | +0.116 | sonnet ahead |
+| multi-turn-refactor | 0.933 | 21 | 0.700 | 4 | −0.233 | haiku ahead (sonnet small sample) |
+| regex-with-edge-cases | 0.800 | 6 | 1.000 | 3 | +0.200 | sonnet ahead |
+| write-a-doc-from-notes | 1.000 | 4 | 1.000 | 2 | +0.000 | tie |
+
+Sonnet's cross-pass aggregate is ahead on 3 of 7 workloads, behind on
+1, tied on 3. **Architectural is now populated** (Part A fix landed —
+the `success_score_count=0` regression from §A3-rev2/§A3-rev3 is closed).
+Slot 4 nonetheless picked haiku on every routed turn because the K-NN
+reads *specific-fingerprint clusters* at decision time, not the
+cross-pass aggregate above; the per-fingerprint clusters consistently
+showed haiku ahead (sonnet has only 1-4 samples per cluster vs haiku's
+6-21).
+
+### A3-rev4 per-workload Pass A/B/C workload-level quality scores
+
+| Workload | Pass A (haiku) | Pass B (sonnet) | Pass C (slot 4) |
+|----------|--------------:|----------------:|---------------:|
+| architectural-explanation-without-hallucination | 0.90 | 0.90 | 0.95 |
+| fix-a-bug-small | 0.93 | 1.00 | 0.93 |
+| intentionally-failing-task | 0.25 | 0.25 | 0.25 |
+| multi-file-refactor-with-shared-types | 0.95 | 0.96 | 0.88 |
+| multi-turn-refactor | 1.00 (retry) | 0.70 | 1.00 (retry) |
+| regex-with-edge-cases | 0.71 | 1.00 | 0.19 |
+| write-a-doc-from-notes | 1.00 | 1.00 | 1.00 |
+
+`regex-with-edge-cases` Pass C scored 0.19 (rubric fail) under
+slot-4 routing — the same workload §A3-rev3 inverted on. Pass A
+(haiku-only) scored 0.71, Pass B (sonnet-only) 1.00. Sonnet would
+help, but slot 4 picked haiku.
+
+### A3-rev4 Q1 finding: v2 wiring partial, did NOT generalize the inversion
+
+**v2 fingerprint mode in the current code does not actually exercise
+blended embedding similarity at K-NN time.** Three layers of wiring
+are required for v2 to fire end-to-end; only two are live:
+
+1. **PatternConfig** (`fingerprint_version="v2"` + `embedding_provider`)
+   loaded from `routing.yaml`: ✅ wired in this experiment via the
+   workspace-local `.metis/routing.yaml` the benchmark writes per
+   workload.
+2. **Routing-time embedding cache lookup**
+   (`RoutingEngine._attach_cached_embedding`): ✅ present since
+   Wave 10 — attaches the query embedding when the cache has a hit.
+3. **Recording-side fingerprint embedding** (storing HYBRID
+   fingerprints with embeddings, not just STRUCTURAL): ❌ this
+   experiment populates the *cache* via
+   `attach_embedding_for_recording()` after `store.record()`, but the
+   already-recorded fingerprint row stays STRUCTURAL because the
+   embedding wasn't attached before `compute_fingerprint()`. Moving
+   the attach earlier introduces a race with the per-turn evaluator
+   cascade (the await on the embedding fetch yields, `eval.completed`
+   fires before `_turn_outcomes[turn_id]` is set, and
+   `success_score_count` stays at 0 — the §A3-rev3 caveat we just
+   closed).
+
+`a3rev4-patterns.db` confirms the gap: all 70 stored fingerprints are
+STRUCTURAL, 18 embeddings sit in the cache. K-NN at routing time falls
+back to v1 weighted-Jaccard via the mixed-version path
+(`patterns/similarity.py: blended_similarity` — `None`-side fallback).
+
+So Q1's headline measurement — *would v2 generalize the inversion?* —
+**is not yet answerable from this run.** What we did measure:
+  - The wiring composes cleanly (cache fills, K-NN reads correct
+    fallback, Part A fix preserves the cascade).
+  - The §A3-rev3 inversion did not reproduce in this run because
+    sample accumulation across passes produced different
+    per-fingerprint clusters (the §A3-rev3 caveat #1 explicitly
+    flagged this is non-deterministic).
+  - The Wave-10 deferred item ("pattern store v2 cluster-tightening
+    A/B" in `AGENTS.md`) remains the real Q1 gate.
+
+To actually test Q1, Wave 11 needs to wire the embedding into
+`compute_fingerprint` on the recording path *before* `store.record()`
+without racing the eval cascade. The simplest fix: fetch + cache the
+embedding synchronously inside `set_fingerprint_inputs` (which the
+session manager already calls in the routing critical path before
+emitting `turn.completed`) and attach `inputs.embedding` to the
+inputs before they reach the pattern subscriber.
+
+### A3-rev4 Pass D outcomes (Q2 — delegation savings)
+
+Pass D ran `multi-turn-refactor` with `--no-active-model
+--delegation-policy sonnet-planner-haiku-worker`. After
+`setup_runtime`, the benchmark re-registered
+`anthropic:claude-sonnet-4-6` with `can_delegate=True
+delegation_tier="balanced"` and `anthropic:claude-haiku-4-5` with
+`delegation_tier="fast"`. Routing chain decided each turn:
+
+| Turn | Winning slot | Chosen model | Pattern cluster (haiku / sonnet / conf) |
+|-----:|--------------|--------------|-----------------------------------------|
+| 1 | `pattern` | haiku | 1.000 / 0.877 / 0.095 |
+| 2 | `pattern` | haiku | 0.964 / 0.877 / 0.095 |
+| 3 | `pattern` | haiku | 0.820 / 0.570 / 0.305 |
+| 4 | `pattern` | haiku | 0.820 / 0.570 / 0.305 |
+
+Every turn: slot 4 picked haiku. **No `delegate.*` events fired.**
+The `delegate()` tool was registered against the *sonnet* planner
+(via `can_delegate=True`); but slot 4 chose *haiku* (which has
+`can_delegate=False`), so the planner that actually ran each turn
+didn't see the tool. No worker session was spawned.
+
+Pass D cost on `multi-turn-refactor`: $0.046. Pass C cost on the same
+workload (no delegation): $0.039 (the retry run). Delegation did not
+move cost — and could not, since it never fired.
+
+### A3-rev4 Q2 finding: delegation didn't measurably move cost-per-quality
+
+**Q2 doesn't have a positive answer from this run, but the negative
+finding is itself informative.** The delegation MVP per
+[delegation.md §3.6](../docs/specs/delegation.md) is explicit that
+"router-decided delegation (slot 5 as the entry point, not just inside
+worker re-entry)" is deferred. Slot 5 only fires inside worker
+re-entry — meaning the planner must *first* decide to call
+`delegate()` from inside its turn.
+
+For the planner to see the tool, the planner must be the model that
+has `can_delegate=True`. In §A3-rev4 Pass D, the routing chain
+(slot 4 pattern → haiku) prevented that: haiku ran, haiku doesn't
+have the tool, no delegation. To test Q2 properly, future runs need
+to force the planner to be sonnet — e.g., `--model sonnet
+--delegation-policy …` — accepting that the experiment is then
+testing "delegation savings vs sonnet-only" rather than "delegation
+savings vs routing-chosen baseline." The benchmark flag already
+supports this; this run intentionally explored the harder
+routing-then-delegate composition.
+
+### A3-rev4 caveats and observations
+
+- **§A3-rev3 caveat closed.** `architectural-explanation-without-
+  hallucination` has `success_score_count > 0` for both haiku (2)
+  and sonnet (1) in `a3rev4-patterns.db`. The Part A shutdown-order
+  fix in `apps/cli/src/metis_cli/runtime.py` and the bus.stop drain-
+  order fix in `packages/metis-core/src/metis_core/events/bus.py`
+  together resolve the eval-to-store outcome-update bug that was
+  2 waves deferred.
+- **v2 wiring is partial in current code.** The recording path
+  stores STRUCTURAL fingerprints and the cache warm-up runs
+  out-of-band; the routing-time K-NN falls back to v1 weighted-
+  Jaccard via mixed-version detection. AGENTS.md "What's NOT built"
+  flags this as the Wave-10 deferred item; §A3-rev4 confirms it
+  blocks Q1.
+- **Transient API errors on Pass C.** `multi-file-refactor-with-
+  shared-types` hit a NetworkError on the primary Pass C run;
+  `multi-turn-refactor` hit a 429 rate limit. Both retried on the
+  shared `a3rev4-patterns.db` with the same flags; Pass C aggregates
+  above combine the retries.
+- **regex-with-edge-cases didn't invert this time.** The §A3-rev3
+  cluster (sonnet 0.833 / haiku 0.784 / conf 0.058) didn't reproduce
+  in §A3-rev4 — the specific-fingerprint K-NN read haiku 0.910 /
+  sonnet 0.810 / conf 0.110, and slot 4 picked haiku. Sample-size
+  asymmetry on the specific fingerprint (the §A3-rev3 caveat #1)
+  remains the dominant signal; v2 fingerprint clustering — once the
+  recording path is wired — is the principled fix.
+- **Total spend $1.30** ($1-2.50 budget). OpenAI embeddings spend
+  was sub-penny (18 calls × ~500 tokens × $0.02/1M ≈ $0.00018).
+
+### Reproduce A3-rev4
+
+```bash
+# Baseline check
+uv run pytest -q                                   # expect 1406 passed
+find packages apps -name __pycache__ -exec rm -rf {} +
+
+# A3-rev4: 4-pass experiment with hybrid judge (threshold 0.7),
+# v2 embedding fingerprint, delegation policy on Pass D.
+rm -f benchmarks/.runs/a3rev4-patterns.db \
+      benchmarks/.runs/a3rev4-pass-{a,b,c,d}.{db,json} \
+      benchmarks/.runs/a3rev4-pass-{a-mtr,c-mfr,c-mtr,c-mtr2}.{db,json}
+
+# Pass A: haiku with v2.
+uv run python scripts/benchmark.py \
+  --model haiku --judge hybrid --judge-escalation-threshold 0.7 \
+  --fingerprint-version v2 --embedding-provider openai:text-embedding-3-small \
+  --patterns-db-path benchmarks/.runs/a3rev4-patterns.db \
+  --db-path benchmarks/.runs/a3rev4-pass-a.db
+
+# Pass B: sonnet with v2.
+uv run python scripts/benchmark.py \
+  --model sonnet --judge hybrid --judge-escalation-threshold 0.7 \
+  --fingerprint-version v2 --embedding-provider openai:text-embedding-3-small \
+  --patterns-db-path benchmarks/.runs/a3rev4-patterns.db \
+  --db-path benchmarks/.runs/a3rev4-pass-b.db
+
+# Pass C: --no-active-model with v2 (primary Q1 test).
+uv run python scripts/benchmark.py \
+  --no-active-model --judge hybrid --judge-escalation-threshold 0.7 \
+  --fingerprint-version v2 --embedding-provider openai:text-embedding-3-small \
+  --patterns-db-path benchmarks/.runs/a3rev4-patterns.db \
+  --db-path benchmarks/.runs/a3rev4-pass-c.db
+
+# Pass D: --no-active-model + delegation, scoped to multi-turn-refactor
+# (primary Q2 test).
+uv run python scripts/benchmark.py \
+  --workload multi-turn-refactor --no-active-model \
+  --judge hybrid --judge-escalation-threshold 0.7 \
+  --fingerprint-version v2 --embedding-provider openai:text-embedding-3-small \
+  --delegation-policy sonnet-planner-haiku-worker \
+  --patterns-db-path benchmarks/.runs/a3rev4-patterns.db \
+  --db-path benchmarks/.runs/a3rev4-pass-d.db
+```

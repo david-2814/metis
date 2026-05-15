@@ -20,9 +20,12 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+KeyStatus = Literal["active", "revoked"]
 
 # multi-user.md §3.4 — stable id format for `--user` / `--team` flags.
 # Matches the shipped `^[A-Za-z0-9_-]{1,200}$` defense used by analytics-api
@@ -77,6 +80,45 @@ class GatewayKey:
     monthly_cap_usd: Decimal | None = None
     user_id: str | None = None
     team_id: str | None = None
+    # Lifecycle fields (Wave 10 — gateway.md §11 key rotation/revocation).
+    # `status` defaults to "active"; keystores written before Wave 10 omit it
+    # and the loader fills the default. `revoked_at` is set when the key is
+    # marked revoked (explicitly via `metis gateway revoke-key`, or
+    # implicitly when a rotation's `grace_period_until` lapses and the next
+    # admin sweep auto-revokes the predecessor). `grace_period_until` is set
+    # by `metis gateway rotate-key`; while the key is still `active`, an
+    # `auth` check past that timestamp treats it as effectively revoked even
+    # before disk reflects it (see `is_active`).
+    status: KeyStatus = "active"
+    revoked_at: datetime | None = None
+    grace_period_until: datetime | None = None
+
+    def is_active(self, *, now: datetime) -> bool:
+        """True if the key authenticates right now.
+
+        Returns False when (a) the key has been explicitly revoked or (b) a
+        rotation grace period has lapsed (`now >= grace_period_until`). The
+        grace-period check is read-only — persisting the revocation is the
+        admin sweep's job (`sweep_expired_grace_periods`), not auth's.
+        """
+        if self.status == "revoked":
+            return False
+        if self.grace_period_until is not None and now >= self.grace_period_until:
+            return False
+        return True
+
+    def effective_revoked_at(self, *, now: datetime) -> datetime | None:
+        """Timestamp surfaced on the 401 `key_revoked` body for this key.
+
+        For explicitly-revoked keys this is `revoked_at`; for grace-period
+        lapses we report the grace boundary so clients see *when* the key
+        stopped working, not the wall-clock of the next failed request.
+        """
+        if self.status == "revoked":
+            return self.revoked_at
+        if self.grace_period_until is not None and now >= self.grace_period_until:
+            return self.grace_period_until
+        return None
 
 
 @dataclass(frozen=True)
@@ -156,6 +198,15 @@ class Keystore:
             monthly_cap = _parse_cap_field(entry, index=index, field_name="monthly_cap_usd")
             user_id = _parse_identity_field(entry, index=index, field_name="user_id")
             team_id = _parse_identity_field(entry, index=index, field_name="team_id")
+            status = _parse_status_field(entry, index=index)
+            revoked_at = _parse_datetime_field(entry, index=index, field_name="revoked_at")
+            grace_period_until = _parse_datetime_field(
+                entry, index=index, field_name="grace_period_until"
+            )
+            if status == "revoked" and revoked_at is None:
+                raise KeystoreError(
+                    f"keystore keys[{index}] status='revoked' requires a `revoked_at` timestamp"
+                )
             keys.append(
                 GatewayKey(
                     key_id=key_id,
@@ -167,6 +218,9 @@ class Keystore:
                     monthly_cap_usd=monthly_cap,
                     user_id=user_id,
                     team_id=team_id,
+                    status=status,
+                    revoked_at=revoked_at,
+                    grace_period_until=grace_period_until,
                 )
             )
         return cls(keys)
@@ -199,6 +253,10 @@ class Keystore:
 
     def __len__(self) -> int:
         return len(self._by_hash)
+
+    def keys(self) -> list[GatewayKey]:
+        """Return the configured keys in insertion order (stable for listings)."""
+        return list(self._by_id.values())
 
 
 def validate_cap_usd(value: Decimal | float | int | str, *, field_name: str) -> Decimal:
@@ -249,6 +307,36 @@ def _parse_identity_field(entry: dict[str, Any], *, index: int, field_name: str)
         return validate_identity_tag(raw_value, field_name=f"keys[{index}].{field_name}")
     except ValueError as exc:
         raise KeystoreError(str(exc)) from exc
+
+
+def _parse_status_field(entry: dict[str, Any], *, index: int) -> KeyStatus:
+    raw_value = entry.get("status")
+    if raw_value is None:
+        return "active"
+    if raw_value not in ("active", "revoked"):
+        raise KeystoreError(
+            f"keystore keys[{index}].status must be 'active' or 'revoked' (got {raw_value!r})"
+        )
+    return raw_value  # type: ignore[return-value]
+
+
+def _parse_datetime_field(entry: dict[str, Any], *, index: int, field_name: str) -> datetime | None:
+    raw_value = entry.get(field_name)
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, str):
+        raise KeystoreError(f"keystore keys[{index}].{field_name} must be an ISO-8601 string")
+    try:
+        parsed = datetime.fromisoformat(raw_value)
+    except ValueError as exc:
+        raise KeystoreError(
+            f"keystore keys[{index}].{field_name} is not a valid ISO-8601 timestamp: {exc}"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise KeystoreError(
+            f"keystore keys[{index}].{field_name} must be timezone-aware (include `Z` or offset)"
+        )
+    return parsed
 
 
 def identity_from_key(key: GatewayKey) -> Identity:

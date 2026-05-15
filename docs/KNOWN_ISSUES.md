@@ -22,6 +22,4 @@ When you fix one, **delete the entry**. This file is not a changelog; it's a wat
 
 Things that aren't promised by any spec but probably should be. AI agents proposing work in adjacent areas should know they're missing.
 
-- **No context-assembler spec for skill activation / history compression.** [`docs/specs/context-assembler.md`](specs/context-assembler.md) v1+§5.1 covers cache-breakpoint placement and the minimum-cacheable-prefix rule. Skill activation, history compression, and behavior near the context window are not yet specified. See `STRATEGY.md §6`.
-- **No multi-user / team-level analytics rollups.** Gateway v1 stamps `gateway_key_id` per call; teams of keys, multi-workspace per key, and tenant aggregation are deferred per `gateway.md §11`.
-- **Pattern store v2 (embedding fingerprint) not specced.** v1 fingerprint is structural (intent regex tags + tool-use signals + length bucket); embedding-based fingerprinting would lift K-NN selectivity but is deferred until v1 K-NN data shows a concrete shortfall.
+- **No context-assembler spec for history compression or behavior near the context window.** [`docs/specs/context-assembler.md`](specs/context-assembler.md) v1+§5.1 covers cache-breakpoint placement and the minimum-cacheable-prefix rule; §5.2 (v3) covers skill activation. History compression and behavior near the context window remain in §7 "Out of scope (later iterations)." See `STRATEGY.md §6`.

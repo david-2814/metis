@@ -207,10 +207,25 @@ class CLIConfirmationHandler:
         if normalized in {"y", "yes"}:
             return ConfirmationDecision.ALLOW
         if normalized in {"a", "always"}:
+            # delegation.md §13: "always" from a worker prompt is treated as
+            # one-time approval, not workspace policy. The user is approving
+            # a sub-task, not promoting it to trust.yaml.
+            if req.is_worker:
+                self._output(
+                    f"[metis] {req.tool_name} approved for this worker call only "
+                    f"(workers cannot persist trust.yaml entries in v1)"
+                )
+                return ConfirmationDecision.ALLOW
             self._persist(allow=req.tool_name)
             self._output(f"[metis] {req.tool_name} added to {self._trust_path}")
             return ConfirmationDecision.ALLOW
         if normalized == "never":
+            if req.is_worker:
+                self._output(
+                    f"[metis] {req.tool_name} denied for this worker call only "
+                    f"(workers cannot persist trust.yaml entries in v1)"
+                )
+                return ConfirmationDecision.DENY
             self._persist(deny=req.tool_name)
             self._output(f"[metis] {req.tool_name} added to deny list in {self._trust_path}")
             return ConfirmationDecision.DENY

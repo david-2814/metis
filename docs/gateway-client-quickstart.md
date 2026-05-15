@@ -356,3 +356,30 @@ The `Quota` column is reserved for the per-team / per-user soft- and
 hard-cap status surface (multi-user.md §6); until that ships, the column
 renders as `—`. Wire-up is one render-pass away when the cap data lands
 on `/analytics/by_team` and `/analytics/by_user`.
+
+---
+
+## 8. Pinning a Metis API version
+
+The two **provider-shape** endpoints (`/v1/chat/completions`,
+`/v1/messages`) are frozen to their upstream provider's contract — there
+is no Metis-side version dial there. Buyers don't need to do anything.
+
+Every **Metis-owned** endpoint (`/healthz` on the gateway; `/health`,
+`/sessions/*`, `/analytics/*` on the agent server) carries a
+`Metis-API-Version` header on the response and accepts one on the
+request. The header is **optional** — absent requests resolve to the
+latest version (`1.0` today). Buyers who want a stable contract through
+a trial pin a version explicitly:
+
+```bash
+curl http://127.0.0.1:8421/analytics/cost \
+  -H "Metis-API-Version: 1.0"
+# response carries: Metis-API-Version: 1.0
+```
+
+When a future major version (`2.0`) ships, the previous version stays
+supported for at least 6 months. Responses to clients pinned to the
+deprecated version add `Deprecation: true` and `Sunset: <date>`
+headers. See [docs/specs/api-versioning.md](specs/api-versioning.md)
+for the full posture.

@@ -16,6 +16,7 @@ from metis_core.events.envelope import Actor, Event
 from metis_core.events.payloads import (
     EvalCompleted,
     RouteDecided,
+    ToolCompleted,
     TurnCompleted,
     make_event,
 )
@@ -417,6 +418,105 @@ async def test_submit_turn_workload_id_flows_into_pattern_recorded(
         assert foo_sig != bar_sig
     finally:
         store.close()
+
+
+async def test_one_turn_with_multiple_tool_calls_lands_eval_score_after_bus_stop(
+    bus, tmp_path: Path
+) -> None:
+    """Regression for the §A3-rev3 outcome-update bug on multi-tool 1-turn
+    workloads (benchmarks/RESULTS.md "A3-rev3 caveats and observations").
+
+    `architectural-explanation-without-hallucination` (1 turn, 3-20 tool
+    calls) reproducibly landed `success_score_count = 0` on its outcome
+    rows even though the `eval.completed kind=turn` event was durable in
+    the trace DB. `intentionally-failing-task` (1 turn, 0 tool calls)
+    accumulated correctly. The differentiator: multi-tool 1-turn turns
+    have several `tool.completed` events firing through the evaluator's
+    bus subscription concurrently with the turn-level cascade, and the
+    pre-fix `shutdown_runtime` order — detach subscribers *then* drain —
+    left some `eval.completed` events dispatched to no-subscribers when
+    the caller hadn't drained first. The fix in
+    `apps/cli/src/metis_cli/runtime.py:shutdown_runtime` drains before
+    detaching; this test pins the invariant at the bus level.
+
+    Asserts: after `bus.drain() → unregister → detach → bus.stop()`,
+    the outcome row's `success_score_count >= 1`. A future regression
+    that re-orders detach-before-drain, or that leaves a cascade level
+    out of `bus.drain()`'s loop, will produce 0.
+    """
+    from metis_core.eval import register_evaluator
+    from metis_core.patterns.fingerprint import (
+        build_structural_features,
+        structural_signature,
+    )
+    from metis_core.trace.store import TraceStore
+
+    trace_db = tmp_path / "trace.db"
+    trace = TraceStore(trace_db)
+    trace_handle = trace.attach_to(bus, name="trace-store")
+    store = PatternStore(tmp_path)
+    try:
+        subscriber = PatternEventSubscriber(
+            store_factory=lambda _ws: store,
+            workspace_resolver=lambda _sid: str(tmp_path),
+            bus=bus,
+        )
+        subscriber.attach()
+        evaluator, _ = register_evaluator(bus, trace)
+
+        session_id = "sess_multi_tool"
+        turn_id = "turn_multi_tool"
+        subscriber.set_fingerprint_inputs(turn_id, _fingerprint_inputs(str(tmp_path)))
+        _emit_route(bus, session_id=session_id, turn_id=turn_id, model="m_a")
+        for tool_use_id in (
+            "toolu_aaa",
+            "toolu_bbb",
+            "toolu_ccc",
+            "toolu_ddd",
+            "toolu_eee",
+            "toolu_fff",
+        ):
+            bus.emit(
+                make_event(
+                    type="tool.completed",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    actor=Actor.TOOL,
+                    payload=ToolCompleted(
+                        tool_use_id=tool_use_id,
+                        success=True,
+                        output_size_bytes=128,
+                        latency_ms=5,
+                    ),
+                    timestamp=datetime.now(UTC),
+                )
+            )
+        _emit_turn_completed(bus, session_id=session_id, turn_id=turn_id, cost=0.04)
+
+        # Mirror the fixed `shutdown_runtime` ordering: drain *first* so any
+        # in-flight evaluator task (whose `eval.completed` cascades into the
+        # pattern subscriber) finishes while subscribers are still attached.
+        # The fixture takes care of `bus.stop()` during teardown; reading the
+        # outcome row here verifies the score landed before stop would run.
+        await bus.drain()
+        evaluator.unregister()
+        subscriber.detach()
+        bus.unsubscribe(trace_handle)
+
+        sig = structural_signature(build_structural_features(_fingerprint_inputs(str(tmp_path))))
+        fp_id = store._lookup_fingerprint_by_sig(sig, None)
+        assert fp_id is not None
+        row = store._lookup_outcome(fp_id, "m_a")
+        assert row is not None
+        assert row["success_score_count"] >= 1, (
+            f"multi-tool 1-turn cascade lost the eval score "
+            f"(success_score_count={row['success_score_count']}); the "
+            f"§A3-rev3 architectural-explanation-without-hallucination caveat "
+            f"is back. Check shutdown ordering and bus.drain() cascade."
+        )
+    finally:
+        store.close()
+        trace.close()
 
 
 async def test_drain_processes_eval_completed_cascade_before_returning(

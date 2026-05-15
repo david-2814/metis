@@ -42,6 +42,42 @@ async def test_chat_completions_rejects_wrong_bearer(client) -> None:
     assert r.status_code == 401
 
 
+async def test_chat_completions_rejects_revoked_key_with_documented_body(
+    revoked_client, revoked_bearer_token
+) -> None:
+    """gateway.md §11 — a revoked key returns 401 with `code: key_revoked`."""
+    r = await revoked_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {revoked_bearer_token}"},
+        json={"model": "haiku", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 401
+    body = r.json()
+    assert body["error"]["code"] == "key_revoked"
+    assert body["error"]["key_id"] == "gk_revoked_001"
+    assert body["error"]["revoked_at"] is not None
+    assert body["error"]["type"] == "invalid_request_error"
+
+
+async def test_anthropic_endpoint_rejects_revoked_key_with_same_shape(
+    revoked_client, revoked_bearer_token
+) -> None:
+    r = await revoked_client.post(
+        "/v1/messages",
+        headers={"x-api-key": revoked_bearer_token},
+        json={
+            "model": "haiku",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert r.status_code == 401
+    body = r.json()
+    assert body["error"]["code"] == "key_revoked"
+    assert body["error"]["key_id"] == "gk_revoked_001"
+    assert body["error"]["type"] == "authentication_error"
+
+
 async def test_chat_completions_end_to_end_happy_path(
     client, bearer_token, scripted_adapter, runtime
 ) -> None:

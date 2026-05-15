@@ -96,6 +96,8 @@ async def cost(request: Request) -> Response:
     gateway_key = request.query_params.get("gateway_key")
     user = request.query_params.get("user")
     team = request.query_params.get("team")
+    include_workers_raw = request.query_params.get("include_workers", "true")
+    include_workers = include_workers_raw.lower() not in ("false", "0", "no")
     if gateway_key is not None and not _GATEWAY_KEY_PATTERN.match(gateway_key):
         raise invalid_gateway_key(f"gateway_key={gateway_key!r} does not look like a valid key id")
     if user is not None and not _PRINCIPAL_ID_PATTERN.match(user):
@@ -109,6 +111,7 @@ async def cost(request: Request) -> Response:
             gateway_key=gateway_key,
             user=user,
             team=team,
+            include_workers=include_workers,
         )
     except InvalidGroupByError as exc:
         raise invalid_group_by(str(exc)) from exc

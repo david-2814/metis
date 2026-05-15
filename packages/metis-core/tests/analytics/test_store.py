@@ -275,6 +275,100 @@ def test_cost_only_counts_in_window(seeded_db, now):
     assert data[0]["cost_usd"] == pytest.approx(0.10)
 
 
+# ---- /analytics/cost delegation rollups (delegation.md §8.2) -------------
+
+
+def test_cost_group_by_parent_session_rolls_workers_under_planner(seeded_db, now, window):
+    db_path, seeder = seeded_db
+    # Planner spend on session sess_planner.
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        cost_usd="0.10",
+        session_id="sess_planner",
+    )
+    # Worker spend on a child session, parent points at sess_planner.
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-haiku-4-5",
+        provider="anthropic",
+        cost_usd="0.02",
+        session_id="sess_worker_a",
+        parent_session_id="sess_planner",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-haiku-4-5",
+        provider="anthropic",
+        cost_usd="0.01",
+        session_id="sess_worker_b",
+        parent_session_id="sess_planner",
+    )
+    # Unrelated top-level session.
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        cost_usd="0.05",
+        session_id="sess_other",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.cost(window, group_by="parent_session")
+    rolled = {row["parent_session_id"]: row for row in data}
+    assert rolled["sess_planner"]["cost_usd"] == pytest.approx(0.13)
+    assert rolled["sess_planner"]["call_count"] == 3
+    assert rolled["sess_other"]["cost_usd"] == pytest.approx(0.05)
+
+
+def test_cost_group_by_is_worker_partitions_planner_vs_worker(seeded_db, now, window):
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        cost_usd="0.10",
+        session_id="sess_planner",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-haiku-4-5",
+        provider="anthropic",
+        cost_usd="0.02",
+        session_id="sess_worker",
+        parent_session_id="sess_planner",
+    )
+    with AnalyticsStore(db_path) as store:
+        data = store.cost(window, group_by="is_worker")
+    by_label = {row["is_worker"]: row for row in data}
+    assert by_label["planner"]["cost_usd"] == pytest.approx(0.10)
+    assert by_label["worker"]["cost_usd"] == pytest.approx(0.02)
+
+
+def test_cost_include_workers_false_excludes_worker_rows(seeded_db, now, window):
+    db_path, seeder = seeded_db
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        cost_usd="0.10",
+        session_id="sess_planner",
+    )
+    seeder.insert_llm_call_completed(
+        timestamp=now,
+        model="anthropic:claude-haiku-4-5",
+        provider="anthropic",
+        cost_usd="0.02",
+        session_id="sess_worker",
+        parent_session_id="sess_planner",
+    )
+    with AnalyticsStore(db_path) as store:
+        all_rows = store.cost(window, group_by="model")
+        planner_only = store.cost(window, group_by="model", include_workers=False)
+    assert sum(r["cost_usd"] for r in all_rows) == pytest.approx(0.12)
+    assert sum(r["cost_usd"] for r in planner_only) == pytest.approx(0.10)
+
+
 # ---- /analytics/cache_effectiveness --------------------------------------
 
 

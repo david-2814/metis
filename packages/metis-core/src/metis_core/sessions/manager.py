@@ -50,6 +50,7 @@ from metis_core.canonical.messages import (
 from metis_core.events.bus import EventBus
 from metis_core.events.envelope import Actor
 from metis_core.events.payloads import (
+    DelegateStarted,
     LLMCallCompleted,
     LLMCallFailed,
     LLMCallStarted,
@@ -75,6 +76,11 @@ from metis_core.routing.engine import RoutingError
 from metis_core.sessions.store import Session, SessionStore
 from metis_core.skills.activation import SkillActivationRegistry
 from metis_core.tools.dispatcher import ToolDispatcher
+from metis_core.workers.protocol import (
+    DelegateOutcome,
+    DelegateRequest,
+    DelegateUsageSummary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -660,6 +666,60 @@ class UserExplicitModelRejectedError(Exception):
 StreamHandler = Callable[[StreamingEvent], Awaitable[None] | None]
 
 
+# Tool names forbidden inside worker sessions (delegation.md §5.6). Workers
+# never see these in their effective tool list, regardless of what the
+# planner asked for via `allowed_tools`.
+_WORKER_FORBIDDEN_TOOLS: frozenset[str] = frozenset(
+    {"delegate", "memory_add", "memory_replace", "memory_consolidate"}
+)
+
+
+def _estimate_task_tokens(request: DelegateRequest) -> int:
+    """Heuristic token count for the worker's synthetic user message.
+
+    Matches the `chars/4` heuristic used elsewhere in the manager. Includes
+    the task brief and the explicit context references so the trace event
+    reflects the real input size the worker faces.
+    """
+    chars = len(request.task)
+    for ref in request.context.include:
+        chars += len(ref) + 2  # newline separators
+    return max(1, chars // 4)
+
+
+def _worker_system_prompt(*, base: str, task: str, context) -> str:
+    """Compose the worker's stable system prompt.
+
+    Per delegation.md §5.7, the prompt is the base persona plus a
+    worker-specific instruction block. We deliberately keep this byte-stable
+    per worker session so the provider's cache_control marker fires across
+    the worker's tool cycles. The task brief is NOT inlined here — it's the
+    synthetic user message of the worker's first turn (§5.7 step 3-4).
+    """
+    extras = ""
+    if context.mode == "explicit" and context.include:
+        joined = "\n".join(f"- {ref}" for ref in context.include)
+        extras = "\n\nThe planner provided the following context references:\n" + joined
+    return (
+        base.rstrip()
+        + "\n\n## Worker mode\n"
+        + "You are a focused worker LLM spawned by a planner. Be terse, "
+        + "complete the task, and return — do not ask clarifying questions. "
+        + "If the task can't be completed with the information given, return "
+        + "a short statement of what's missing rather than guessing."
+        + extras
+    )
+
+
+def _stop_reason_to_failure_mode(stop_reason: StopReason):
+    """Map an unusable adapter stop reason to a `DelegateFailureMode`."""
+    if stop_reason == StopReason.MAX_TOKENS:
+        return "max_tokens_exceeded"
+    if stop_reason == StopReason.CANCELLED:
+        return "cancelled_by_user"
+    return "worker_error"
+
+
 class SessionManager:
     """Coordinates routing, adapter calls, and tool dispatch for a session."""
 
@@ -715,6 +775,10 @@ class SessionManager:
         self._slash_buffers: dict[str, str] = {}
         self._share_pending: set[str] = set()
         self._fingerprint_inputs_hook = fingerprint_inputs_hook
+        # Per-worker-session resolved tier model, populated by spawn_worker
+        # before submit_turn so the engine's slot 5 reads it from TurnContext
+        # (delegation.md §7). Cleared after the worker's session ends.
+        self._worker_tier_models: dict[str, str] = {}
 
     # ---- Session lifecycle --------------------------------------------
 
@@ -778,7 +842,7 @@ class SessionManager:
             if seed_model in self._registry
             else _HeuristicAdapter()
         )
-        tool_definitions = self._dispatcher.get_definitions_for_session(session)
+        tool_definitions = self._effective_tool_definitions(session)
         prefix, inlined = _assemble_stable_system_prompt(
             base_prompt=self._system_prompt,
             skill_store=skill_store,
@@ -819,6 +883,10 @@ class SessionManager:
     def memory_for(self, session_id: str) -> MemoryStore | None:
         """Return the per-session memory store, if memory is configured."""
         return self._memory_stores.get(session_id)
+
+    @property
+    def pricing_version(self) -> str:
+        return self._pricing.version
 
     def routing_policy_version(self) -> str | None:
         """Return the loaded routing policy's opaque version, or None.
@@ -926,6 +994,185 @@ class SessionManager:
             raise AmbiguousModelError(input, candidates)
         raise UnknownAliasError(input)
 
+    # ---- Tool visibility (delegation.md §5.6) -------------------------
+
+    def _effective_tool_definitions(self, session: Session):
+        """Return tool definitions visible to this session.
+
+        Delegation isolation rules (delegation.md §5.6):
+        - Worker sessions never see `delegate` or memory tools.
+        - Top-level sessions whose active model has `can_delegate=False`
+          don't see `delegate` (Phase-4 default in the spec; honest to the
+          planner about what's actually available).
+
+        Other surfaces (HTTP, gateway) keep the dispatcher-wide view via
+        `dispatcher.get_definitions_for_session`.
+        """
+        raw = self._dispatcher.get_definitions_for_session(session)
+        if session.is_worker:
+            return [d for d in raw if d.name not in _WORKER_FORBIDDEN_TOOLS]
+        if session.active_model and not self._registry.can_delegate(session.active_model):
+            return [d for d in raw if d.name != "delegate"]
+        if session.active_model is None:
+            # No sticky model: the active model is resolved per-turn. Default
+            # to hiding `delegate` so unconfigured top-level sessions don't
+            # surface a tool that may not be usable.
+            return [d for d in raw if d.name != "delegate"]
+        return raw
+
+    # ---- Worker spawn (delegation.md §6.1) ----------------------------
+
+    async def spawn_worker(self, request: DelegateRequest) -> DelegateOutcome:
+        """Resolve the tier, spawn a worker session, run it to completion.
+
+        Synchronous-blocking per v1 MVP (delegation.md §2.2.2). Concurrency,
+        cancellation cascade, and worker streaming are deferred.
+
+        Emits `delegate.started` once the worker session exists (so the
+        worker_session_id can be attached). Failure to resolve a model for
+        the tier short-circuits with `no_model_available_for_tier` and emits
+        nothing here — the `delegate()` tool body emits `delegate.failed`.
+        """
+        resolved_model = self._registry.model_for_tier(request.tier)
+        empty_usage = DelegateUsageSummary(
+            model=resolved_model or "",
+            turn_count=0,
+            input_tokens=0,
+            output_tokens=0,
+            cost_usd=Decimal("0"),
+            wall_time_seconds=0.0,
+            tool_call_count=0,
+        )
+        if resolved_model is None:
+            return DelegateOutcome(
+                worker_session_id="",
+                success=False,
+                output="",
+                error=f"no model registered for tier {request.tier!r}",
+                failure_mode="no_model_available_for_tier",
+                usage_summary=empty_usage,
+                allowed_tool_count=0,
+                task_size_tokens=_estimate_task_tokens(request),
+            )
+
+        parent_session = self._store.get_session(request.parent_session_id)
+        # delegation.md §5.2: workers don't inherit a sticky model. The
+        # routing chain enters slot 5 fresh with the resolved tier model as
+        # the candidate; slots 1-3 typically return `not_applicable`.
+        worker_session = self._store.create_session(
+            workspace_path=parent_session.workspace_path,
+            active_model=None,
+            parent_session_id=request.parent_session_id,
+            parent_tool_use_id=request.parent_tool_use_id,
+            is_worker=True,
+        )
+        self._tool_id_maps[worker_session.id] = ToolIdMap()
+        self._memory_stores[worker_session.id] = None
+        self._skill_stores[worker_session.id] = self._skill_stores.get(request.parent_session_id)
+        self._skill_activations[worker_session.id] = SkillActivationRegistry()
+        self._stable_prompt_cache[worker_session.id] = _worker_system_prompt(
+            base=self._system_prompt,
+            task=request.task,
+            context=request.context,
+        )
+        self._worker_tier_models[worker_session.id] = resolved_model
+
+        allowed_count = len(request.allowed_tools) if request.allowed_tools is not None else 0
+        requested_tools = set(request.allowed_tools or ())
+        dropped = tuple(sorted(_WORKER_FORBIDDEN_TOOLS & requested_tools))
+
+        task_size_tokens = _estimate_task_tokens(request)
+        self._bus.emit(
+            make_event(
+                type="delegate.started",
+                session_id=request.parent_session_id,
+                turn_id=None,
+                actor=Actor.SYSTEM,
+                payload=DelegateStarted(
+                    tool_use_id=request.parent_tool_use_id,
+                    worker_session_id=worker_session.id,
+                    tier=request.tier,
+                    resolved_model=resolved_model,
+                    context_mode=request.context.mode,
+                    context_reference_count=len(request.context.include),
+                    task_size_tokens=task_size_tokens,
+                    allowed_tool_count=allowed_count,
+                    dropped_tools=list(dropped),
+                ),
+                timestamp=_now(),
+            )
+        )
+
+        try:
+            result = await self.submit_turn(worker_session.id, request.task)
+        except RoutingError as exc:
+            self._cleanup_worker(worker_session.id)
+            return DelegateOutcome(
+                worker_session_id=worker_session.id,
+                success=False,
+                output="",
+                error=f"worker routing failed: {exc}",
+                failure_mode="worker_error",
+                usage_summary=empty_usage,
+                dropped_tools=dropped,
+                allowed_tool_count=allowed_count,
+                task_size_tokens=task_size_tokens,
+            )
+        except Exception as exc:
+            self._cleanup_worker(worker_session.id)
+            return DelegateOutcome(
+                worker_session_id=worker_session.id,
+                success=False,
+                output="",
+                error=f"worker_error: {exc}",
+                failure_mode="worker_error",
+                usage_summary=empty_usage,
+                dropped_tools=dropped,
+                allowed_tool_count=allowed_count,
+                task_size_tokens=task_size_tokens,
+            )
+
+        usage = DelegateUsageSummary(
+            model=result.chosen_model,
+            turn_count=1,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cost_usd=result.cost_usd,
+            wall_time_seconds=result.wall_time_seconds,
+            tool_call_count=result.tool_call_count,
+        )
+        success = result.stop_reason == StopReason.END_TURN
+        failure_mode = None if success else _stop_reason_to_failure_mode(result.stop_reason)
+        if result.stop_reason == StopReason.MAX_TOKENS:
+            error = "max_tokens_exceeded"
+        elif not success:
+            error = f"worker stopped with {result.stop_reason.value}"
+        else:
+            error = None
+
+        self._cleanup_worker(worker_session.id)
+
+        return DelegateOutcome(
+            worker_session_id=worker_session.id,
+            success=success,
+            output=result.assistant_text,
+            error=error,
+            failure_mode=failure_mode,
+            usage_summary=usage,
+            dropped_tools=dropped,
+            allowed_tool_count=allowed_count,
+            task_size_tokens=task_size_tokens,
+        )
+
+    def _cleanup_worker(self, worker_session_id: str) -> None:
+        """Drop per-worker book-keeping that doesn't outlive the spawn call."""
+        self._worker_tier_models.pop(worker_session_id, None)
+        self._tool_id_maps.pop(worker_session_id, None)
+        self._memory_stores.pop(worker_session_id, None)
+        self._skill_stores.pop(worker_session_id, None)
+        self._skill_activations.pop(worker_session_id, None)
+        self._stable_prompt_cache.pop(worker_session_id, None)
+
     # ---- Turn loop ----------------------------------------------------
 
     async def submit_turn(
@@ -969,7 +1216,7 @@ class SessionManager:
 
         # 3. Emit turn.started.
         history = self._store.get_messages(session_id)
-        tool_definitions = self._dispatcher.get_definitions_for_session(session)
+        tool_definitions = self._effective_tool_definitions(session)
         ctx = self._build_turn_context(
             session_id=session_id,
             turn_id=turn_id,
@@ -1081,6 +1328,8 @@ class SessionManager:
                     request_id=request.request_id,
                     estimated_tokens=est_tokens,
                     parent_event_id=parent_event_id,
+                    is_worker=session.is_worker,
+                    parent_session_id=session.parent_session_id,
                 )
                 try:
                     final = await _consume_stream(adapter.stream(request), on_streaming_event)
@@ -1154,6 +1403,7 @@ class SessionManager:
                     stop_reason=final.stop_reason,
                     response_content=final.final_content,
                     parent_event_id=llm_started_event,
+                    parent_session_id=session.parent_session_id,
                 )
 
                 # 6. Decide whether to dispatch tools and continue, or stop.
@@ -1183,6 +1433,8 @@ class SessionManager:
                             memory=memory,
                             skills=skill_store,
                             skill_activations=skill_activations,
+                            worker_spawner=self,
+                            is_worker=session.is_worker,
                         )
                         for tu in tool_uses
                     ]
@@ -1241,6 +1493,7 @@ class SessionManager:
             parent_event_id=turn_started_event,
             final_response_text=last_assistant_text,
             user_prompt_text=user_prompt_text,
+            parent_session_id=session.parent_session_id,
         )
 
         return TurnResult(
@@ -1320,6 +1573,7 @@ class SessionManager:
             user_message_text=user_message_text,
             workspace_path=session.workspace_path,
             workload_id=workload_id,
+            worker_tier_model=self._worker_tier_models.get(session_id),
         )
 
     # ---- Event emitters -----------------------------------------------
@@ -1367,18 +1621,21 @@ class SessionManager:
         request_id: str,
         estimated_tokens: int,
         parent_event_id: str | None,
+        is_worker: bool = False,
+        parent_session_id: str | None = None,
     ) -> str:
         event = make_event(
             type="llm.call_started",
             session_id=session_id,
             turn_id=turn_id,
-            actor=Actor.AGENT,
+            actor=Actor.WORKER if is_worker else Actor.AGENT,
             payload=LLMCallStarted(
                 model=model,
                 provider=provider,
                 estimated_input_tokens=estimated_tokens,
                 request_id=request_id,
-                is_worker=False,
+                is_worker=is_worker,
+                parent_session_id=parent_session_id,
             ),
             timestamp=_now(),
             parent_event_id=parent_event_id,
@@ -1399,6 +1656,7 @@ class SessionManager:
         stop_reason: StopReason,
         response_content: list[ContentBlock],
         parent_event_id: str | None,
+        parent_session_id: str | None = None,
     ) -> None:
         produced_tool_calls = sum(1 for b in response_content if isinstance(b, ToolUseBlock))
         from metis_core.canonical.content import ThinkingBlock
@@ -1409,7 +1667,7 @@ class SessionManager:
                 type="llm.call_completed",
                 session_id=session_id,
                 turn_id=turn_id,
-                actor=Actor.AGENT,
+                actor=Actor.WORKER if parent_session_id else Actor.AGENT,
                 payload=LLMCallCompleted(
                     model=model,
                     provider=provider,
@@ -1423,6 +1681,7 @@ class SessionManager:
                     stop_reason=stop_reason.value,  # type: ignore[arg-type]
                     produced_tool_calls=produced_tool_calls,
                     produced_thinking_blocks=produced_thinking,
+                    parent_session_id=parent_session_id,
                 ),
                 timestamp=_now(),
                 parent_event_id=parent_event_id,
@@ -1473,6 +1732,7 @@ class SessionManager:
         parent_event_id: str,
         final_response_text: str | None = None,
         user_prompt_text: str | None = None,
+        parent_session_id: str | None = None,
     ) -> None:
         if stop_reason == StopReason.CANCELLED:
             return  # turn.cancelled is its own event type
@@ -1501,7 +1761,7 @@ class SessionManager:
                 type="turn.completed",
                 session_id=session_id,
                 turn_id=turn_id,
-                actor=Actor.AGENT,
+                actor=Actor.WORKER if parent_session_id else Actor.AGENT,
                 payload=TurnCompleted(
                     stop_reason=catalog_stop,  # type: ignore[arg-type]
                     llm_call_count=llm_calls,
@@ -1511,6 +1771,7 @@ class SessionManager:
                     total_cost_usd=float(cost),
                     wall_time_seconds=wall_time,
                     signals_extra=signals_extra,
+                    parent_session_id=parent_session_id,
                 ),
                 timestamp=_now(),
                 parent_event_id=parent_event_id,

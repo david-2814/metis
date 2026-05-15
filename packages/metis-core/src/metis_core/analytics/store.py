@@ -39,6 +39,8 @@ _COST_GROUP_BY_ALLOWED: tuple[str, ...] = (
     "gateway_key",
     "user",
     "team",
+    "parent_session",
+    "is_worker",
     "none",
 )
 _SESSIONS_ORDER_ALLOWED: tuple[str, ...] = ("cost", "recency")
@@ -126,6 +128,7 @@ class AnalyticsStore:
         gateway_key: str | None = None,
         user: str | None = None,
         team: str | None = None,
+        include_workers: bool = True,
     ) -> dict | list[dict]:
         """Aggregate cost / tokens / latency over the window.
 
@@ -141,6 +144,12 @@ class AnalyticsStore:
         pre-validates the shape. Combinations AND together (per
         multi-user.md §5.3 — a key carries at most one (user, team) tuple,
         so the combo is typically a no-op refinement).
+
+        `include_workers` (delegation.md §8.2) controls whether worker LLM
+        spend (rows whose `parent_session_id` is set) appears in the result.
+        Default `True` matches the spec's roll-everything-up behavior; set
+        `False` to see planner-direct spend only — useful for
+        "what did the planner cost on its own?" views.
         """
         if group_by not in _COST_GROUP_BY_ALLOWED:
             raise InvalidGroupByError(group_by, _COST_GROUP_BY_ALLOWED)
@@ -159,6 +168,8 @@ class AnalyticsStore:
         if team is not None:
             where_extra += " AND json_extract(payload_json, '$.team_id') = ?"
             params.append(team)
+        if not include_workers:
+            where_extra += " AND json_extract(payload_json, '$.parent_session_id') IS NULL"
         sql = (
             f"SELECT {prefix}"
             "  json_extract(payload_json, '$.cost_usd') AS cost_usd, "
@@ -879,6 +890,24 @@ def _cost_key_shape(group_by: str) -> tuple[str, tuple[str, ...], bool]:
             "strftime('%Y-%m-%dT%H', timestamp_us/1000000, 'unixepoch') AS bucket",
             ("bucket",),
             True,
+        )
+    if group_by == "parent_session":
+        # delegation.md §8.2: roll worker spend up under the planner session.
+        # COALESCE handles non-worker rows where parent_session_id is null.
+        return (
+            "COALESCE(json_extract(payload_json, '$.parent_session_id'), session_id) "
+            "AS parent_session_id",
+            ("parent_session_id",),
+            False,
+        )
+    if group_by == "is_worker":
+        # delegation.md §8.2: 1 when the event came from a worker session,
+        # 0 otherwise. Returned as a string so JSON serialization is stable.
+        return (
+            "CASE WHEN json_extract(payload_json, '$.parent_session_id') IS NOT NULL "
+            "THEN 'worker' ELSE 'planner' END AS is_worker",
+            ("is_worker",),
+            False,
         )
     # group_by=none: no key columns; all rows fold into one bucket.
     return ("", (), False)

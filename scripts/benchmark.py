@@ -267,6 +267,50 @@ def _now_us() -> int:
     return int(datetime.now(UTC).timestamp() * 1_000_000)
 
 
+def _enable_delegation(registry, policy: str) -> None:
+    """Re-register the planner + worker models with delegation flags so the
+    `delegate()` tool becomes visible to the planner (delegation.md §3.1).
+
+    `policy` is either the literal "sonnet-planner-haiku-worker" (the §A3-rev4
+    default — sonnet plans, haiku executes) or a path to a yaml file with
+    `planner_model` / `worker_model` keys. The registry preserves adapter,
+    aliases, and task_profile from the existing entries; only the
+    `can_delegate` + `delegation_tier` fields are updated.
+    """
+    if policy == "sonnet-planner-haiku-worker":
+        planner = "anthropic:claude-sonnet-4-6"
+        worker = "anthropic:claude-haiku-4-5"
+    else:
+        import yaml as _yaml
+
+        with open(policy, encoding="utf-8") as f:
+            raw = _yaml.safe_load(f) or {}
+        planner = raw.get("planner_model")
+        worker = raw.get("worker_model")
+        if not planner or not worker:
+            raise RuntimeError(
+                f"delegation-policy {policy}: missing planner_model / worker_model"
+            )
+    for model_id, can_delegate, tier in (
+        (planner, True, "balanced"),
+        (worker, False, "fast"),
+    ):
+        entry = registry._entries.get(model_id)
+        if entry is None:
+            raise RuntimeError(
+                f"--delegation-policy: model {model_id!r} not registered "
+                f"(set the corresponding API key or pick another policy)"
+            )
+        registry.register(
+            model_id=model_id,
+            adapter=entry.adapter,
+            aliases=list(entry.aliases),
+            task_profile=list(entry.task_profile),
+            can_delegate=can_delegate,
+            delegation_tier=tier,
+        )
+
+
 def _check_assertions(
     workload: Workload,
     per_turn_metrics: list[dict],
@@ -318,6 +362,9 @@ async def run_workload(
     judge_kind: str = "heuristic",
     judge_escalation_threshold: float = DEFAULT_ESCALATION_THRESHOLD,
     judge_model: str = "anthropic:claude-haiku-4-5",
+    fingerprint_version: str = "v1",
+    embedding_provider: str | None = None,
+    delegation_policy: str | None = None,
 ) -> tuple[int, int, list[dict], Decimal, int, int, str]:
     """Drive one workload end-to-end. Returns (started_us, ended_us,
     per_turn_metrics, total_cost_usd, total_llm_calls, total_tool_calls, session_id).
@@ -353,11 +400,35 @@ async def run_workload(
             seed_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(pattern_seed_path, seed_dst)
             print(f"  [{workload.name}] seeded pattern store from {pattern_seed_path}")
+        # When v2 fingerprint is requested, materialize a workspace-local
+        # routing.yaml so the engine reads the new PatternConfig fields.
+        # Without this, setup_runtime falls back to `~/.metis/routing.yaml`
+        # or EMPTY_POLICY, and PatternConfig stays at v1.
+        routing_policy_path: str | None = None
+        if fingerprint_version == "v2":
+            if not embedding_provider:
+                raise RuntimeError(
+                    "--fingerprint-version v2 requires --embedding-provider "
+                    "(e.g. openai:text-embedding-3-small)"
+                )
+            policy_path = ws / ".metis" / "routing.yaml"
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy_path.write_text(
+                "schema_version: 1\n"
+                "pattern:\n"
+                "  fingerprint_version: v2\n"
+                f"  embedding_provider: {embedding_provider}\n",
+                encoding="utf-8",
+            )
+            routing_policy_path = str(policy_path)
         runtime = await setup_runtime(
             workspace_path=str(ws),
             db_path=str(db_path),
             global_default_model=actual_model,
+            routing_policy_path=routing_policy_path,
         )
+        if delegation_policy is not None:
+            _enable_delegation(runtime.registry, delegation_policy)
         # Swap the default heuristic-only evaluator for a hybrid / LLM one
         # when requested. setup_runtime() registers HeuristicJudge by
         # default — we unregister it and re-register against the same bus
@@ -688,6 +759,33 @@ async def amain() -> int:
         help="LLM judge model id (default anthropic:claude-haiku-4-5). "
         "Ignored when --judge is heuristic.",
     )
+    parser.add_argument(
+        "--fingerprint-version",
+        choices=["v1", "v2"],
+        default="v1",
+        help="Pattern store fingerprint version. v1 is structural-only (default). "
+        "v2 is the hybrid embedding fingerprint (pattern-store.md §16). "
+        "v2 requires --embedding-provider. The harness writes a routing.yaml "
+        "per workload that pins the choice into `routing-engine.md §5 pattern`.",
+    )
+    parser.add_argument(
+        "--embedding-provider",
+        default=None,
+        help="Embedding provider id for --fingerprint-version v2. One of "
+        "'openai:text-embedding-3-small', 'cohere:embed-multilingual-v3.0', "
+        "'local:sentence-transformers:all-MiniLM-L6-v2'. The corresponding API "
+        "key must be set (OPENAI_API_KEY / COHERE_API_KEY) — see "
+        "pattern-store.md §16.5.",
+    )
+    parser.add_argument(
+        "--delegation-policy",
+        default=None,
+        help="When set, registers the global default model with "
+        "`can_delegate=True` and the worker model with `delegation_tier='fast'` "
+        "(delegation.md §3.1 / §4.2) so the planner sees the `delegate()` tool. "
+        "Value is either 'sonnet-planner-haiku-worker' (the §A3-rev4 default) "
+        "or a path to a yaml file with `planner_model`/`worker_model` keys.",
+    )
     args = parser.parse_args()
 
     _load_dotenv(REPO_ROOT / ".env")
@@ -811,6 +909,9 @@ async def amain() -> int:
                     judge_kind=args.judge,
                     judge_escalation_threshold=args.judge_escalation_threshold,
                     judge_model=args.judge_model,
+                    fingerprint_version=args.fingerprint_version,
+                    embedding_provider=args.embedding_provider,
+                    delegation_policy=args.delegation_policy,
                 )
             except Exception as exc:
                 workload_results.append(

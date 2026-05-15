@@ -142,11 +142,70 @@ docker compose run --rm gateway issue-key \
 ```
 
 The plaintext `gw_…` token is printed once and cannot be recovered. The
-keystore stores `{key_id, secret_hash, name, workspace_path, allowed_models?, daily_cap_usd?}`
+keystore stores `{key_id, secret_hash, name, workspace_path, allowed_models?, daily_cap_usd?, monthly_cap_usd?, user_id?, team_id?, status, revoked_at?, grace_period_until?, created_at}`
 keyed on the SHA-256 of the token.
 
-To revoke a key, remove its entry from `./.metis-gateway/keys/keys.json`
-and restart the container. There is no online revocation API in v1.
+#### Rotating, revoking, and listing keys
+
+Wave 10 (`gateway.md §11`) added online lifecycle ops. All three are
+atomic writes (write-temp-then-rename) so a running gateway never
+observes a partial keystore, and all three emit audit events
+(`gateway.key_issued` / `gateway.key_revoked` / `gateway.key_rotated`)
+to the trace DB when one is reachable.
+
+**Immediate revoke** (e.g. "this key may have been exposed"):
+
+```bash
+docker compose run --rm gateway revoke-key gk_01HXYZ...
+# → revoked: gk_01HXYZ...
+# → revoked_at: 2026-05-15T14:22:10+00:00
+```
+
+Subsequent requests carrying the revoked bearer return `401` with body
+`{"error": {"code": "key_revoked", "key_id": "gk_…", "revoked_at": "…"}}`
+— see `gateway.md §11`. Restart is **not** required; auth re-reads the
+keystore from in-memory state at the next request, and the on-disk
+revocation survives a restart.
+
+**Rotation with grace period** (e.g. "Alice left the team"):
+
+```bash
+docker compose run --rm gateway rotate-key gk_01HXYZ... --grace-period 24h
+# → old_key_id: gk_01HXYZ...
+# → new_key_id: gk_01HXZA...
+# → new_token:  gw_01HXZA...       (printed once, copy it now)
+# → grace_period_until: 2026-05-16T14:22:10+00:00
+```
+
+The successor inherits the predecessor's `workspace_path`, `user_id`,
+`team_id`, `allowed_models`, `daily_cap_usd`, and `monthly_cap_usd`.
+Both keys authenticate during the grace window so the client team can
+roll the new token without downtime; trace events stamp the
+`gateway_key_id` actually used so operators can watch the migration
+land in `/analytics/by_key`. After the grace boundary, the predecessor
+is treated as revoked at auth time, and the next admin sweep
+(`metis gateway list-keys` or `revoke-key` against any key) persists
+the `active → revoked` transition + emits a `gateway.key_revoked` event
+with `reason="grace_period_expired"`.
+
+Grace-period forms: `30m`, `24h`, `7d`, `2w`. Default: `24h`. Use
+`revoke-key` for an immediate cutoff (no successor).
+
+**Listing**:
+
+```bash
+docker compose run --rm gateway list-keys
+# KEY_ID                           STATUS   USER         TEAM         ...
+# gk_01HXYZ...                     active   alice        eng          ...
+# gk_01HXZA...                     active   alice        eng          ...
+#
+# Or machine-readable:
+docker compose run --rm gateway list-keys --format json | jq .
+```
+
+`list-keys` shows both `status` (on-disk) and `effective_status` (the
+auth-time view; an active key whose grace has lapsed reads as
+`revoked` even before the next sweep persists it).
 
 ### Logs
 
@@ -221,15 +280,22 @@ gateway's loopback inside the shared namespace.
 
 ### Keystore rotation
 
-The keystore is a single JSON file. Rotation in v1 is manual:
+Wave 10 (`gateway.md §11`) replaces the v1 manual procedure with
+`metis gateway rotate-key`:
 
-1. `docker compose run --rm gateway issue-key --name "<new-name>" ...` — issue the replacement.
-2. Distribute the new token to the client.
-3. Delete the old entry from `./.metis-gateway/keys/keys.json`.
-4. `docker compose restart gateway` — the gateway re-reads the keystore at startup.
+```bash
+docker compose run --rm gateway rotate-key gk_01HXYZ... --grace-period 24h
+```
 
-There is no key TTL or scheduled rotation in v1. If you need scheduled
-rotation, manage it externally (cron + the `issue-key` subcommand).
+The predecessor stays active for the grace window so the client team
+can roll the new token without downtime; after the boundary it
+auto-revokes on the next admin sweep. See [Key management](#key-management)
+above for the full recipe, including `revoke-key` for immediate
+cutoffs and `list-keys` for the post-rotation reconciliation view.
+
+No TTL / scheduled rotation in v1.1 either — for scheduled rotation,
+run `rotate-key` from cron and pipe the new token to your secrets
+broker the same way you handled `issue-key` distribution.
 
 ### Trace DB size management
 
@@ -249,6 +315,105 @@ are append-mostly. Two knobs:
 The trace DB is the source of truth for cost attribution — delete only
 after you've rolled the data into whatever billing system you actually
 charge from.
+
+### Backup & restore
+
+The trace DB lives on a single SQLite file (default
+`~/.metis/metis.db`; in the helm chart, on the gateway's PVC). For a
+risky upgrade or a planned migration, take a snapshot **before** the
+change and keep the restore command on hand.
+
+The shipped recipe uses `metis backup` (which calls SQLite's
+`VACUUM INTO`) rather than `cp`: WAL mode keeps a `-wal` file alongside
+the live DB until checkpoint, so a naive `cp metis.db /backup/` will
+miss in-flight events. `VACUUM INTO` is the SQLite-blessed hot-backup
+path — atomic, WAL-safe, single-file output, and the source DB does
+not need to be closed first.
+
+**Take a backup.**
+
+```bash
+# Defaults to source = ~/.metis/metis.db. Backup is a single file.
+metis backup /backup/metis.$(date -u +%Y%m%dT%H%M%SZ).db
+
+# Explicit source path (e.g., inside the gateway container against
+# the PVC mount).
+docker compose exec gateway \
+    metis backup /backup/metis.db --db-path /var/lib/metis/metis.db
+```
+
+Output is a deterministic block: source path, dest path, byte count,
+schema version, event count, oldest/newest event timestamp. Save it
+alongside the backup as a paper trail.
+
+**Restore a backup.** Schema-version checked; refuses to clobber an
+existing live DB unless `--force` is passed.
+
+```bash
+# 1. Stop the writer first (the gateway / serve process). VACUUM INTO
+#    snapshots are crash-consistent, but restoring under an active
+#    writer is not — pause the writer, restore, then start it.
+docker compose stop gateway
+
+# 2. Restore. --force lets you replace a corrupt or downgraded DB.
+metis restore /backup/metis.20260514T030000Z.db \
+    --db-path ~/.metis/metis.db --force
+
+# 3. Start the writer.
+docker compose start gateway
+```
+
+If the backup's schema version doesn't match the running binary,
+`restore` refuses with a diagnostic naming both versions. Downgrade
+the binary to one that wrote that schema, run any forward-migration
+script (none exist in v1 — there's only one schema version so far),
+then re-restore.
+
+**Rotation policy.** A sensible default for buyers without a separate
+backup system:
+
+- **Daily**, retain the last 7. Run via cron at 03:00 local against
+  the live DB.
+- **Weekly**, retain the last 4. Keep one Sunday backup per month if
+  you want a year-out reference.
+- Drop a backup quietly when the day's run produces a backup of the
+  same byte count and event count as the previous run (no new
+  events). Logrotate-style timestamps make this trivial.
+
+Example crontab (run inside the container, or on the host against the
+mounted PVC path):
+
+```cron
+# Daily snapshot at 03:00; keep last 7.
+0 3 * * * metis backup /backup/daily/metis.$(date -u +\%Y\%m\%d).db \
+    --db-path /var/lib/metis/metis.db \
+    && find /backup/daily -name 'metis.*.db' -mtime +7 -delete
+```
+
+**Restore drill.** Test the restore path on a non-production
+workspace before you need it for real: take a backup, point a fresh
+`metis serve` at a different `--db-path`, restore the backup there,
+and confirm `/analytics/cost` returns the same numbers as the live
+DB at backup time.
+
+**Helm + PVC.** If the PVC's StorageClass supports volume snapshots
+(EBS, GCE PD, RBD, Longhorn, etc.), those compose cleanly with
+`metis backup` for application-consistent point-in-time recovery:
+
+1. Issue `kubectl exec deploy/<release>-gateway -- metis backup
+   /var/lib/metis/snapshots/metis-$(date -u +%s).db
+   --db-path /var/lib/metis/metis.db` to land a crash-consistent
+   single-file backup on the PVC.
+2. Trigger a `VolumeSnapshot` against the PVC. The snapshot now
+   contains both the live DB (which may have new writes since step 1)
+   and the application-consistent backup file (which is a frozen
+   crash-consistent image of the DB at step-1 time).
+3. To restore, mount the snapshot's volume on a sibling pod and
+   `metis restore /var/lib/metis/snapshots/metis-…db --db-path …` —
+   you get the application-consistent file even if the live DB on the
+   restored volume was mid-flight. Volume snapshots alone don't give
+   you this property; they're crash-consistent at the filesystem
+   level but not necessarily at the SQLite-application level.
 
 ### Cost attribution conventions
 

@@ -52,6 +52,31 @@ samples per cluster + the §A3-rev2 path #1 — wire
 `eval.completed(subject_kind=workload)` into
 `pattern.outcome_updated`).
 
+**§A3-rev4 follow-up (2026-05-15):**
+[`benchmarks/RESULTS.md §A3-rev4`](../benchmarks/RESULTS.md) re-ran
+the 3-pass protocol with the v2 hybrid-embedding fingerprint
+(`PatternConfig.fingerprint_version="v2"`,
+`embedding_provider="openai:text-embedding-3-small"`) enabled + a 4th
+pass with delegation. **Pass C produced 0 pattern-slot sonnet picks**
+(vs §A3-rev3's 1) — v2 wiring in the current code stores STRUCTURAL
+fingerprints with the embedding cache warmed *out-of-band* after
+`store.record()`, so the routing-time K-NN falls back to v1
+weighted-Jaccard via mixed-version detection. The §A3-rev3 regex
+inversion didn't reproduce because per-fingerprint cluster
+accumulation is non-deterministic across passes (sample-size
+asymmetry on the specific fingerprint, the §A3-rev3 caveat #1).
+**Wave 10's "pattern store v2 cluster-tightening A/B" deferred item
+remains the real gate for whether v2 generalizes the inversion.**
+The savings posture stays at the §A3-rev3 calibration — N=1
+differentiated demonstration; v2 hasn't extended it yet.
+**Pass D (delegation)** did not fire on `multi-turn-refactor` because
+slot 4 picked haiku (not the sonnet planner that holds the
+`delegate()` tool); delegation savings remain untested end-to-end.
+Part A's shutdown-order bug fix in `apps/cli/src/metis_cli/runtime.py`
+closed the long-standing §A3-rev3 `architectural-explanation-without-
+hallucination` `success_score_count=0` caveat (the workload now
+accumulates both haiku and sonnet samples cleanly).
+
 **The wedge mechanism shipped.** What's left is dialing up
 selectivity. Until Wave 10 lands, GTM headline numbers should
 quote both Pass C's flat `savings_pct=62.0%` *and* the
@@ -131,6 +156,7 @@ Implication: the moat is execution speed + opinionated defaults + the FTS5/finge
 | 2026-05-14 | Gateway v1 shipped | Transparent HTTP gateway ([`apps/gateway/`](../apps/gateway/)) exposes `POST /v1/chat/completions` (OpenAI shape) and `POST /v1/messages` (Anthropic shape), each in sync + SSE flavors, routed via `metis_core.routing.RoutingEngine` with `gateway_key_id` + `inbound_shape` stamped on every `llm.call_completed` / `turn.completed`. Per-request stateless (no session manager / tool dispatcher / memory store / skill loader); loopback-only bind. `metis gateway issue-key` creates keys; the keystore stores SHA-256 hashes, the plaintext token is printed once. Live-validated on 2026-05-14 at ~$0.0002 / 4 calls (OpenAI + Anthropic shapes, sync + SSE) with per-key cost roll-up confirmed via direct SQL on the trace DB. This is the §3 hybrid's "gateway first" leg in production-shape; §6.3 (local-first vs SaaS) **remains open** — the gateway can be deployed in either posture and no GTM evidence has pinned the choice. Follow-on: the `group_by=gateway_key` dimension on `/analytics/cost` (gateway.md §V) is not yet wired; per-key analytics today requires direct SQL. |
 | 2026-05-14 | §A3-rev3: differentiator inverts on 1 workload | [`benchmarks/RESULTS.md §A3-rev3`](../benchmarks/RESULTS.md) — re-runs the three-pass protocol after Wave 9's one-line knob landed (`PatternConfig.min_confidence: 0.3 → 0.05`, [`routing/policy.py:63`](../packages/metis-core/src/metis_core/routing/policy.py#L63)). Pass C reaches slot 4 on **14 of 18 turns** (vs §A3-rev2's 3 of 16) and **picks sonnet on `regex-with-edge-cases` turn 2** — cluster haiku=0.784, sonnet=0.833, confidence=0.058 (above the new 0.05 gate, below the old 0.3). First end-to-end demonstration of differentiated routing in any A3 series. Pass C `savings_pct=62.0%` (vs flat-haiku 66.7%); regex row 35.5%. Pass C quality sum 5.55 beats Pass A's 5.16 (+8%) at cost-per-quality `$0.0477` (between haiku-only `$0.0383` and sonnet-only `$0.1176`). Wave 8a's three unblocks (workload-tag partition, `cost_weight=0.1`, grounding-check) remain load-bearing; Wave 9's knob is the missing piece, not a replacement. Adjusts §1's quoted savings posture from "rate-card savings *given haiku succeeds*" to "differentiated routing picks the succeeding model on 1 of 6 evaluable workloads; quality > haiku-only at 40% of sonnet-only cost." Total experiment spend: $1.138. |
 | 2026-05-14 | Skill curator specced; moat reframed as four legs | New spec [`docs/specs/skill-curator.md`](specs/skill-curator.md) (~620 lines, pattern lifted from hermes-agent's `agent/curator.py`). Periodic auxiliary-model maintenance of agent-authored skills only: six actions (pin / unpin / archive / restore / consolidate / edit); never auto-deletes (archive is `mv` to `skills-archive/`, restoration is `mv` back); user-authored skills are read-only (touchability gated by `skill.created.source ∈ {auto_generated, curator_generated}`); pinned bypasses every auto-transition; no SKILL.md frontmatter changes (state in sidecar JSON, preserves agentskills.io conformance); bounded spend via shared `BudgetTracker` (curator caps `$0.50/run`, `$1.00/day` independent of evaluator caps); one new `skill.curated` event + two run-boundary events. Defaults match Hermes empirics: weekly interval, 30-day stale soft annotation, 90-day archive hard threshold. **Implementation is Phase 4 (Wave 17), gated on Phase 2.5 agent-authored skills (`skill_save` tool + `skill.created(source="auto_generated")` event) landing first — that prereq is itself not yet planned and is also not GA-blocking.** §4 reframed: the moat now lists four legs (added "auto-derived skill curation"); legs 3 and 4 compose (pattern learning picks the right model per task class; skill curation keeps the skill library that informs those tasks pruned and current). No code changes in this entry — spec-only, AGENTS.md / CHANGES.md updated. |
+| 2026-05-15 | §A3-rev4: v2 wiring partial, inversion didn't generalize; eval-to-store outcome bug closed | [`benchmarks/RESULTS.md §A3-rev4`](../benchmarks/RESULTS.md) — 4-pass protocol with `PatternConfig.fingerprint_version="v2"` + `embedding_provider="openai:text-embedding-3-small"` plus a 5th pass with `--delegation-policy sonnet-planner-haiku-worker` on `multi-turn-refactor`. **Pass C produced 0 pattern-slot sonnet picks** (vs §A3-rev3's 1 on regex turn 2). Root cause: v2 wiring stores STRUCTURAL fingerprints with the embedding cache warmed *out-of-band* after `store.record()`, so routing-time K-NN falls back to v1 weighted-Jaccard via mixed-version detection. The "v2 cluster-tightening A/B" deferred Wave-10 item remains the real Q1 gate. **Pass D (delegation)** didn't fire because slot 4 picked haiku (which lacks `can_delegate=True`); routing-then-delegate composition needs the planner forced via `--model sonnet` to test Q2 end-to-end. **Two correctness fixes landed alongside**: (i) `shutdown_runtime` now drains *before* detaching subscribers ([apps/cli/src/metis_cli/runtime.py](../apps/cli/src/metis_cli/runtime.py)), closing the long-standing §A3-rev3 `architectural-explanation-without-hallucination` `success_score_count=0` caveat (architectural now accumulates both haiku and sonnet samples cleanly); (ii) `EventBus.stop()` drains before setting `_stopping=True` ([packages/metis-core/src/metis_core/events/bus.py](../packages/metis-core/src/metis_core/events/bus.py)), eliminating a deadlock when unregister events sat in queue at stop time. New benchmark flags `--fingerprint-version`, `--embedding-provider`, `--delegation-policy` ship in [scripts/benchmark.py](../scripts/benchmark.py). The savings posture stays at §A3-rev3's calibration — v2 has not yet extended the differentiation. Total experiment spend: $1.30. |
 
 ## 6. Open questions (decisions deferred)
 

@@ -23,6 +23,7 @@ from metis_core.events.envelope import Actor
 from metis_core.events.payloads import RoutingPolicyInvalid, make_event
 from metis_core.memory import MemoryStore, register_memory_tools
 from metis_core.patterns import PatternEventSubscriber, PatternStore
+from metis_core.patterns.embeddings import resolve_embedding_provider
 from metis_core.patterns.fingerprint import FingerprintInputs
 from metis_core.pricing import DEFAULT_PRICE_TABLE, PriceTable
 from metis_core.routing import (
@@ -195,13 +196,26 @@ async def setup_runtime(
     )
 
     pattern_stores: dict[str, PatternStore] = {}
+    # The PatternConfig fields drive whether a PatternStore opens in v1 or v2
+    # mode and which embedder (if any) the subscriber uses on the recording
+    # path. When a workspace-scoped pattern overrides the global one, this
+    # uses the workspace's settings (the resolver doesn't know the workspace
+    # at construction time, but the global setting is the same default v1
+    # for workspaces that don't override and the v2 fields are required by
+    # PatternConfig.__post_init__ to be coherent).
+    pattern_cfg = policy.pattern
+    embedder = resolve_embedding_provider(pattern_cfg.embedding_provider)
 
     def _pattern_store_resolver(workspace_path: str) -> PatternStore | None:
         try:
             existing = pattern_stores.get(workspace_path)
             if existing is not None:
                 return existing
-            store = PatternStore(workspace_path)
+            store = PatternStore(
+                workspace_path,
+                fingerprint_version=pattern_cfg.fingerprint_version,
+                embedding_alpha=pattern_cfg.embedding_alpha,
+            )
             pattern_stores[workspace_path] = store
             return store
         except Exception:
@@ -245,10 +259,23 @@ async def setup_runtime(
         except Exception:
             return None
 
+    def _store_factory(ws: str) -> PatternStore:
+        existing = pattern_stores.get(ws)
+        if existing is not None:
+            return existing
+        store = PatternStore(
+            ws,
+            fingerprint_version=pattern_cfg.fingerprint_version,
+            embedding_alpha=pattern_cfg.embedding_alpha,
+        )
+        pattern_stores[ws] = store
+        return store
+
     pattern_subscriber = PatternEventSubscriber(
-        store_factory=lambda ws: pattern_stores.setdefault(ws, PatternStore(ws)),
+        store_factory=_store_factory,
         workspace_resolver=_workspace_resolver,
         bus=bus,
+        embedder=embedder,
     )
     pattern_subscriber.attach()
 
@@ -289,6 +316,21 @@ async def setup_runtime(
 
 
 async def shutdown_runtime(runtime: ChatRuntime) -> None:
+    # Drain the bus *before* detaching subscribers. A turn just submitted by
+    # the caller emits `turn.completed`, which cascades through pattern
+    # subscriber (records the outcome row) and evaluator (emits
+    # `eval.completed`), and the pattern subscriber's `eval.completed`
+    # handler then writes the score back via `update_score`. Detaching
+    # first means the cascading `eval.completed` event has no subscriber
+    # left to process it — the score never reaches the outcome row
+    # (success_score_count stays at 0). The §A3-rev3 caveat
+    # (benchmarks/RESULTS.md) on `architectural-explanation-without-
+    # hallucination` traces to this ordering; CLI callers that exit
+    # immediately after a turn would hit it too.
+    try:
+        await runtime.bus.drain()
+    except Exception:
+        pass
     if runtime.evaluator is not None:
         try:
             runtime.evaluator.unregister()
@@ -299,10 +341,6 @@ async def shutdown_runtime(runtime: ChatRuntime) -> None:
             runtime.pattern_subscriber.detach()
         except Exception:
             pass
-    try:
-        await runtime.bus.drain()
-    except Exception:
-        pass
     try:
         await runtime.bus.stop()
     except Exception:

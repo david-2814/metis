@@ -168,9 +168,20 @@ class EventBus:
             )
 
     async def stop(self) -> None:
-        """Stop the dispatch worker after draining outstanding events."""
-        self._stopping = True
+        """Stop the dispatch worker after draining outstanding events.
+
+        Drains *before* setting `_stopping` so the dispatch loop's
+        `while not self._stopping` check doesn't exit on the first iteration
+        with events still in the queue — which would deadlock `drain()`
+        (queue.join blocks on unfinished_tasks > 0 with no consumer left).
+        Detach subscribers before calling `stop()` to guarantee no new
+        events arrive once drain returns; the §A3-rev3 outcome-update bug
+        traced to this ordering when `shutdown_runtime` detached after
+        draining and then called stop with the unregister events still in
+        flight.
+        """
         await self.drain()
+        self._stopping = True
         if self._dispatch_task is not None:
             self._dispatch_task.cancel()
             try:

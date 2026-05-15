@@ -167,6 +167,100 @@ def build_parser() -> argparse.ArgumentParser:
             "(multi-user.md §4.2). Lowercase [a-z0-9_-]+."
         ),
     )
+    issue.add_argument(
+        "--db-path",
+        help=(
+            "SQLite path for the `gateway.key_issued` audit-event trace. "
+            "Default: ~/.metis/metis.db (skip emission if the file isn't writable)."
+        ),
+        default=None,
+    )
+
+    revoke = gateway_sub.add_parser(
+        "revoke-key",
+        help="Mark a gateway key revoked; subsequent requests with it return 401 key_revoked.",
+    )
+    revoke.add_argument("key_id", help="The `gk_<ulid>` id of the key to revoke.")
+    revoke.add_argument(
+        "--keystore",
+        help="Gateway keystore path. Default: ~/.metis/gateway/keys.json",
+        default=None,
+    )
+    revoke.add_argument(
+        "--db-path",
+        help="SQLite path for the audit-event trace. Default: ~/.metis/metis.db",
+        default=None,
+    )
+
+    rotate = gateway_sub.add_parser(
+        "rotate-key",
+        help=(
+            "Issue a successor key inheriting an existing key's metadata; "
+            "the predecessor stays active for the grace period, then auto-revokes."
+        ),
+    )
+    rotate.add_argument("key_id", help="The `gk_<ulid>` id of the key to rotate.")
+    rotate.add_argument(
+        "--grace-period",
+        default=None,
+        help=(
+            "How long the predecessor remains active alongside the successor. "
+            "Forms: '30m', '24h', '7d', '2w'. Default: 24h."
+        ),
+    )
+    rotate.add_argument(
+        "--keystore",
+        help="Gateway keystore path. Default: ~/.metis/gateway/keys.json",
+        default=None,
+    )
+    rotate.add_argument(
+        "--db-path",
+        help="SQLite path for the audit-event trace. Default: ~/.metis/metis.db",
+        default=None,
+    )
+
+    list_keys_parser = gateway_sub.add_parser(
+        "list-keys",
+        help="List every key in the keystore with status, identity, caps, and timestamps.",
+    )
+    list_keys_parser.add_argument(
+        "--keystore",
+        help="Gateway keystore path. Default: ~/.metis/gateway/keys.json",
+        default=None,
+    )
+    list_keys_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format. `json` is machine-readable; `text` is a terminal-friendly table.",
+    )
+
+    backup = sub.add_parser(
+        "backup",
+        help="Snapshot the trace DB to a single file (VACUUM INTO, WAL-safe).",
+    )
+    backup.add_argument("dest", help="Destination path for the backup file.")
+    backup.add_argument(
+        "--db-path",
+        help="Source trace DB. Default: ~/.metis/metis.db",
+        default=None,
+    )
+
+    restore = sub.add_parser(
+        "restore",
+        help="Restore a trace-DB backup over the live DB (schema-version checked).",
+    )
+    restore.add_argument("source", help="Backup file produced by `metis backup`.")
+    restore.add_argument(
+        "--db-path",
+        help="Destination trace DB. Default: ~/.metis/metis.db",
+        default=None,
+    )
+    restore.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing destination DB (default: refuse).",
+    )
 
     return parser
 
@@ -228,17 +322,26 @@ def main(argv: list[str] | None = None) -> int:
             if args.session_id:
                 evaluate_argv.extend(["--session-id", args.session_id])
             return evaluate_main(evaluate_argv)
+        if args.command == "backup":
+            from metis_cli.backup import run_backup_command
+
+            return run_backup_command(dest=args.dest, db_path=args.db_path)
+        if args.command == "restore":
+            from metis_cli.backup import run_restore_command
+
+            return run_restore_command(source=args.source, db_path=args.db_path, force=args.force)
         if args.command == "gateway":
             if args.gateway_command == "issue-key":
                 from pathlib import Path
 
                 from metis_gateway.issue_key import issue_key_command
-                from metis_gateway.runtime import default_keystore_path
+                from metis_gateway.runtime import default_db_path, default_keystore_path
 
                 keystore = (
                     Path(args.keystore).expanduser() if args.keystore else default_keystore_path()
                 )
                 allowed = tuple(args.allow_model) if args.allow_model else None
+                audit_db = Path(args.db_path).expanduser() if args.db_path else default_db_path()
                 return issue_key_command(
                     keystore_path=keystore,
                     name=args.name,
@@ -248,6 +351,51 @@ def main(argv: list[str] | None = None) -> int:
                     monthly_cap_usd=args.monthly_cap_usd,
                     user_id=args.user,
                     team_id=args.team,
+                    db_path=audit_db,
+                )
+            if args.gateway_command == "revoke-key":
+                from pathlib import Path
+
+                from metis_gateway.keystore_admin import revoke_key_command
+                from metis_gateway.runtime import default_db_path, default_keystore_path
+
+                keystore = (
+                    Path(args.keystore).expanduser() if args.keystore else default_keystore_path()
+                )
+                audit_db = Path(args.db_path).expanduser() if args.db_path else default_db_path()
+                return revoke_key_command(
+                    keystore_path=keystore,
+                    key_id=args.key_id,
+                    db_path=audit_db,
+                )
+            if args.gateway_command == "rotate-key":
+                from pathlib import Path
+
+                from metis_gateway.keystore_admin import rotate_key_command
+                from metis_gateway.runtime import default_db_path, default_keystore_path
+
+                keystore = (
+                    Path(args.keystore).expanduser() if args.keystore else default_keystore_path()
+                )
+                audit_db = Path(args.db_path).expanduser() if args.db_path else default_db_path()
+                return rotate_key_command(
+                    keystore_path=keystore,
+                    key_id=args.key_id,
+                    grace_period=args.grace_period,
+                    db_path=audit_db,
+                )
+            if args.gateway_command == "list-keys":
+                from pathlib import Path
+
+                from metis_gateway.keystore_admin import list_keys_command
+                from metis_gateway.runtime import default_keystore_path
+
+                keystore = (
+                    Path(args.keystore).expanduser() if args.keystore else default_keystore_path()
+                )
+                return list_keys_command(
+                    keystore_path=keystore,
+                    output_format=args.format,
                 )
             # Default: run the gateway server.
             from metis_gateway.cli import run_gateway_command

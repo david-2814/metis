@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -343,6 +344,82 @@ def keystore(bearer_token: str, workspace: Path) -> Keystore:
         workspace_path=str(workspace),
     )
     return Keystore([key])
+
+
+@pytest.fixture
+def revoked_bearer_token() -> str:
+    return "gw_revoked_token_001"
+
+
+@pytest.fixture
+async def revoked_runtime(
+    tmp_path: Path,
+    scripted_adapter: ScriptedAdapter,
+    revoked_bearer_token: str,
+    workspace: Path,
+) -> GatewayRuntime:
+    """Runtime with a single keystore entry whose `status == 'revoked'`.
+
+    Exercises the gateway.md §11 auth path: requests authenticating with
+    this key resolve to a GatewayKey but `is_active` returns False, so the
+    middleware short-circuits with the documented `key_revoked` body
+    before any harness/routing call.
+    """
+    secret_hash = hashlib.sha256(revoked_bearer_token.encode("utf-8")).hexdigest()
+    revoked_at = datetime(2026, 5, 14, 12, 0, 0, tzinfo=UTC)
+    key = GatewayKey(
+        key_id="gk_revoked_001",
+        secret_hash=secret_hash,
+        name="revoked-test",
+        workspace_path=str(workspace),
+        status="revoked",
+        revoked_at=revoked_at,
+    )
+    keystore = Keystore([key])
+    bus = EventBus()
+    bus.start()
+    db_file = tmp_path / "revoked-gateway.db"
+    trace = TraceStore(db_file)
+    trace.attach_to(bus)
+    registry = ModelRegistry()
+    registry.register(
+        model_id="anthropic:claude-haiku-4-5",
+        adapter=scripted_adapter,
+        aliases=["haiku"],
+    )
+    registry.register(
+        model_id="anthropic:claude-sonnet-4-6",
+        adapter=scripted_adapter,
+        aliases=["sonnet"],
+    )
+    routing = RoutingEngine(registry=registry, bus=bus, policy=EMPTY_POLICY)
+    rt = GatewayRuntime(
+        bus=bus,
+        trace=trace,
+        registry=registry,
+        routing=routing,
+        pricing=DEFAULT_PRICE_TABLE,
+        keystore=keystore,
+        adapters=[scripted_adapter],
+        db_file=db_file,
+        global_default_model="anthropic:claude-sonnet-4-6",
+    )
+    yield rt
+    await bus.drain()
+    await bus.stop()
+    trace.close()
+
+
+@pytest.fixture
+async def revoked_client(revoked_runtime: GatewayRuntime):
+    """httpx client bound to the revoked-keystore app for §11 tests."""
+    import httpx
+    from metis_gateway.app import build_app
+
+    app = build_app(revoked_runtime)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+        yield c
 
 
 @pytest.fixture

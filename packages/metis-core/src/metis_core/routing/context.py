@@ -51,6 +51,14 @@ class TurnContext:
     # from the agent path; predicates evaluate to False in that case.
     team_budget_remaining_usd: Decimal | None = None
 
+    # Delegation re-entry (delegation.md §7). When this turn is the first
+    # turn of a worker session, the session manager populates
+    # `worker_tier_model` with the resolved tier model so slot 5
+    # (`DELEGATE_REQUEST`) emits `chose: <model>` instead of the default
+    # `not_applicable: "not a delegation re-entry"`. Non-worker turns leave
+    # it `None` and slot 5 keeps its top-level behavior.
+    worker_tier_model: str | None = None
+
     # For tracing
     parent_event_id: str | None = None  # typically the turn.started event id
 

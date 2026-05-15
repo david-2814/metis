@@ -1,14 +1,29 @@
 # Delegation Specification
 
-**Status:** Draft v1 (specs-only; Phase 4 implementation wave)
-**Last updated:** 2026-05-14
+**Status:** v1 MVP shipped (Wave 10). Streaming worker output to the planner,
+cancellation cascade across parent + workers, recursive (worker-spawns-worker)
+delegation, structured-output schema validation, and per-tier worker timeout
+are deferred to later waves.
+**Last updated:** 2026-05-15
 
+> **What landed (Wave 10):** The `delegate()` built-in tool is registered for
+> planner sessions whose active model has `can_delegate: true` in the registry.
+> The tool body hands a `DelegateRequest` to `SessionManager.spawn_worker`,
+> which resolves the tier → model, creates a worker `Session`
+> (`is_worker=True`, `parent_session_id` / `parent_tool_use_id` set), runs the
+> worker's turn loop synchronously, and returns a `DelegateOutcome`. Routing
+> slot 5 fires `chose: <tier model>` inside worker re-entry (§7);
+> top-level sessions still see `not_applicable` per the original chain shape.
+> Worker LLM events stamp `parent_session_id`; analytics rolls worker spend
+> under the planner via `group_by=parent_session` or partitions via
+> `group_by=is_worker` (§8). The three `delegate.*` events are live in the
+> catalog ([`event-bus-and-trace-catalog.md §6.8`](event-bus-and-trace-catalog.md)).
+>
 > **v1 scope.** The Phase-4 worker-session design behind the `delegate()`
-> tool and the routing chain's slot 5 (`DELEGATE_REQUEST`). Slot 5 has
+> tool and the routing chain's slot 5 (`DELEGATE_REQUEST`). Slot 5 had
 > existed in the chain enumeration since Phase 1 with
 > `verdict: "not_applicable"`; this spec defines the contract that fills
-> in the stub. The `delegate.*` events likewise ship in Phase 4 (per
-> [`event-bus-and-trace-catalog.md §6.8`](event-bus-and-trace-catalog.md)).
+> in the stub.
 >
 > **Optional wedge.** Delegation is an opt-in capability — neither the
 > gateway nor the agent path requires it. Buyers with multi-step workloads
@@ -152,6 +167,53 @@ the user opts in via the registry config.
 
 The dashboard's per-session cost breakdown shows `Workers: $0.00` when
 delegation isn't in use — no separate "delegation-enabled" UI mode.
+
+### 3.6 Explicit v1 MVP deferrals
+
+The Wave-10 implementation lands the spec end-to-end with these features
+**not** wired (intentionally; named here so reviewers don't search for them
+in the code):
+
+- **Async / concurrent workers.** v1 is synchronous: the planner's tool
+  dispatcher blocks on each `delegate()` call until the worker session ends.
+  Fan-out via parallel tool calls in a single assistant message is permitted
+  by the tool dispatcher's existing contract but not exercised in the v1
+  test surface; a per-turn concurrent-workers cap is deferred (§14.3).
+- **Cancellation cascade.** A planner cancel does not propagate into an
+  in-flight worker in v1. The worker runs to completion and the planner's
+  next assistant turn integrates the result. Top-down atomic cancel
+  (§6.4 / streaming-protocol.md §6.4) is a later wave.
+- **Streaming worker output back to the planner.** v1 blocks until the
+  worker emits `stop_reason: end_turn`. Streaming partial worker output
+  through the planner's WebSocket subscription (the
+  `include_worker_sessions` filter on the streaming protocol) stays
+  accepted-but-unused; see §14.4.
+- **Worker-spawns-worker (recursive delegation).** The `delegate` tool is
+  never registered for worker sessions (`SessionManager._effective_tool_definitions`
+  filters it out for any session with `is_worker=True`), and the tool's
+  body refuses defensively (`ToolExecutionError`) if a misconfigured
+  dispatcher kept it visible. Bounded recursion is a future-phase opt-in
+  (§2.2.1).
+- **`output_schema` validation.** v1 accepts the optional `output_schema`
+  parameter but does **not** validate the worker's output against it; the
+  worker's terminal text is returned to the planner unchanged. The
+  `output_schema_validation_failed` failure mode is reserved in the
+  catalog for the follow-up implementation.
+- **Worker wall-clock timeout.** No `timeout_seconds` parameter is exposed;
+  `max_tokens` caps spend but not wall time (§14.5).
+- **Router-decided delegation.** Slot 5 still only fires inside a worker
+  re-entry. The router does **not** wrap a top-level turn in a worker on
+  its own (§14.6).
+- **Pattern-store integration for workers.** Worker sessions do **not**
+  write or read pattern fingerprints in v1 — their structural fingerprint
+  would mix with planner fingerprints in a way the K-NN can't usefully
+  disambiguate. Cross-link of worker outcomes is §11 future work.
+
+What **does** land in v1: the full §4 / §5 / §6 / §7 / §8 / §9 / §10 / §13
+surface — `delegate()` tool, worker `Session` record, routing slot 5
+re-entry, full cost attribution, `delegate.*` events, isolation (memory /
+skills / `delegate` tool / trust-persistence-suppression for worker
+prompts).
 
 ---
 

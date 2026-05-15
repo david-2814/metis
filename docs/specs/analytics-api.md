@@ -96,10 +96,11 @@ Aggregated cost and token counts. Combines what would otherwise be a separate `/
 | Parameter   | Type                                                | Required | Default |
 |-------------|-----------------------------------------------------|----------|---------|
 | `from`,`to` | ISO 8601 UTC                                        | no       | last 7d |
-| `group_by`  | `model` \| `provider` \| `session` \| `day` \| `hour` \| `gateway_key` \| `user` \| `team` \| `none` | no | `model` |
+| `group_by`  | `model` \| `provider` \| `session` \| `day` \| `hour` \| `gateway_key` \| `user` \| `team` \| `parent_session` \| `is_worker` \| `none` | no | `model` |
 | `gateway_key` | exact-match filter on `payload.gateway_key_id`    | no       | (all)   |
 | `user`      | exact-match filter on `payload.user_id`             | no       | (all)   |
 | `team`      | exact-match filter on `payload.team_id`             | no       | (all)   |
+| `include_workers` | bool — when `false`, excludes rows whose `payload.parent_session_id` is set (delegation.md §8.2) | no | `true` |
 
 The three filter parameters (`gateway_key` / `user` / `team`) are passed via SQL placeholders and additionally regex-validated at the HTTP boundary (`^[A-Za-z0-9_-]{1,200}$`); malformed values return 400 `invalid_gateway_key` / `invalid_user` / `invalid_team`. Combinations AND together — `?user=alice&team=eng` narrows to events stamped with both. v1 of multi-user.md treats names → ids resolution as a future step; the implementation accepts whatever stable id (`usr_<ulid>` / `team_<ulid>`) the trace event carries.
 
@@ -145,6 +146,8 @@ Every row carries the same numeric columns (`cost_usd`, `input_tokens`, `output_
 | `gateway_key` | `gateway_key_id` (nullable; in-process agent traffic rolls up under `null`) | array | `cost_usd DESC` |
 | `user`        | `user_id` (nullable; agent-loop + pre-v1 keys roll up under `null`) | array | `cost_usd DESC` |
 | `team`        | `team_id` (nullable; same null convention)         | array | `cost_usd DESC` |
+| `parent_session` | `parent_session_id` (`COALESCE(payload.parent_session_id, events.session_id)` — workers roll up under their planner, top-level sessions are their own key) | array | `cost_usd DESC` |
+| `is_worker`   | `is_worker` (string `"planner"` or `"worker"`; partitions by whether the call came from a worker session — delegation.md §8.2) | array | `cost_usd DESC` |
 | `none`        | (no key)                               | object  | n/a (single aggregate)      |
 
 `day`/`hour` are single-dimension time buckets — they do not also split by model. A future `group_by=day,model` (multi-key) is non-breaking but out of scope for v1. `none` returns a single JSON object as `data` rather than an array — the response envelope is otherwise unchanged.

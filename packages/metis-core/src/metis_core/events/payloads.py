@@ -76,6 +76,10 @@ class TurnCompleted(msgspec.Struct, frozen=True):
     # under the null bucket per multi-user.md §3.4.
     user_id: str | None = None
     team_id: str | None = None
+    # Delegation dimension (delegation.md §8.1). Set on every turn that ran
+    # inside a worker session; analytics joins worker spend back to the
+    # planner via this field. `None` for non-worker sessions.
+    parent_session_id: str | None = None
 
 
 class TurnCancelled(msgspec.Struct, frozen=True):
@@ -93,6 +97,7 @@ class LLMCallStarted(msgspec.Struct, frozen=True):
     estimated_input_tokens: int
     request_id: str
     is_worker: bool
+    parent_session_id: str | None = None
 
 
 class LLMCallCompleted(msgspec.Struct, frozen=True):
@@ -122,6 +127,11 @@ class LLMCallCompleted(msgspec.Struct, frozen=True):
     # (multi-user.md §3.3).
     user_id: str | None = None
     team_id: str | None = None
+    # Delegation dimension (delegation.md §8.1). Set on every LLM call made
+    # from inside a worker session; the analytics surface joins worker spend
+    # back to the planner via this field. `None` for non-worker sessions and
+    # all gateway traffic (gateway never delegates).
+    parent_session_id: str | None = None
 
 
 # 8-value error_class enum per provider-adapter §6.1.
@@ -531,6 +541,138 @@ class GatewayQuotaExceeded(msgspec.Struct, frozen=True):
     team_id: str | None = None
 
 
+# --- §6.8 Delegate domain (delegation.md §9; v1 MVP) -----------------------
+
+DelegateTierLiteral = Literal["fast", "balanced", "deep"]
+DelegateContextModeLiteral = Literal["minimal", "explicit"]
+DelegateFailureModeLiteral = Literal[
+    "worker_error",
+    "max_tokens_exceeded",
+    "insufficient_context",
+    "output_schema_validation_failed",
+    "no_model_available_for_tier",
+    "cancelled_by_user",
+]
+
+
+class DelegateStarted(msgspec.Struct, frozen=True):
+    """`delegate.started` per event-bus-and-trace-catalog §6.8.
+
+    Emitted by the `delegate()` tool body after the worker session has been
+    created and immediately before the worker's turn loop runs. `tool_use_id`
+    is the planner's `delegate()` tool_use_id; the worker session is the row
+    created with `parent_tool_use_id == tool_use_id`.
+    """
+
+    tool_use_id: str
+    worker_session_id: str
+    tier: DelegateTierLiteral
+    resolved_model: str
+    context_mode: DelegateContextModeLiteral
+    context_reference_count: int
+    task_size_tokens: int
+    allowed_tool_count: int
+    dropped_tools: list[str]
+
+
+class DelegateCompleted(msgspec.Struct, frozen=True):
+    """`delegate.completed` per event-bus-and-trace-catalog §6.8.
+
+    Emitted when the worker session ends with `disposition: completed` and
+    the delegate-tool body has the worker's final `TurnResult`. The cost
+    summary is **derived** — analytics joins worker spend via
+    `llm.call_completed.parent_session_id` (delegation.md §8.3).
+    """
+
+    tool_use_id: str
+    worker_session_id: str
+    success: bool
+    output_size_bytes: int
+    worker_total_cost_usd: Decimal
+    pricing_version: str
+    turn_count: int
+    llm_call_count: int
+    tool_call_count: int
+    wall_time_seconds: float
+    model: str
+
+
+class DelegateFailed(msgspec.Struct, frozen=True):
+    """`delegate.failed` per event-bus-and-trace-catalog §6.8.
+
+    Emitted instead of `delegate.completed` when the worker couldn't produce a
+    usable result (no model for tier, worker raised, schema validation
+    failed, cancelled mid-flight, etc.). Partial cost is still recorded.
+    """
+
+    tool_use_id: str
+    worker_session_id: str | None  # None when failure precedes session creation
+    failure_mode: DelegateFailureModeLiteral
+    error_message: str
+    worker_total_cost_usd: Decimal
+    pricing_version: str
+
+
+# --- §6.13 Gateway admin domain (gateway.md §11 — Wave 10 key lifecycle) ----
+
+GatewayKeyRevokeReason = Literal["admin_revoke", "grace_period_expired", "rotated"]
+
+
+class GatewayKeyIssued(msgspec.Struct, frozen=True):
+    """`gateway.key_issued` per gateway.md §11.
+
+    Emitted once by `metis gateway issue-key` after the keystore is
+    updated. The audit trail records who/what the key is scoped to so
+    operators can correlate cost-attribution rows back to the issuance
+    event; the plaintext token is never on the bus.
+
+    Both identity tags follow the multi-user.md §3.4 null-bucket
+    convention — pre-multi-user issuance leaves them `None`.
+    """
+
+    gateway_key_id: str
+    name: str
+    workspace_path: str
+    issued_at: datetime
+    user_id: str | None = None
+    team_id: str | None = None
+    allowed_models: list[str] | None = None
+    daily_cap_usd: Decimal | None = None
+    monthly_cap_usd: Decimal | None = None
+
+
+class GatewayKeyRevoked(msgspec.Struct, frozen=True):
+    """`gateway.key_revoked` per gateway.md §11.
+
+    Emitted on explicit `metis gateway revoke-key` invocation or when the
+    grace-period sweep auto-revokes a rotated predecessor. `reason`
+    distinguishes the two paths so dashboards can chart manual revocations
+    separately from rotation tail-offs.
+    """
+
+    gateway_key_id: str
+    revoked_at: datetime
+    reason: GatewayKeyRevokeReason
+
+
+class GatewayKeyRotated(msgspec.Struct, frozen=True):
+    """`gateway.key_rotated` per gateway.md §11.
+
+    Emitted by `metis gateway rotate-key`. Carries both the predecessor
+    and successor ids so operators can follow the migration in the trace.
+    The predecessor stays `active` until `grace_period_until`; after that
+    boundary the next admin sweep emits a paired `gateway.key_revoked`
+    with `reason="grace_period_expired"`.
+    """
+
+    old_gateway_key_id: str
+    new_gateway_key_id: str
+    grace_period_until: datetime
+    workspace_path: str
+    user_id: str | None = None
+    team_id: str | None = None
+
+
 # --- §6.10 Bus meta-events --------------------------------------------------
 
 
@@ -596,6 +738,14 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     # gateway quota (Phase 3 — multi-user.md §5, §7.2)
     "quota.alert": (QuotaAlert, Sensitivity.PSEUDONYMOUS),
     "gateway.quota_exceeded": (GatewayQuotaExceeded, Sensitivity.PSEUDONYMOUS),
+    # delegate (Phase 4 v1 MVP — delegation.md §9)
+    "delegate.started": (DelegateStarted, Sensitivity.PSEUDONYMOUS),
+    "delegate.completed": (DelegateCompleted, Sensitivity.PSEUDONYMOUS),
+    "delegate.failed": (DelegateFailed, Sensitivity.PSEUDONYMOUS),
+    # gateway admin (Wave 10 — gateway.md §11 key lifecycle)
+    "gateway.key_issued": (GatewayKeyIssued, Sensitivity.PSEUDONYMOUS),
+    "gateway.key_revoked": (GatewayKeyRevoked, Sensitivity.PSEUDONYMOUS),
+    "gateway.key_rotated": (GatewayKeyRotated, Sensitivity.PSEUDONYMOUS),
     # bus
     "bus.subscriber_registered": (BusSubscriberRegistered, Sensitivity.PSEUDONYMOUS),
     "bus.subscriber_unregistered": (BusSubscriberUnregistered, Sensitivity.PSEUDONYMOUS),

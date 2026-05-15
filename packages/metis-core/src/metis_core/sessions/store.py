@@ -25,6 +25,12 @@ class Session:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     cost_so_far_usd: float = 0.0
     turn_count: int = 0
+    # Delegation v1 MVP (delegation.md §5.1). All three are `None` / False
+    # for top-level (planner) sessions; set together when the `delegate()`
+    # tool spawns a worker.
+    parent_session_id: str | None = None
+    parent_tool_use_id: str | None = None
+    is_worker: bool = False
 
 
 class SessionStore(Protocol):
@@ -32,7 +38,13 @@ class SessionStore(Protocol):
     SqliteSessionStore (later)."""
 
     def create_session(
-        self, *, workspace_path: str, active_model: str | None = None
+        self,
+        *,
+        workspace_path: str,
+        active_model: str | None = None,
+        parent_session_id: str | None = None,
+        parent_tool_use_id: str | None = None,
+        is_worker: bool = False,
     ) -> Session: ...
 
     def get_session(self, session_id: str) -> Session: ...
@@ -53,11 +65,22 @@ class InMemorySessionStore:
         self._sessions: dict[str, Session] = {}
         self._messages: dict[str, list[Message]] = {}
 
-    def create_session(self, *, workspace_path: str, active_model: str | None = None) -> Session:
+    def create_session(
+        self,
+        *,
+        workspace_path: str,
+        active_model: str | None = None,
+        parent_session_id: str | None = None,
+        parent_tool_use_id: str | None = None,
+        is_worker: bool = False,
+    ) -> Session:
         session = Session(
             id=new_session_id(),
             workspace_path=workspace_path,
             active_model=active_model,
+            parent_session_id=parent_session_id,
+            parent_tool_use_id=parent_tool_use_id,
+            is_worker=is_worker,
         )
         self._sessions[session.id] = session
         self._messages[session.id] = []

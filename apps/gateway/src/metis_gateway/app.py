@@ -17,11 +17,13 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal
 
 import msgspec
 from metis_core.adapters.tool_id_map import ToolIdMap
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
@@ -46,6 +48,7 @@ from metis_gateway.harness import (
     UpstreamProviderError,
     make_disconnect_probe,
 )
+from metis_gateway.middleware_versioning import VersioningMiddleware
 from metis_gateway.quotas import (
     QuotaExceeded,
     RequestQuotaCache,
@@ -95,6 +98,7 @@ def build_app(runtime: GatewayRuntime) -> Starlette:
     app = Starlette(
         routes=routes,
         exception_handlers={Exception: _err_handler},
+        middleware=[Middleware(VersioningMiddleware)],
     )
     app.state.app_state = state
     return app
@@ -129,6 +133,13 @@ async def chat_completions(request: Request) -> Response:
             status=401,
             type_="invalid_request_error",
             code="invalid_api_key",
+        )
+    now = datetime.now(UTC)
+    if not key.is_active(now=now):
+        return _key_revoked_response(
+            key_id=key.key_id,
+            revoked_at=key.effective_revoked_at(now=now),
+            shape="openai",
         )
 
     identity = identity_from_key(key)
@@ -321,6 +332,13 @@ async def messages(request: Request) -> Response:
     if key is None:
         return _anthropic_error(
             "invalid or missing API key", status=401, type_="authentication_error"
+        )
+    now = datetime.now(UTC)
+    if not key.is_active(now=now):
+        return _key_revoked_response(
+            key_id=key.key_id,
+            revoked_at=key.effective_revoked_at(now=now),
+            shape="anthropic",
         )
 
     identity = identity_from_key(key)
@@ -643,6 +661,38 @@ def _team_budget_remaining(quota_cache: RequestQuotaCache | None, key) -> Decima
         cap_usd=key.monthly_cap_usd,
     )
     return status.remaining_usd()
+
+
+def _key_revoked_response(
+    *,
+    key_id: str,
+    revoked_at: datetime | None,
+    shape: Literal["openai", "anthropic"],
+) -> Response:
+    """Render the documented 401 body for a revoked-or-grace-expired key.
+
+    Body shape (gateway.md §11):
+
+        {"error": {"code": "key_revoked", "key_id": "...", "revoked_at": "..."}}
+
+    The same shape is returned for both inbound translators (OpenAI +
+    Anthropic clients see identical bodies) so the buyer's runbook is one
+    diagnostic instead of two. The shape-specific `type` discriminator is
+    set to keep the envelope parseable by each SDK's error parser.
+    """
+    body: dict = {
+        "error": {
+            "code": "key_revoked",
+            "key_id": key_id,
+            "revoked_at": revoked_at.astimezone(UTC).isoformat() if revoked_at else None,
+            "message": f"gateway key {key_id} has been revoked",
+        }
+    }
+    if shape == "openai":
+        body["error"]["type"] = "invalid_request_error"
+    else:
+        body["error"]["type"] = "authentication_error"
+    return _json(body, status=401)
 
 
 def _quota_exceeded_response(verdict: QuotaExceeded, *, shape: str) -> Response:

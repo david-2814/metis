@@ -42,6 +42,16 @@ class ToolContext:
     # Event bus reference for tools that emit their own catalog events
     # (e.g., skill_load emits skill.loaded). Optional — tools must handle None.
     bus: Any = None  # EventBus — Any to avoid the import dependency direction
+    # Worker-spawn hook used by the `delegate()` builtin (delegation.md §6.1).
+    # `None` means delegation is unavailable for this call — the tool refuses
+    # with a clear error. The session manager passes itself in via dispatch
+    # kwargs when delegation is wired.
+    worker_spawner: Any = None  # WorkerSpawner protocol
+    # True when the call originated inside a worker session
+    # (delegation.md §5.6, §13). Tools use this to (a) refuse mutations to
+    # durable state (memory, skills) defensively and (b) ensure confirmation
+    # handlers treat "always" answers as one-time approvals.
+    is_worker: bool = False
 
 
 @dataclass

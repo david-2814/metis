@@ -329,17 +329,144 @@ These are *not* features of the v1 gateway and not part of this spec's contract:
 
 ---
 
-## 11. Follow-ons (next-up after v1)
+## 11. Key lifecycle (Wave 10)
+
+v1.0 issued keys but had no online revocation or rotation — the
+operator's only options were "delete the JSON entry and restart" or
+"leave a leaked key alive." Wave 10 lands three online operations on
+top of the existing keystore. All three are atomic writes
+(write-temp-then-rename), all three emit pseudonymous audit events,
+and all three are loopback-only CLI operations — there is no
+HTTP-level admin surface (operators reach the keystore through the
+same shell that ran `issue-key`).
+
+### 11.1 Keystore fields
+
+`GatewayKey` gains three lifecycle fields on top of the v1 record:
+
+| Field | Type | Notes |
+|---|---|---|
+| `status` | `Literal["active", "revoked"]` (default `"active"`) | Missing on pre-Wave-10 records — the loader fills `"active"`. A revoked key is still loaded into the keystore so auth can return the documented `key_revoked` body with the stable `key_id`. |
+| `revoked_at` | `datetime \| None` | Set when `status="revoked"`. UTC, ISO-8601 in the JSON file. Required when `status="revoked"` — the loader rejects a revoked record without a timestamp. |
+| `grace_period_until` | `datetime \| None` | Set by `rotate-key` on the predecessor. While the key is `active` and `now < grace_period_until`, auth accepts it; past that boundary `is_active` returns False (auth read-only — the next admin sweep persists the transition). |
+
+A `created_at` ISO-8601 timestamp is now stamped on every new record so
+`list-keys` can sort + display issuance order. Pre-Wave-10 records read
+back with `created_at=None`, which `list-keys` renders as `-`.
+
+### 11.2 `metis gateway revoke-key <key_id>`
+
+Marks the key revoked. Idempotent against an already-revoked key
+(returns the existing `revoked_at`; emits no second audit event).
+Subsequent gateway requests authenticating with that key return:
+
+```http
+HTTP/1.1 401 Unauthorized
+Content-Type: application/json
+
+{
+  "error": {
+    "code": "key_revoked",
+    "key_id": "gk_01HXYZ...",
+    "revoked_at": "2026-05-15T14:22:10+00:00",
+    "type": "invalid_request_error"  | "authentication_error",
+    "message": "gateway key gk_01HXYZ... has been revoked"
+  }
+}
+```
+
+`type` carries the shape-specific discriminator (OpenAI vs Anthropic)
+so each SDK's error parser still recognizes the envelope; the body is
+otherwise identical between inbound shapes.
+
+### 11.3 `metis gateway rotate-key <key_id> [--grace-period <duration>]`
+
+Mints a successor key that inherits the predecessor's metadata
+(`workspace_path`, `user_id`, `team_id`, `allowed_models`,
+`daily_cap_usd`, `monthly_cap_usd`) and stamps `grace_period_until` on
+the predecessor. Default grace period: 24 hours.
+
+During the grace window, both predecessor and successor authenticate;
+`llm.call_completed` / `turn.completed` events stamp the
+`gateway_key_id` actually used so operators see the migration land in
+`/analytics/by_key`. Past the boundary, the predecessor reads as
+revoked at auth time (`is_active(now=...)` returns False) and the next
+admin sweep — any subsequent admin op against the keystore, or an
+explicit `sweep_expired_grace_periods()` call — persists the
+`active → revoked` transition and emits a paired `gateway.key_revoked`
+with `reason="grace_period_expired"`.
+
+The new plaintext token is printed once and is recoverable only from
+the client team's secrets broker after that — the keystore only
+persists the SHA-256 hash, same as `issue-key`.
+
+`--grace-period` accepts forms like `30m`, `24h`, `7d`, `2w`. Zero or
+negative durations are rejected (use `revoke-key` for an immediate
+cutoff with no successor).
+
+### 11.4 `metis gateway list-keys [--format text|json]`
+
+Returns every key in the keystore — including revoked ones — with
+status, identity, caps, and timestamps. `status` is the on-disk value;
+`effective_status` applies the same `is_active` rule the auth path
+uses, so an active key whose grace window has lapsed reads as
+`revoked` even before the next sweep persists the transition.
+
+The JSON output is the keystore admin contract for buyer tooling
+(SOX-style "list every credential and when it was issued / revoked");
+the text output is the terminal-friendly summary. Both are
+non-mutating — `list-keys` never writes to the keystore.
+
+### 11.5 Audit events
+
+Three new event types in the catalog (`pseudonymous` floor; see
+`event-bus-and-trace-catalog.md §6.13`):
+
+- `gateway.key_issued` — emitted by `metis gateway issue-key` after the
+  keystore write succeeds. Carries the resolved `(gateway_key_id, name,
+  workspace_path, user_id, team_id, allowed_models, daily_cap_usd,
+  monthly_cap_usd, issued_at)` so dashboards can correlate cost rows
+  back to issuance.
+- `gateway.key_revoked` — emitted on explicit `revoke-key` (with
+  `reason="admin_revoke"`) or on grace-period sweep
+  (`reason="grace_period_expired"`). The `reason` enum is the third
+  value `"rotated"` (reserved for a future "fail-fast revoke on
+  rotate" variant; not emitted in v1).
+- `gateway.key_rotated` — emitted by `rotate-key`. Carries both
+  `old_gateway_key_id` and `new_gateway_key_id` so the trace traces the
+  migration; also stamps the inherited `workspace_path`, `user_id`,
+  and `team_id` for the dashboard's per-identity rollup.
+
+Audit emission is best-effort — failures don't abort the keystore
+mutation. The keystore file is the source of truth; the audit event
+is a follow-on for operators.
+
+### 11.6 Non-goals (still)
+
+1. **HTTP admin surface.** All key-lifecycle ops are CLI-only — there
+   is no `POST /admin/keys/revoke` endpoint. Adding one requires the
+   production-bind hardening (auth/rate-limiting/audit) listed in §12
+   below.
+2. **Per-key TTL.** No automatic expiration based on age. Operators
+   that want scheduled rotation run `rotate-key` from cron.
+3. **Soft-delete history.** `revoke-key` overwrites the in-memory key
+   to `status="revoked"`; if you need a longer audit trail than the
+   trace-DB events provide, snapshot the keystore before each ops
+   action.
+
+---
+
+## 12. Follow-ons (next-up after Wave 10)
 
 1. **Multi-user / team-level rollups.** v1 stamps `gateway_key_id` per call; teams of keys, multi-workspace per key, and tenant aggregation are Phase 3 follow-on. Requires both a keystore schema change (group/team membership) and an analytics rollup dimension (`group_by=team` or a `team_id` filter).
-2. **Production-bind hardening.** Audit logging (who called what when), per-key rate limiting, and CIDR allowlists are the gating items before the gateway can default to a non-loopback bind.
+2. **Production-bind hardening.** Audit logging (who called what when — partially landed via `gateway.key_*` events in §11), per-key rate limiting, and CIDR allowlists are the gating items before the gateway can default to a non-loopback bind.
 3. **`--ignore-inbound-model` flag** (§5.3 open question). Lets routing fall through to rule / workspace / global slots even when the client's `model` is set, opting into transparent cost-optimization mode.
 4. **`/v1/models` listing.** OpenAI clients expect this surface; deferred until a Cursor or Continue user asks.
 5. **Typed `gateway_key_id` / `inbound_shape` on `TurnCompleted`.** Currently dict-envelope-stamped; promoting them to typed fields keeps the catalog discipline (`event-bus-and-trace-catalog.md`) honest.
 
 ---
 
-## 12. References
+## 13. References
 
 - [`canonical-message-format.md`](canonical-message-format.md) — `Message`, `ContentBlock`, persistence schema.
 - [`provider-adapter-contract.md`](provider-adapter-contract.md) — adapter interface, retry, error classes.

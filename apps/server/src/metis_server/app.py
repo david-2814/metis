@@ -39,6 +39,7 @@ from metis_core.sessions.manager import UnknownAliasError
 from metis_core.tools.confirmation import ConfirmationDecision
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.routing import Mount, Route, WebSocketRoute
@@ -60,6 +61,7 @@ from metis_server.errors import (
     workspace_not_found,
 )
 from metis_server.hub import StreamingHub
+from metis_server.middleware_versioning import VersioningMiddleware
 from metis_server.streaming import StreamingConnection
 from metis_server.tokens import AttachTokenRegistry
 from metis_server.turns import TurnExecutor
@@ -170,6 +172,7 @@ def build_app(runtime: ChatRuntime) -> Starlette:
     app = Starlette(
         routes=routes,
         exception_handlers={Exception: _err_handler, APIError: _err_handler},
+        middleware=[Middleware(VersioningMiddleware)],
     )
     app.state.app_state = state
     return app

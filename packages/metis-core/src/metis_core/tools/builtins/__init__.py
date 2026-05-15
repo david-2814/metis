@@ -1,5 +1,6 @@
 """Phase 1 built-in tools."""
 
+from metis_core.tools.builtins.delegate import DelegateTool
 from metis_core.tools.builtins.file_ops import (
     ListDirTool,
     PatchFileTool,
@@ -9,6 +10,7 @@ from metis_core.tools.builtins.file_ops import (
 from metis_core.tools.builtins.shell import ShellTool
 
 __all__ = [
+    "DelegateTool",
     "ListDirTool",
     "PatchFileTool",
     "ReadFileTool",
@@ -17,10 +19,19 @@ __all__ = [
 ]
 
 
-def register_builtins(dispatcher) -> None:
-    """Convenience: register all v1 built-ins on a dispatcher."""
+def register_builtins(dispatcher, *, with_delegate: bool = True) -> None:
+    """Convenience: register all v1 built-ins on a dispatcher.
+
+    `with_delegate` lets callers opt out of registering the `delegate` tool
+    on dispatchers that will never run a planner — e.g. test dispatchers
+    that drive the worker side directly. Per-session visibility is still
+    enforced by the session manager's tool filter (delegation.md §5.6);
+    `with_delegate=False` is the broader knob for dispatcher-wide opt-out.
+    """
     dispatcher.register(ReadFileTool)
     dispatcher.register(WriteFileTool)
     dispatcher.register(PatchFileTool)
     dispatcher.register(ListDirTool)
     dispatcher.register(ShellTool)
+    if with_delegate:
+        dispatcher.register(DelegateTool)

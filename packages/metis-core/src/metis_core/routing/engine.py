@@ -224,7 +224,8 @@ class RoutingEngine:
             self._evaluate_pattern(ctx, workspace_scope),
             _Candidate(
                 policy="delegate_request",
-                model=None,
+                model=ctx.worker_tier_model,
+                reason_when_applicable="delegate() tier resolution",
                 reason_when_not_applicable="not a delegation re-entry",
             ),
             _Candidate(
@@ -254,6 +255,16 @@ class RoutingEngine:
         - No `fingerprint_inputs_builder` is available.
         - `recommend()` returns `chosen_model=None`.
         """
+        # Delegation re-entry: pattern defers to the planner's explicit
+        # `tier=` choice (delegation.md §11). The slot still appears in the
+        # chain for trace uniformity; the reason names the deferral so the
+        # dashboard can render the disagreement.
+        if ctx.worker_tier_model is not None:
+            return _Candidate(
+                policy="pattern",
+                model=None,
+                reason_when_not_applicable="delegate_request_in_flight",
+            )
         if self._pattern_store_resolver is None:
             return _Candidate(
                 policy="pattern",

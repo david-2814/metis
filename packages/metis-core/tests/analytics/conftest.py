@@ -129,6 +129,7 @@ class DBSeeder:
         inbound_shape: str | None = None,
         user_id: str | None = None,
         team_id: str | None = None,
+        parent_session_id: str | None = None,
     ) -> str:
         payload: dict = {
             "model": model,
@@ -152,6 +153,8 @@ class DBSeeder:
             payload["user_id"] = user_id
         if team_id is not None:
             payload["team_id"] = team_id
+        if parent_session_id is not None:
+            payload["parent_session_id"] = parent_session_id
         return self.insert_event(
             event_type="llm.call_completed",
             timestamp=timestamp,
