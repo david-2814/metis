@@ -39,6 +39,11 @@ class ConfirmationRequest:
     input_summary: str
     projected_modifications: list[str] | None = None
     command_summary: str | None = None
+    # True when the call originated inside a worker session (delegation.md
+    # §13). Handlers should treat an "always" answer as one-time approval —
+    # not persist it to `trust.yaml` — because the user is approving the
+    # worker's specific sub-task, not a workspace-wide policy change.
+    is_worker: bool = False
 
 
 @dataclass

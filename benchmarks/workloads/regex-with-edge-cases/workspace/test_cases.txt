@@ -1,0 +1,23 @@
+# NANP (US/Canada) phone-number test fixtures.
+# Lines starting with `YES ` must MATCH the regex via re.fullmatch.
+# Lines starting with `NO  ` must NOT match.
+# Lines starting with `#` are comments. Blank lines are ignored.
+# Don't reorder, edit, or remove cases - the runner depends on the line ordering.
+
+YES 415-555-0123
+YES (415) 555-0123
+YES (415)555-0123
+YES 415.555.0123
+YES 4155550123
+YES +1-415-555-0123
+YES +1 (415) 555-0123
+YES +1 415 555 0123
+
+NO  41-555-0123
+NO  415-55-0123
+NO  415-555-012
+NO  415-555-01234
+NO  415--555-0123
+NO  abcd-efg-hijk
+NO  (415 555-0123
+NO  +2 415 555 0123

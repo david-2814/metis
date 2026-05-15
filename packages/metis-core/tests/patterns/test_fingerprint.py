@@ -124,3 +124,37 @@ def test_derive_fingerprint_inputs_splits_paths_and_extensions() -> None:
     assert inputs.file_path_buckets == ("docs", "src", "tests")
     assert inputs.tool_names == ("edit_file", "read_file")
     assert inputs.side_effect_classes == ("read", "write")
+
+
+def test_workload_id_defaults_to_none() -> None:
+    """Back-compat: callers that don't set workload_id get None throughout."""
+    inputs = _inputs()
+    assert inputs.workload_id is None
+    features = build_structural_features(inputs)
+    assert features.workload_id is None
+
+
+def test_workload_id_flows_through_inputs_to_features() -> None:
+    inputs = _inputs(workload_id="fix-a-bug-small")
+    features = build_structural_features(inputs)
+    assert features.workload_id == "fix-a-bug-small"
+
+
+def test_structural_signature_differs_on_workload_id_change() -> None:
+    """Setting workload_id changes the dedup key — same-shape turns from
+    different workloads do not collapse into one row."""
+    a = build_structural_features(_inputs(workload_id="A"))
+    b = build_structural_features(_inputs(workload_id="B"))
+    assert structural_signature(a) != structural_signature(b)
+
+
+def test_derive_fingerprint_inputs_forwards_workload_id() -> None:
+    inputs = derive_fingerprint_inputs(
+        user_message_text="hi",
+        workspace_path="/tmp/ws",
+        estimated_input_tokens=100,
+        has_images=False,
+        has_tool_calls_in_history=False,
+        workload_id="regex-with-edge-cases",
+    )
+    assert inputs.workload_id == "regex-with-edge-cases"

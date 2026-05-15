@@ -176,6 +176,62 @@ def test_recommend_returns_none_under_sample_size(store: PatternStore) -> None:
     assert rec.chosen_model is None
 
 
+def test_recommend_a3_rev2_unblock_min_confidence_default_05_fires_slot4(
+    store: PatternStore,
+) -> None:
+    """§A3-rev2 finding (benchmarks/RESULTS.md): on `write-a-doc-from-notes`
+    Pass C turn 2, the K-NN aggregated `sonnet=0.900` ahead of `haiku=0.842`
+    — the first cluster-level inversion in any A3 series. The cluster
+    confidence is `(0.900 - 0.842) / 0.900 ≈ 0.064`, which fell below the
+    legacy `min_confidence=0.3` gate, so slot 4 emitted `not_applicable`
+    on all 18 Pass C turns and slot 7 (`global_default`) won every time.
+
+    The Wave 9 unblock (this test) lowers `PatternConfig.min_confidence`
+    from `0.3` → `0.05` so the gate scales down with the prior
+    `cost_weight 0.3 → 0.1` migration. The two knobs are coupled:
+    confidence is a ratio, and under `cost_weight=0.1` the same
+    tied-quality clusters produce ~0.10 confidence vs ~0.35 under the
+    legacy `cost_weight=0.3` regime.
+
+    Test setup: a single fingerprint with 5 haiku samples scoring 0.842
+    and 5 sonnet samples scoring 0.900, equal costs so the
+    cost-efficiency term is zero for both. With `cost_weight=0.0` (chosen
+    here for transparent algebra; equal-cost neighbors at any
+    `cost_weight` yield the same confidence ratio) the per-model scores
+    are exactly the §A3-rev2 published values.
+
+    Assert: at `min_confidence=0.3` slot 4 gates off (legacy behavior);
+    at `min_confidence=0.05` (the new default) slot 4 picks sonnet.
+    """
+    fp = compute_fingerprint(_inputs())
+    for _ in range(5):
+        store.record(fp, "anthropic:haiku", 0.842, Decimal("0.01"), 1000.0, "v1")
+    for _ in range(5):
+        store.record(fp, "anthropic:sonnet", 0.900, Decimal("0.01"), 1000.0, "v1")
+
+    # Sanity-check the cluster numerics match the §A3-rev2 published values.
+    rec_legacy = store.recommend(fp, cost_weight=0.0, min_confidence=0.3, min_sample_size=5)
+    sonnet_alt = next(a for a in rec_legacy.alternatives if a.model == "anthropic:sonnet")
+    haiku_alt = next(a for a in rec_legacy.alternatives if a.model == "anthropic:haiku")
+    assert sonnet_alt.score == pytest.approx(0.900)
+    assert haiku_alt.score == pytest.approx(0.842)
+    assert rec_legacy.confidence == pytest.approx((0.900 - 0.842) / 0.900)
+
+    # Headline: legacy `min_confidence=0.3` gates slot 4 off on this cluster.
+    assert rec_legacy.chosen_model is None
+    # Alternatives still surface so the routing engine can render them.
+    assert len(rec_legacy.alternatives) == 2
+
+    # Headline: new default `min_confidence=0.05` lets slot 4 fire and
+    # invert the ranking — sonnet wins, which is the cluster-level signal
+    # the §A3-rev2 unblock chain (workload-tag + cost_weight=0.1 +
+    # grounding-check) produced for the first time.
+    rec_new = store.recommend(fp, cost_weight=0.0, min_confidence=0.05, min_sample_size=5)
+    assert rec_new.chosen_model == "anthropic:sonnet"
+    assert rec_new.confidence == pytest.approx((0.900 - 0.842) / 0.900)
+    assert rec_new.sample_size == 5
+
+
 def test_soft_cap_signal_without_eviction() -> None:
     # Build a store with tight caps so we cross soft cap quickly.
     caps = PatternCaps(soft_cap_rows=2, hard_cap_rows=10, max_age_days=180)

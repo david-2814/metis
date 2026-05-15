@@ -1,48 +1,49 @@
-# Gateway Specification (Skeleton)
+# Gateway Specification
 
-**Status:** Draft v0 — skeleton, paired with [`deployment-shape.md`](deployment-shape.md). Endpoints and translation rules listed; field-level schema and error codes deferred until the deployment-shape recommendation is signed off.
-**Last updated:** 2026-05-13
+**Status:** v1 — shipped. Captures the OpenAI- and Anthropic-shape inbound surface in `apps/gateway/`, live-smoked end-to-end on 2026-05-14 at ~$0.0002 / 4 calls.
+**Last updated:** 2026-05-14
 
-> The HTTP gateway is the transparent-proxy surface from [`deployment-shape.md §1`](deployment-shape.md). It accepts OpenAI-shape (and optionally Anthropic-shape) requests from external agent clients (Claude Code, Cursor, Codex, Continue, custom apps), routes via the existing engine, calls the existing adapters, and returns provider-shape responses — losslessly preserving Anthropic-native blocks where possible.
+> The HTTP gateway is the transparent-proxy surface from [`deployment-shape.md §1`](deployment-shape.md). It accepts OpenAI- or Anthropic-shape requests from external clients (Claude Code, Cursor, Codex, Continue, custom apps), routes via the existing engine, calls the existing adapters, and returns provider-shape responses — losslessly preserving Anthropic-native blocks where possible.
 >
 > This spec depends on:
 >
 > - [`canonical-message-format.md`](canonical-message-format.md) — `Message`, `ContentBlock` variants, `ToolDefinition`.
 > - [`provider-adapter-contract.md`](provider-adapter-contract.md) — `CanonicalRequest`, `CanonicalResponse`, streaming events, error classes.
-> - [`routing-engine.md`](routing-engine.md) — the 7-slot chain. The gateway path exercises primarily `configured_rules`, `workspace_default`, and `global_default`.
-> - [`server-api.md`](server-api.md) — the gateway is a *sibling* HTTP app, not an extension of `metis serve`. Loopback-only does not apply (see §3.2).
-> - [`event-bus-and-trace-catalog.md`](event-bus-and-trace-catalog.md) — gateway calls emit the same `llm.call_*` and `route.decided` events as agent calls.
+> - [`routing-engine.md`](routing-engine.md) — the 7-slot chain.
+> - [`server-api.md`](server-api.md) — the gateway is a *sibling* HTTP app, not an extension of `metis serve`.
+> - [`event-bus-and-trace-catalog.md`](event-bus-and-trace-catalog.md) — gateway calls emit the same `llm.call_*` / `route.decided` / `turn.completed` events as agent calls, with two additive payload fields (`gateway_key_id`, `inbound_shape`).
+> - [`analytics-api.md`](analytics-api.md) — `/analytics/cost?group_by=gateway_key` and `/analytics/by_key` consume the additive fields above.
 
 ---
 
 ## 1. Purpose
 
-Give the buyer a way to get Metis's model-selection + cost-attribution + lossless-canonical-IR value without making their devs switch tools. Devs keep using whatever client they already use (typically Claude Code or Cursor); operations flips one env var (`OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`) and adds a Metis-issued API key. Every LLM call now flows through Metis, gets routed, gets cost-attributed, and writes a trace.
+Give the buyer Metis's model-selection + cost-attribution + lossless-canonical-IR value without making their devs switch tools. Devs keep using whatever client they already use (typically Claude Code or Cursor); operations flips one env var (`OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`) and adds a Metis-issued API key. Every LLM call now flows through Metis, gets routed, gets cost-attributed, and writes a trace.
 
-The gateway is a per-request stateless harness: routing decision + adapter call + response translation + cost stamping. **The agent loop stays in the client.** Multi-turn tool use happens through the client re-submitting follow-up requests with `tool_result` blocks; the gateway is stateless across requests within the same agent loop.
+The gateway is a **per-request stateless harness**: routing decision + adapter call + response translation + cost stamping. **The agent loop stays in the client.** Multi-turn tool use happens through the client re-submitting follow-up requests with `tool_result` blocks; the gateway is stateless across requests within the same agent loop.
 
 ---
 
 ## 2. Scope
 
-### 2.1 In scope
+### 2.1 In scope (shipped)
 
 1. **OpenAI-shape inbound** (`POST /v1/chat/completions`, sync + SSE streaming). The universal contract.
 2. **Anthropic-shape inbound** (`POST /v1/messages`, sync + SSE streaming) — closer to canonical IR; smaller translation gap; required to keep Claude Code clients native.
 3. **Provider-native outbound** via the existing adapter set (Anthropic, OpenAI, OpenRouter). Adapters are unchanged.
-4. **Routing per request** via the existing `RoutingEngine`. Override hints (model alias, provider hint) accepted in the inbound request body (see §5.3).
-5. **Cost attribution per API key.** Each inbound request authenticates a gateway key; `llm.call_completed` events are stamped with `gateway_key_id` so [`analytics-api.md`](analytics-api.md) can roll up cost by team/key.
-6. **Trace events.** Same catalog as the agent path. Gateway-specific dimensions (`gateway_key_id`, inbound shape, requested model alias) are added as optional payload fields, not new event types.
+4. **Routing per request** via the existing `RoutingEngine`. The inbound `model` field is interpreted as a per-message override (§5.3).
+5. **Cost attribution per gateway key.** Each inbound request authenticates a key; `llm.call_completed` events are stamped with `gateway_key_id` so the [`analytics-api.md`](analytics-api.md) rollups can split cost by key.
+6. **Trace events.** Same catalog as the agent path. Two additive payload fields (`gateway_key_id`, `inbound_shape`) carry the gateway-specific dimensions (§6).
 7. **Lossless block round-trip** for the cases the existing canonical IR already handles: Anthropic `thinking`, `cache_control`, `tool_use`, `tool_result`, citations.
 
 ### 2.2 Out of scope (explicit non-features)
 
-These are the bright lines that separate the gateway from the replacement agent. The gateway must not assume them, and must not be extended to add them — those features belong in the agent.
+These are the bright lines that separate the gateway from the replacement agent. The gateway does not assume them, and must not be extended to add them — those features belong in the agent.
 
 1. **No context shaping.** The gateway forwards the prompt envelope as the client supplied it. It does not inject system instructions, trim history, or compress turns. The client's agent loop owns context.
 2. **No skill loading.** Skills are an in-loop concept (description-match → activation → script execution). A stateless gateway cannot meaningfully load a skill into someone else's agent; attempting to inject SKILL.md content would corrupt the client's prompt cache and break the client's tool contract.
-3. **No memory composition.** `MEMORY.md` / `USER.md` are agent-loop artifacts. The gateway is workspace-agnostic; there is no `.metis/` directory tied to a request.
-4. **No tool execution.** The gateway never runs a tool. It passes `tool_use` blocks back to the client (which executes the tool); the client re-submits a follow-up request with the `tool_result`.
+3. **No memory composition.** `MEMORY.md` / `USER.md` are agent-loop artifacts. The gateway is workspace-aware (a key is scoped to one workspace per §3.3) but doesn't read or write the workspace's `.metis/` files.
+4. **No tool execution.** The gateway never runs a tool. It passes `tool_use` blocks back to the client; the client executes the tool and re-submits a follow-up request with the `tool_result`.
 5. **No pattern learning that shapes context.** Pattern store may *observe* gateway traffic (cost / model-selection signal), but it must not inject learned context into the request. Future learned-routing decisions can land in the routing chain; learned *context* cannot.
 6. **No agent loop.** The gateway never makes the next LLM call on its own. Every call is in response to a client-initiated HTTP request.
 
@@ -58,22 +59,38 @@ These non-features are load-bearing for the [`deployment-shape.md`](deployment-s
 |---|---|---|---|
 | `/v1/chat/completions` | POST | OpenAI | Standard chat completion; supports `stream: true` (SSE). |
 | `/v1/messages` | POST | Anthropic | Anthropic Messages API; supports `stream: true` (SSE). |
-| `/v1/models` | GET | OpenAI | Lists models routable from this gateway key (intersection of registry + per-key allowlist). |
 | `/healthz` | GET | — | Liveness; no auth. |
 
-Deferred to v1.1+: `/v1/embeddings`, `/v1/completions` (legacy), tool-confirmation REST surface (depends on [`server-api.md`](server-api.md) progress), batch APIs, file uploads.
+Deferred to v1.1+: `/v1/models` (OpenAI-shape model list), `/v1/embeddings`, `/v1/completions` (legacy), tool-confirmation REST surface, batch APIs, file uploads.
 
 ### 3.2 Network posture
 
-Unlike `metis serve` ([`server-api.md §3.1`](server-api.md)), the gateway is **not** loopback-only. Its job is to sit in front of provider API keys for an organization. Default bind: `0.0.0.0:8422`. Operators are expected to put it behind their own TLS terminator (reverse proxy or load balancer) and restrict ingress to their own network. The gateway speaks HTTP/1.1 + HTTP/2 (uvicorn defaults); TLS is not v1's responsibility.
+The gateway is `loopback-only by default in v1`, matching `metis serve`'s safety posture ([`server-api.md §3.1`](server-api.md)). `run_gateway()` silently rewrites any non-loopback bind to `127.0.0.1` until production-bind hardening lands (auth/rate limiting/audit; gateway.md §11). Operators who want the gateway in front of a TLS terminator on a real network must wait for that follow-on or run it themselves on top of the in-process Starlette app.
 
-This is a different security posture from `metis serve` and is one reason the gateway lives in `apps/gateway/` rather than as an extension of `apps/server/`.
+This decision reverses the original draft's "default `0.0.0.0`" plan. The reason for the change: until per-key rate limits and audit logging exist, exposing the gateway on a real network gives an attacker with one leaked key a wide blast radius (unbounded model spend on the operator's provider account, plus unmetered prompt exfiltration). Loopback is a conservative starting point; the surface can be widened deliberately.
 
 ### 3.3 Authentication
 
-Each inbound request carries an `Authorization: Bearer <gateway_key>` header (OpenAI clients) or `x-api-key: <gateway_key>` (Anthropic clients). Keys are issued by the operator out-of-band (CLI subcommand `metis gateway issue-key --name ...`) and stored in a new `gateway_keys` SQLite table. A key carries: id, hashed secret, display name, created-at, optional model allowlist, optional daily-spend cap. No auth ⇒ 401.
+Each inbound request carries a gateway-issued bearer token:
 
-The `gateway_key_id` is recorded on every outbound `llm.call_completed` event so analytics can roll up by key. No PII flows into the key record.
+- **OpenAI clients:** `Authorization: Bearer gw_<ulid>` (the standard OpenAI header).
+- **Anthropic clients:** `x-api-key: gw_<ulid>` (the standard Anthropic header). The handler also accepts `Authorization: Bearer ...` as a fallback so generic SDKs can hit `/v1/messages` without special-casing the auth header.
+
+Tokens are issued out-of-band via `metis gateway issue-key --name "<display>" --workspace "<path>" [--allow-models ...] [--daily-cap-usd ...] [--user <id>] [--team <id>]`. The plaintext is printed once; only the SHA-256 hex digest is persisted in the keystore (`~/.metis/gateway/keys.json` by default, mode `0o600`). The keystore records:
+
+| Field | Source | Notes |
+|---|---|---|
+| `key_id` | `gk_<ulid>` minted at issuance | Stable analytics identifier; stamped on every trace event. |
+| `secret_hash` | SHA-256(token) | The plaintext token is never stored or recoverable. |
+| `name` | `--name` | Display label. |
+| `workspace_path` | `--workspace` | Exactly one workspace per key in v1 (§11). |
+| `allowed_models` | `--allow-models` (optional) | Tuple of canonical model ids; non-conforming routing falls through. |
+| `daily_cap_usd` | `--daily-cap-usd` (optional) | Per-key daily spend cap. `Decimal`, must be > 0. Hard breaker (§6.4); soft alerts at 80% / 95%. |
+| `monthly_cap_usd` | `--monthly-cap-usd` (optional) | Per-key calendar-month spend cap (UTC). Same enforcement model as `daily_cap_usd`. |
+| `user_id` | `--user` (optional) | Stable per-developer identity tag (see [`multi-user.md §4.2`](multi-user.md)). `^[a-z0-9_-]+$`. Existing keys with `None` keep working. |
+| `team_id` | `--team` (optional) | Stable team identity tag ([`multi-user.md §4.2`](multi-user.md)). `^[a-z0-9_-]+$`. |
+
+Authentication: the handler hashes the inbound token, looks it up in the keystore, and returns 401 on miss. The handler then projects the resolved key onto a request-scoped `Identity` (`gateway_key_id`, `workspace_path`, `user_id`, `team_id` — multi-user.md §3.2 calls this the `Principal`); the harness reads only the `Identity`, never the raw `GatewayKey` for stamping. The `gateway_key_id`, `user_id`, and `team_id` are recorded on every outbound `llm.call_completed` and `turn.completed` event so [`analytics-api.md §4.8`](analytics-api.md) (and `/analytics/by_team`) can roll up cost by key / user / team. No PII flows into the key record — `users.json` carries plaintext (multi-user.md §3.3) and is a separate file; the keystore only references identity tags by id.
 
 ### 3.4 Compatibility with existing clients
 
@@ -86,15 +103,17 @@ The `gateway_key_id` is recorded on every outbound `llm.call_completed` event so
 | OpenCode / Cline / Continue / Goose | OpenAI-compat or per-provider | Configurable; flip the API base. |
 | Custom internal app | Either | Same. |
 
-The compatibility test for v1 is "Claude Code → gateway → Anthropic API end-to-end, including tool use, thinking blocks across retries, and prompt caching." That's the workload that proves the lossless-IR claim is real, not aspirational.
+The compatibility bar for v1 is "Claude Code → gateway → Anthropic API end-to-end, including tool use, thinking blocks, and prompt caching." The Wave-5 smoke (`scripts/smoke_*`) exercises that workload.
 
 ---
 
 ## 4. Request translation rules
 
-This section is **the load-bearing fidelity contract**. It is the difference between Metis as a gateway and LiteLLM as a gateway. Every rule below corresponds to a bug we want to *not* have.
+This section is **the load-bearing fidelity contract**. It is the difference between Metis as a gateway and LiteLLM as a gateway. Every rule below corresponds to a bug we explicitly contract against.
 
 ### 4.1 OpenAI-shape inbound → canonical
+
+Implemented in [`translators.py::parse_openai_request`](../../apps/gateway/src/metis_gateway/translators.py).
 
 | OpenAI field | Canonical field | Notes |
 |---|---|---|
@@ -102,59 +121,59 @@ This section is **the load-bearing fidelity contract**. It is the difference bet
 | `messages[].role: "user"` with `content: string` | `Message(role=USER, content=[TextBlock(...)])` | Trivial. |
 | `messages[].role: "user"` with `content: list` (multi-part) | `Message(role=USER, content=[TextBlock or ImageBlock])` | Translate `type: "text"` → `TextBlock`, `type: "image_url"` → `ImageBlock` (URL or base64). |
 | `messages[].role: "assistant"` | `Message(role=ASSISTANT, content=[...])` | If `tool_calls` present, generate one `ToolUseBlock` per call (see §4.3 for id mapping). |
-| `messages[].role: "tool"` with `tool_call_id` and `content` | merged into next `Message(role=USER, content=[ToolResultBlock(...)])` per canonical-format §3.3 | OpenAI sends tool results as `role: "tool"`; canonical merges them into the next user turn as `ToolResultBlock`. Multiple `tool` messages in a row collapse into one user message with multiple `ToolResultBlock`s. |
-| `tools` | `list[ToolDefinition]` | Map `function.parameters` (JSON Schema) to canonical `ToolDefinition.input_schema`. |
-| `tool_choice` | `ToolChoice` (in `CanonicalRequest`) | `"auto"` / `"none"` / `{type: "function", function: {name}}` → canonical equivalents. |
-| `stream: true` | `CanonicalRequest.stream = True` | Drive SSE outbound (§5). |
-| `temperature`, `max_tokens`, `stop` | `CanonicalRequest.temperature`, `max_output_tokens`, `stop_sequences` | Direct. |
-| `response_format: {type: "json_schema", ...}` | `CanonicalRequest.output_schema` | Provider support is gated by `AdapterCapabilities.supports_structured_output`. |
-| Provider-specific extensions in `extra_body` | per §4.4 | Anthropic-native blocks come in via `extra_body` (e.g. OpenRouter's convention) and need careful round-tripping. |
+| `messages[].role: "tool"` with `tool_call_id` and `content` | merged into next `Message(role=USER, content=[ToolResultBlock(...)])` per canonical-format §3.3 | OpenAI sends tool results as `role: "tool"`; canonical merges them into the next user turn as `ToolResultBlock`. Multiple consecutive `tool` messages collapse into one user message with multiple `ToolResultBlock`s. |
+| `tools` | `list[ToolDefinition]` | `function.parameters` (JSON Schema) → `ToolDefinition.input_schema`. |
+| `tool_choice` | `ToolChoice` (in `CanonicalRequest`) | `"auto"` / `"none"` / `{type: "function", function: {name}}` map to canonical equivalents. |
+| `stream: true` | drives SSE outbound (§4.6) | The harness's `stream()` path is wired separately from `call()`. |
+| `temperature`, `max_tokens`, `stop` | `temperature`, `max_output_tokens`, `stop_sequences` | Direct. |
+| `response_format: {type: "json_schema", ...}` | `output_schema` | Provider support is gated by `AdapterCapabilities.supports_structured_output`. |
+| `stream_options.include_usage` | `OpenAIInboundRequest.include_usage` | Threads through `render_openai_sse_stream` so the final chunk includes usage when requested. |
 
 ### 4.2 Anthropic-shape inbound → canonical
 
-This is the simpler direction — canonical IR is Anthropic-shaped at heart. The translator is mostly identity:
+Implemented in [`endpoints/anthropic.py::parse_anthropic_request`](../../apps/gateway/src/metis_gateway/endpoints/anthropic.py). This is the simpler direction — canonical IR is Anthropic-shaped at heart.
 
 | Anthropic field | Canonical field | Notes |
 |---|---|---|
-| `system` (string or list of blocks) | `system_prompt` | Block list flattened to string with `cache_control` markers preserved per canonical-format §4.1. |
+| `system` (string or list of blocks) | `system_prompt` (+ optionally `system_prompt_volatile`) | Block list flattened to string with `cache_control` markers preserved per canonical-format §4.1. The split between stable and volatile segments uses Anthropic's `cache_control` boundary if the client supplied one. |
 | `messages[]` | `Message` (per role) | Direct. |
 | `messages[].content[]` blocks: `text`, `image`, `tool_use`, `tool_result`, `thinking`, `redacted_thinking`, `document` (citations) | `TextBlock`, `ImageBlock`, `ToolUseBlock`, `ToolResultBlock`, `ThinkingBlock`, `RedactedThinkingBlock`, `DocumentBlock` | Lossless 1:1. The canonical IR was designed to be a superset of Anthropic's. |
 | `tools[]` | `list[ToolDefinition]` | Direct (canonical IR uses Anthropic's tool shape). |
 | `tool_choice` | `ToolChoice` | Direct. |
-| `metadata.user_id` | passthrough (not stored without consent) | Drop or hash; do not persist plaintext. |
-| `stream: true` | `CanonicalRequest.stream = True` | SSE matches Anthropic's `event: ...` format outbound. |
+| `metadata.user_id` | dropped | Not persisted in v1. |
+| `stream: true` | drives SSE outbound (§4.6) | SSE matches Anthropic's `event: ...` format. |
 
 ### 4.3 Tool-call id mapping (the LiteLLM #27469 hazard)
 
-Tool-call ids differ across providers (OpenAI uses `call_...`, Anthropic uses `toolu_...`). When the inbound shape and the outbound provider disagree, the gateway uses the existing `ToolIdMap` from [`packages/metis-core/src/metis_core/adapters/tool_id_map.py`](../../packages/metis-core/src/metis_core/adapters/tool_id_map.py) to maintain a per-request bidirectional map.
+Tool-call ids differ across providers (OpenAI uses `call_...`, Anthropic uses `toolu_...`). When the inbound shape and the outbound provider disagree, the handler builds a per-request `ToolIdMap` ([`metis_core.adapters.tool_id_map`](../../packages/metis-core/src/metis_core/adapters/tool_id_map.py)) and round-trips ids through it.
 
-The hazard LiteLLM #27469 documents — `tool_call.function.arguments` lost in OpenAI→Anthropic conversion — is the failure case we explicitly contract against. The translator MUST:
+The hazard LiteLLM #27469 documents — `tool_call.function.arguments` lost in OpenAI→Anthropic conversion — is the failure case the translator explicitly contracts against:
 
-- Treat `function.arguments` (which OpenAI emits as a string, possibly streamed in fragments) as opaque JSON; parse to dict and place in `ToolUseBlock.input`. Never drop the field, even if parsing fails — emit a `block_dropped` log and surface a 400 with the parse error.
-- Preserve id-stability across multi-turn: if the client sent a `tool_call_id: call_abc123` in a prior turn's `role: "tool"` message and the gateway routed that turn to Anthropic (where the tool_use id was `toolu_xyz`), the next turn from the client may reference `call_abc123`; the gateway looks up `toolu_xyz` in the per-request `ToolIdMap` snapshot and translates back. This works only if the *same* gateway key sends the follow-up (no cross-key state).
+- `function.arguments` (which OpenAI emits as a string, possibly streamed in fragments) is treated as opaque JSON; parsed to dict and placed in `ToolUseBlock.input`. Parse failure → 400 `invalid_request_error`.
+- Id-stability is **per-request**, not cross-request. The gateway is stateless across requests; if the client re-submits with a `tool_call_id` from a prior turn, the client owns the round-trip (which is fine: the client also stored the assistant's prior reply, so it sees the same id either side).
 
 ### 4.4 Prompt-caching `cache_control` placement (the LiteLLM #26625 hazard)
 
-Anthropic supports `cache_control: {type: "ephemeral"}` markers on system blocks, message content blocks, and tools. Placement matters: misplaced markers turn into cache misses, which is the cost lever inverted. The canonical IR carries `cache_control` on `TextBlock`, `ToolDefinition`, and (per canonical-format §4.1) system-prompt blocks. When the inbound shape is OpenAI and the outbound provider is Anthropic / Bedrock / Vertex, the translator MUST:
+Anthropic supports `cache_control: {type: "ephemeral"}` markers on system blocks, message content blocks, and tools. Placement matters: misplaced markers turn into cache misses, which is the cost lever inverted. The canonical IR carries `cache_control` on `TextBlock`, `ToolDefinition`, and (per canonical-format §4.1) system-prompt blocks.
 
-- Accept `cache_control` only via `extra_body` on the OpenAI side (it's not in OpenAI's standard schema) — and document this in the gateway README.
-- Place `cache_control` exactly where canonical IR puts it: on the block boundary the client requested, never on a wrapper block the gateway introduced for serialization reasons.
-- When the chosen adapter does not support `cache_control` (per `AdapterCapabilities.supports_prompt_caching`), drop the marker silently. Do not error; the client gave a hint, not a contract.
+The Anthropic-inbound translator preserves `cache_control` markers verbatim because both sides speak the same shape. The OpenAI-inbound translator accepts `cache_control` only via `extra_body` (it's not in OpenAI's standard schema) and places markers exactly where the canonical IR puts them. When the chosen adapter does not support `cache_control` (per `AdapterCapabilities.supports_prompt_caching`), the marker is dropped silently — the client gave a hint, not a contract.
 
-### 4.5 Thinking blocks across retries (the LiteLLM #27512 hazard)
+### 4.5 Thinking blocks across retries (the LiteLLM #27512 / #26916 hazards)
 
-`ThinkingBlock` and `RedactedThinkingBlock` are first-class in the canonical IR. The retry layer in `packages/metis-core/src/metis_core/adapters/retry.py` already preserves them. The gateway's only new responsibility: when the inbound shape is OpenAI (which has no native thinking-block type), translate Anthropic `thinking` blocks in the *outbound* OpenAI-shape response to OpenAI's `reasoning` field (where the OpenAI SDK is configured to surface it) or drop with a log if the client did not opt in via `extra_body.include_thinking: true`. Never collapse `thinking` to `text` (the LiteLLM #26916 hazard).
+`ThinkingBlock` and `RedactedThinkingBlock` are first-class in the canonical IR. The retry layer in [`metis_core.adapters.retry`](../../packages/metis-core/src/metis_core/adapters/retry.py) preserves them across attempts. The gateway never collapses `thinking` to `text` (LiteLLM #26916). When the inbound shape is OpenAI, `thinking` content is dropped from the outbound JSON unless the client opted in via `extra_body.include_thinking: true`; never re-typed.
 
 ### 4.6 Streaming SSE serialization
 
 Outbound SSE format depends on the inbound shape:
 
-- **OpenAI inbound:** `data: {"id": ..., "choices": [{"delta": {...}, "index": 0}], "model": ..., "object": "chat.completion.chunk"}\n\n` followed by `data: [DONE]\n\n`. The hard part is `tool_calls[].function.arguments` deltas — OpenAI streams the arguments JSON as raw text fragments. The translator MUST emit each canonical `ToolUseBlockDelta` as a fragment with `index` matching the position in the OpenAI `tool_calls` array.
-- **Anthropic inbound:** native Anthropic SSE format (`event: message_start`, `event: content_block_start`, etc.) per the existing `adapters/anthropic.py` outbound. Smaller translation gap.
+- **OpenAI inbound:** `data: {"id": ..., "choices": [{"delta": {...}, "index": 0}], "model": ..., "object": "chat.completion.chunk"}\n\n` followed by `data: [DONE]\n\n`. Implemented in [`translators.py::render_openai_sse_stream`](../../apps/gateway/src/metis_gateway/translators.py). The hard part is `tool_calls[].function.arguments` deltas — OpenAI streams the arguments JSON as raw text fragments; the translator emits each canonical `ToolUseInputDelta` as a fragment with `index` matching the position in the OpenAI `tool_calls` array.
+- **Anthropic inbound:** native Anthropic SSE format (`event: message_start`, `event: content_block_start`, etc.). Implemented in [`endpoints/anthropic.py::render_sse_stream`](../../apps/gateway/src/metis_gateway/endpoints/anthropic.py).
+
+The streaming path **primes the first event** before committing to a 200 response, so routing-time failures (`RoutingFailedError`, `ModelNotAllowedError`) surface as JSON error bodies rather than 200 SSE streams. After the first event, errors mid-stream terminate the response without further events (the client sees an early EOF).
 
 ### 4.7 Cancellation
 
-Client disconnect (TCP RST / closed read side) triggers the gateway to cancel the in-flight adapter call (per [`provider-adapter-contract.md §5.4`](provider-adapter-contract.md)). The adapter MUST honor cancellation within the contract's bounded time. Partial token usage up to cancellation is still cost-stamped and traced.
+Client disconnect (TCP RST / closed read side) triggers the harness to cancel the in-flight adapter call (per [`provider-adapter-contract.md §5.4`](provider-adapter-contract.md)). The disconnect probe races the adapter task; on disconnect, the adapter's `cancel()` is invoked and the harness raises `ClientDisconnected`. Partial token usage up to cancellation is still cost-stamped and traced. The HTTP handler returns a 499-style sentinel in case the socket is somehow still open.
 
 ---
 
@@ -162,47 +181,54 @@ Client disconnect (TCP RST / closed read side) triggers the gateway to cancel th
 
 ### 5.1 Which routing slots apply
 
-The 7-slot chain from [`routing-engine.md §4`](routing-engine.md) all exist; not all of them are meaningful in stateless gateway calls.
+The 7-slot chain from [`routing-engine.md §4`](routing-engine.md) all run; not all are meaningful in stateless gateway calls.
 
 | Slot | Meaningful in gateway? | Notes |
 |---|---|---|
-| `per_message_override` | Yes | Client may pass `model: "metis://opus"` or a routing hint in `extra_body` (see §5.3). |
-| `manual_sticky` | No | There is no "session" in the gateway path — each request is independent. The slot reports `not_applicable`. |
-| `configured_rules` | Yes (Phase 2) | The same YAML policy that drives the agent applies here. Buyer rules like "no Opus for marketing key" live here. |
-| `pattern_recommendation` | Future | Pattern store may observe gateway traffic; not yet writing recommendations. |
-| `delegate_request` | No | Delegation is an in-loop primitive. The gateway never delegates. |
-| `workspace_default` | Per-key (Phase 2) | Reinterpreted as "per-gateway-key default" — each `gateway_key` has an optional default model. |
+| `per_message_override` | Yes — and dominant in practice (§5.3). | Client's inbound `model` is interpreted as a per-message override. |
+| `manual_sticky` | No | There is no "session" in the gateway path — each request is independent. Reports `not_applicable`. |
+| `configured_rules` | Yes | The same `~/.metis/routing.yaml` policy that drives the agent applies here. Buyer rules like "no Opus for marketing key" live here. |
+| `pattern_recommendation` | Future | Pattern store may observe gateway traffic; not yet writing recommendations into the gateway chain. |
+| `delegate_request` | No | Delegation is an in-loop primitive. Reports `not_applicable`. |
+| `workspace_default` | Yes | Resolved from `gateway_key.workspace_path` against the policy. |
 | `global_default` | Yes | The deployment's catch-all. |
 
 ### 5.2 Routing per request
 
 Each inbound request constructs a `TurnContext` with:
 
+- `session_id = "gw_<ulid>"`, `turn_id = "gt_<ulid>"` (synthetic per-request ids so the trace events still join).
 - `session_active_model = None` (no sticky state).
-- `workspace_default_model = gateway_key.default_model`.
-- `global_default_model = deployment.global_default`.
-- `per_message_override` derived from the inbound `model` field (see §5.3 for how `model` is interpreted).
-- `policy = deployment_routing_policy` (YAML-driven; the same policy the agent uses).
+- `workspace_default_model = None` (the policy resolves it via `workspaces.{key.workspace_path}.default`).
+- `global_default_model = <runtime config>`.
+- `per_message_override = registry.resolve_alias(parsed.model)`.
+- `policy = routing.policy` (the same policy the agent uses).
 
 The chain runs to completion; one `route.decided` event is emitted per request as usual.
 
 ### 5.3 The inbound `model` field
 
-OpenAI-shape clients send `model: "<string>"` and expect a model identifier they recognize. Three interpretations, in priority order:
+OpenAI- and Anthropic-shape clients send `model: "<string>"` and expect a model identifier they recognize. The gateway treats it as a **per-message override** in three forms, in priority order:
 
-1. **Metis alias** (preferred): `model: "metis://auto"`, `model: "metis://cheap"`, `model: "metis://opus"`. The gateway resolves these via the routing engine. `metis://auto` runs the full chain; the explicit aliases bias the chain.
-2. **Canonical provider:name**: `model: "anthropic:claude-opus-4-7"`. Bypasses routing slots 1–5 and goes straight to that adapter. Used for clients that already know what they want.
-3. **Bare provider name**: `model: "gpt-4o"` or `model: "claude-opus-4-5"`. Treated as a hint the client thinks it's that model; the gateway re-routes per policy. The dashboard records "requested: gpt-4o → routed: ...".
+1. **Metis alias** (preferred): `model: "metis://auto"`, `model: "metis://cheap"`, `model: "metis://opus"`. Resolved by `registry.resolve_alias`.
+2. **Canonical `provider:name`**: `model: "anthropic:claude-opus-4-7"`. Identity-resolves.
+3. **Bare provider name**: `model: "gpt-4o"` or `model: "claude-opus-4-5"`. Resolved if the registry has it as an alias; otherwise the override is treated as "the client's literal name, accepted as a hint" and the chain falls through.
 
-Interpretation (3) is the magic-trick mode: the client says "give me gpt-4o," the policy says "for this key, route to haiku instead because the prompt is small," and the response is shaped as the client expects (OpenAI-shape outbound from a Haiku call). This is the cost-optimization headline.
+**Real-world consequence.** Mainstream OpenAI / Anthropic SDKs always include `model` in the request body, so `route.decided.chain` reports `policy=per_message_override`, `verdict=chose` on **every** gateway request unless the client deliberately omits `model`. The `rule`, `pattern`, `workspace_default`, and `global_default` slots are unreachable in that mode. This is correct (the spec interprets `model` as a per-message override), but worth knowing when reading gateway traces.
+
+**Open question — "transparent mode" override.** A future `--ignore-inbound-model` flag could ignore the inbound `model` field and let routing fall through to the rule / workspace / global slots, giving operators the cost-optimization magic-trick mode (client says "gpt-4o", policy says "haiku for short prompts on this key"). The recommendation is to leave the default as-is: per-message override is the documented contract per `gateway.md §5.3`, and clients that want to delegate model choice can already pass `model: "metis://auto"`. A flag is straightforward to add when a buyer specifically asks for it; treating it as opt-in keeps the default behavior predictable.
 
 ### 5.4 Capability validation
 
-The existing capability gate in [`routing-engine.md §4.4`](routing-engine.md) applies unchanged. If the inbound request uses tools and the routed adapter has `supports_tools = false`, the chain falls through to the next candidate. Hard failure returns `503 routing_failed` per [`server-api.md §4.2`](server-api.md).
+The existing capability gate in [`routing-engine.md §4.4`](routing-engine.md) applies unchanged. If the inbound request uses tools and the routed adapter has `supports_tools = false`, the chain falls through to the next candidate. Hard failure returns `503 routing_failed`.
+
+### 5.5 Per-key allowed_models
+
+After routing produces a `chosen_model`, the harness checks the key's `allowed_models` tuple (when set). If the chosen model is not allowed, the harness raises `ModelNotAllowedError`, which the HTTP handler translates to `403 invalid_request_error` (OpenAI) or `403 permission_error` (Anthropic). The check happens **after** routing rather than feeding into capability validation so the trace records what *would have* been routed, surfacing the rejection cleanly.
 
 ---
 
-## 6. Events emitted (no new event types)
+## 6. Events emitted (additive payload fields)
 
 Gateway requests emit the same catalog events as agent calls:
 
@@ -212,11 +238,45 @@ Gateway requests emit the same catalog events as agent calls:
 
 Additive payload fields (no new event types, no breaking changes):
 
-- `llm.call_completed.gateway_key_id: str | None` — the key that authenticated this call, if any.
-- `llm.call_completed.inbound_shape: Literal["openai", "anthropic"] | None` — the inbound translator that produced this call.
-- `turn.completed.gateway_key_id: str | None` — same.
+- `llm.call_completed.gateway_key_id: str | None` — typed field on `LLMCallCompleted` (`events/payloads.py`). `None` for agent-loop traffic; set for gateway calls.
+- `llm.call_completed.inbound_shape: Literal["openai", "anthropic"] | None` — same.
+- `llm.call_completed.user_id: str | None` — typed field; stable principal id resolved from the gateway key at request entry (see [`multi-user.md §4.4`](multi-user.md)). `None` for agent-loop traffic and pre-multi-user keys; rolls up under the null bucket in `/analytics/cost?group_by=user`.
+- `llm.call_completed.team_id: str | None` — typed field; same null-bucket convention; drives `/analytics/by_team` (multi-user.md §5.2).
+- `turn.completed.user_id` / `turn.completed.team_id` — typed fields on `TurnCompleted` (matching the `LLMCallCompleted` shape so analytics can roll up at either grain).
+- `turn.completed.gateway_key_id` and `inbound_shape` — still stamped on the dict envelope at emit time (`harness.py::_emit_turn_completed`) until the typed extension on `TurnCompleted` lands for them too (§11 follow-on). The fields read identically by the analytics SQL.
 
-These are additive per the spec-change discipline in [`CHANGES.md`](CHANGES.md). Existing consumers ignore unknown fields.
+These additive fields drive [`analytics-api.md`](analytics-api.md) §4.1 (`group_by=gateway_key`) and §4.8 (`/analytics/by_key`), and the new `group_by=user` / `group_by=team` / `/analytics/by_team` surfaces in [`multi-user.md §5`](multi-user.md). Existing consumers ignore unknown fields.
+
+### 6.4 Quota events (multi-user.md §5)
+
+Two additional event types fire from the gateway's per-request auth path when a key carries a `daily_cap_usd` or `monthly_cap_usd`. Both are pseudonymous (stable ids, no plaintext PII).
+
+| Event type | When | Payload (new) |
+|---|---|---|
+| `quota.alert` | Spend on the key/user/team is in [80%, 95%) (`severity="warning"`) or [95%, 100%) (`severity="critical"`) of the configured cap. One event per (request, scope) — the same scope on a later request fires again, but the same scope twice in one request does not. | `scope`, `severity`, `current_usd`, `limit_usd`, `percentage`, `gateway_key_id?`, `user_id?`, `team_id?` |
+| `gateway.quota_exceeded` | Spend has reached the cap (≥100%). Emitted alongside the 429 response described below — no quota.alert is also emitted in this case. | `scope`, `current_usd`, `limit_usd`, `inbound_shape`, `gateway_key_id?`, `user_id?`, `team_id?` |
+
+`scope` is one of `key_daily`, `key_monthly`, `user_daily`, `user_monthly`, `team_daily`, `team_monthly` (multi-user.md §5.1) — v1 ships `key_daily` and `key_monthly` only; user/team scopes land when `users.json` / `teams.json` do.
+
+When the hard cap fires, the HTTP layer returns **429** with the documented body shape:
+
+```json
+{
+  "error": {
+    "code": "quota_exceeded",
+    "identity": "key",
+    "scope": "key_daily",
+    "limit_usd": "1.00",
+    "current_usd": "1.50",
+    "type": "rate_limit_error",
+    "message": "key_daily cap of $1.00 hit ($1.50 spent)"
+  }
+}
+```
+
+The shape is the same for OpenAI and Anthropic inbound clients; only the trailing `type` discriminator (always `rate_limit_error` here) is wired for shape parity. The check runs **before** routing or adapter invocation, so a capped identity never burns provider-side cost on a rejected request.
+
+Soft alerts and the hard breaker share the same SQL projection (`AnalyticsStore.cost(group_by=...)`-shaped query) running once per request through a per-request `RequestQuotaCache`. Daily windows reset at UTC midnight; monthly windows at UTC first-of-month.
 
 ---
 
@@ -230,29 +290,29 @@ Optional opt-in (deferred to v1.1): per-key request logging to the existing `mes
 
 ## 8. Errors
 
-Error class taxonomy aligns with [`provider-adapter-contract.md §6.1`](provider-adapter-contract.md). The gateway translates canonical error classes to inbound-shape error envelopes:
+Error class taxonomy aligns with [`provider-adapter-contract.md §6.1`](provider-adapter-contract.md). The gateway translates canonical error classes to inbound-shape error envelopes (see `app.py::_openai_error_from_adapter` and `_anthropic_error_from_adapter`):
 
 | Canonical class | OpenAI-shape outbound | Anthropic-shape outbound |
 |---|---|---|
-| `auth_failed` | 401 `invalid_api_key` | 401 `authentication_error` |
-| `rate_limited` | 429 `rate_limit_exceeded` | 429 `rate_limit_error` |
-| `model_unavailable` | 503 (with `Retry-After`) | 503 `overloaded_error` |
-| `bad_request` (client-side translation failure) | 400 `invalid_request_error` | 400 `invalid_request_error` |
-| `routing_failed` (no eligible model) | 503 `routing_failed` with chain trace | 503 `routing_failed` |
-| `internal_error` | 500 | 500 |
-| `cancelled` (client disconnect) | (no body — connection closed) | (no body) |
-| `timeout` | 504 | 504 |
-
-`routing_failed` is the new one; its body shape matches [`server-api.md §4.2`](server-api.md).
+| `auth` | 401 `invalid_request_error` / `invalid_api_key` | 401 `authentication_error` |
+| `rate_limit` | 429 `rate_limit_error` / `rate_limit_exceeded` | 429 `rate_limit_error` |
+| `context_overflow` | 400 `invalid_request_error` / `context_length_exceeded` | 400 `invalid_request_error` |
+| `invalid_request` | 400 `invalid_request_error` | 400 `invalid_request_error` |
+| `network` | 502 `api_error` | 502 `api_error` |
+| `server_error` | 503 `api_error` | 503 `overloaded_error` |
+| _other / classify_-internal_ | 500 `api_error` | 500 `api_error` |
+| `RoutingFailedError` (no eligible model) | 503 `api_error` / `routing_failed` | 503 `overloaded_error` |
+| `ModelNotAllowedError` (key's allowlist) | 403 `invalid_request_error` | 403 `permission_error` |
+| `ClientDisconnected` (TCP RST) | (no body — connection closed) | (no body) |
 
 ---
 
 ## 9. Operations
 
-- **Deploy:** `apps/gateway/` ships its own console-script (`metis-gateway`). One binary, single-process uvicorn. Docker image to follow.
-- **Key issuance:** CLI subcommand `metis gateway issue-key --name "<display>" [--allow-models ...] [--daily-cap-usd ...]`. Prints the key once; only the hash is stored.
-- **Health:** `/healthz` returns 200 when uvicorn is up; `200` does not imply downstream providers are reachable. Liveness vs. readiness split deferred.
-- **Observability:** the existing analytics API (per [`analytics-api.md`](analytics-api.md)) is the dashboard. Add a `group_by=gateway_key` dimension to `/analytics/cost` in a follow-up spec change.
+- **Deploy:** `apps/gateway/` ships its own console-script entry (`metis gateway`, mounted via the unified `metis` console-script in `metis-cli`). One binary, single-process uvicorn. Docker image to follow.
+- **Key issuance:** `metis gateway issue-key --name "<display>" --workspace "<path>" [--allow-models ...] [--daily-cap-usd ...]`. Prints the key once; only the SHA-256 hash is stored. Keystore file mode `0o600`.
+- **Health:** `/healthz` returns 200 when uvicorn is up; the response does not imply downstream providers are reachable. Liveness vs. readiness split deferred.
+- **Observability:** [`analytics-api.md`](analytics-api.md) is the dashboard. `group_by=gateway_key` on `/analytics/cost` and the dedicated `/analytics/by_key` endpoint (§4.8) split cost by key + inbound shape using the additive payload fields described in §6.
 
 ---
 
@@ -264,24 +324,154 @@ These are *not* features of the v1 gateway and not part of this spec's contract:
 2. **Streaming response cancellation propagation from gateway to provider for partial output.** v1 cancels on client disconnect; whether the provider charges for in-flight tokens is the provider's call.
 3. **Response caching** (semantic or exact). Different cost lever; different design (cache key, invalidation, TTL). LiteLLM and Portkey both ship this; defer until evidence it's load-bearing for our buyers.
 4. **Prompt registry / templating** (the Portkey / Helicone "Prompt" surface). Out of scope; the gateway is dumb pipe + routing.
-5. **Per-key rate limiting beyond a daily-cap circuit breaker.** Add when a buyer needs it; the existing pricing pipeline can drive a soft cap without new infrastructure.
+5. **Per-key rate limiting beyond the daily / monthly cap circuit breaker.** v1 ships hard breakers + soft alerts on `daily_cap_usd` / `monthly_cap_usd` (§6.4); request-rate limits and IP-bucket throttles are out of scope.
+6. **Non-loopback bind.** Production deployment behind a TLS terminator is gated behind future hardening (auth/rate limiting/audit). See §3.2.
 
 ---
 
-## 11. Open questions
+## 11. Key lifecycle (Wave 10)
 
-1. **Inbound surface for v1.** OpenAI-shape only (smaller MVP), or OpenAI + Anthropic together (bigger MVP, but the surface every Claude Code buyer needs)? See [`deployment-shape.md §8.2`](deployment-shape.md).
-2. **Where does the gateway run.** Sibling app vs. extension of `metis serve`. Recommendation: sibling. Confirm with owner.
-3. **Should `gateway_keys` live in the same SQLite DB as sessions/events**, or a separate ops DB? Same DB is simpler; separate DB is safer for backup/restore. Defer until ops requirements are concrete.
-4. **What's the answer to "I want my Claude Code to use Metis but I can't change `ANTHROPIC_BASE_URL` globally"?** Probably a per-project shim or a wrapper script. Not in v1 scope; flag for the docs.
+v1.0 issued keys but had no online revocation or rotation — the
+operator's only options were "delete the JSON entry and restart" or
+"leave a leaked key alive." Wave 10 lands three online operations on
+top of the existing keystore. All three are atomic writes
+(write-temp-then-rename), all three emit pseudonymous audit events,
+and all three are loopback-only CLI operations — there is no
+HTTP-level admin surface (operators reach the keystore through the
+same shell that ran `issue-key`).
+
+### 11.1 Keystore fields
+
+`GatewayKey` gains three lifecycle fields on top of the v1 record:
+
+| Field | Type | Notes |
+|---|---|---|
+| `status` | `Literal["active", "revoked"]` (default `"active"`) | Missing on pre-Wave-10 records — the loader fills `"active"`. A revoked key is still loaded into the keystore so auth can return the documented `key_revoked` body with the stable `key_id`. |
+| `revoked_at` | `datetime \| None` | Set when `status="revoked"`. UTC, ISO-8601 in the JSON file. Required when `status="revoked"` — the loader rejects a revoked record without a timestamp. |
+| `grace_period_until` | `datetime \| None` | Set by `rotate-key` on the predecessor. While the key is `active` and `now < grace_period_until`, auth accepts it; past that boundary `is_active` returns False (auth read-only — the next admin sweep persists the transition). |
+
+A `created_at` ISO-8601 timestamp is now stamped on every new record so
+`list-keys` can sort + display issuance order. Pre-Wave-10 records read
+back with `created_at=None`, which `list-keys` renders as `-`.
+
+### 11.2 `metis gateway revoke-key <key_id>`
+
+Marks the key revoked. Idempotent against an already-revoked key
+(returns the existing `revoked_at`; emits no second audit event).
+Subsequent gateway requests authenticating with that key return:
+
+```http
+HTTP/1.1 401 Unauthorized
+Content-Type: application/json
+
+{
+  "error": {
+    "code": "key_revoked",
+    "key_id": "gk_01HXYZ...",
+    "revoked_at": "2026-05-15T14:22:10+00:00",
+    "type": "invalid_request_error"  | "authentication_error",
+    "message": "gateway key gk_01HXYZ... has been revoked"
+  }
+}
+```
+
+`type` carries the shape-specific discriminator (OpenAI vs Anthropic)
+so each SDK's error parser still recognizes the envelope; the body is
+otherwise identical between inbound shapes.
+
+### 11.3 `metis gateway rotate-key <key_id> [--grace-period <duration>]`
+
+Mints a successor key that inherits the predecessor's metadata
+(`workspace_path`, `user_id`, `team_id`, `allowed_models`,
+`daily_cap_usd`, `monthly_cap_usd`) and stamps `grace_period_until` on
+the predecessor. Default grace period: 24 hours.
+
+During the grace window, both predecessor and successor authenticate;
+`llm.call_completed` / `turn.completed` events stamp the
+`gateway_key_id` actually used so operators see the migration land in
+`/analytics/by_key`. Past the boundary, the predecessor reads as
+revoked at auth time (`is_active(now=...)` returns False) and the next
+admin sweep — any subsequent admin op against the keystore, or an
+explicit `sweep_expired_grace_periods()` call — persists the
+`active → revoked` transition and emits a paired `gateway.key_revoked`
+with `reason="grace_period_expired"`.
+
+The new plaintext token is printed once and is recoverable only from
+the client team's secrets broker after that — the keystore only
+persists the SHA-256 hash, same as `issue-key`.
+
+`--grace-period` accepts forms like `30m`, `24h`, `7d`, `2w`. Zero or
+negative durations are rejected (use `revoke-key` for an immediate
+cutoff with no successor).
+
+### 11.4 `metis gateway list-keys [--format text|json]`
+
+Returns every key in the keystore — including revoked ones — with
+status, identity, caps, and timestamps. `status` is the on-disk value;
+`effective_status` applies the same `is_active` rule the auth path
+uses, so an active key whose grace window has lapsed reads as
+`revoked` even before the next sweep persists the transition.
+
+The JSON output is the keystore admin contract for buyer tooling
+(SOX-style "list every credential and when it was issued / revoked");
+the text output is the terminal-friendly summary. Both are
+non-mutating — `list-keys` never writes to the keystore.
+
+### 11.5 Audit events
+
+Three new event types in the catalog (`pseudonymous` floor; see
+`event-bus-and-trace-catalog.md §6.13`):
+
+- `gateway.key_issued` — emitted by `metis gateway issue-key` after the
+  keystore write succeeds. Carries the resolved `(gateway_key_id, name,
+  workspace_path, user_id, team_id, allowed_models, daily_cap_usd,
+  monthly_cap_usd, issued_at)` so dashboards can correlate cost rows
+  back to issuance.
+- `gateway.key_revoked` — emitted on explicit `revoke-key` (with
+  `reason="admin_revoke"`) or on grace-period sweep
+  (`reason="grace_period_expired"`). The `reason` enum is the third
+  value `"rotated"` (reserved for a future "fail-fast revoke on
+  rotate" variant; not emitted in v1).
+- `gateway.key_rotated` — emitted by `rotate-key`. Carries both
+  `old_gateway_key_id` and `new_gateway_key_id` so the trace traces the
+  migration; also stamps the inherited `workspace_path`, `user_id`,
+  and `team_id` for the dashboard's per-identity rollup.
+
+Audit emission is best-effort — failures don't abort the keystore
+mutation. The keystore file is the source of truth; the audit event
+is a follow-on for operators.
+
+### 11.6 Non-goals (still)
+
+1. **HTTP admin surface.** All key-lifecycle ops are CLI-only — there
+   is no `POST /admin/keys/revoke` endpoint. Adding one requires the
+   production-bind hardening (auth/rate-limiting/audit) listed in §12
+   below.
+2. **Per-key TTL.** No automatic expiration based on age. Operators
+   that want scheduled rotation run `rotate-key` from cron.
+3. **Soft-delete history.** `revoke-key` overwrites the in-memory key
+   to `status="revoked"`; if you need a longer audit trail than the
+   trace-DB events provide, snapshot the keystore before each ops
+   action.
 
 ---
 
-## 12. Sequencing
+## 12. Follow-ons (next-up after Wave 10)
 
-This spec is paired with [`deployment-shape.md`](deployment-shape.md). It is only drafted skeleton-level until that recommendation is signed off. Once signed off, the next passes are:
+1. **Multi-user / team-level rollups.** v1 stamps `gateway_key_id` per call; teams of keys, multi-workspace per key, and tenant aggregation are Phase 3 follow-on. Requires both a keystore schema change (group/team membership) and an analytics rollup dimension (`group_by=team` or a `team_id` filter).
+2. **Production-bind hardening.** Audit logging (who called what when — partially landed via `gateway.key_*` events in §11), per-key rate limiting, and CIDR allowlists are the gating items before the gateway can default to a non-loopback bind.
+3. **`--ignore-inbound-model` flag** (§5.3 open question). Lets routing fall through to rule / workspace / global slots even when the client's `model` is set, opting into transparent cost-optimization mode.
+4. **`/v1/models` listing.** OpenAI clients expect this surface; deferred until a Cursor or Continue user asks.
+5. **Typed `gateway_key_id` / `inbound_shape` on `TurnCompleted`.** Currently dict-envelope-stamped; promoting them to typed fields keeps the catalog discipline (`event-bus-and-trace-catalog.md`) honest.
 
-- v0.1: tighten the translation tables (§4) with field-by-field schemas and edge cases.
-- v0.2: design the `gateway_keys` table and the issuance CLI.
-- v0.3: write the cross-spec impact: which event payloads need additive fields, which analytics endpoints need a `gateway_key` dimension.
-- v1.0: green-light implementation; first PR is the OpenAI-shape translator.
+---
+
+## 13. References
+
+- [`canonical-message-format.md`](canonical-message-format.md) — `Message`, `ContentBlock`, persistence schema.
+- [`provider-adapter-contract.md`](provider-adapter-contract.md) — adapter interface, retry, error classes.
+- [`routing-engine.md`](routing-engine.md) — the 7-slot chain consumed in §5.
+- [`event-bus-and-trace-catalog.md`](event-bus-and-trace-catalog.md) — additive payload fields on `LLMCallCompleted`.
+- [`analytics-api.md §4.1, §4.8`](analytics-api.md) — `group_by=gateway_key` on `/analytics/cost` and the `/analytics/by_key` rollup.
+- [`deployment-shape.md`](deployment-shape.md) — the gateway/agent/hybrid framing this spec is paired with.
+- [`apps/gateway/src/metis_gateway/`](../../apps/gateway/src/metis_gateway/) — implementation.

@@ -110,3 +110,30 @@ def test_can_be_used_in_set():
     b = MessageMetadata(model="m", provider="p", provider_raw={"x": 2})
     s = {a, b}
     assert len(s) == 1
+
+
+def test_user_id_default_is_none():
+    md = MessageMetadata(model="m", provider="p")
+    assert md.user_id is None
+    assert md.team_id is None
+
+
+def test_user_id_difference_breaks_equality():
+    a = MessageMetadata(model="m", provider="p", user_id="usr_alice")
+    b = MessageMetadata(model="m", provider="p", user_id="usr_bob")
+    assert a != b
+    assert hash(a) != hash(b)
+
+
+def test_team_id_difference_breaks_equality():
+    a = MessageMetadata(model="m", provider="p", team_id="team_eng")
+    b = MessageMetadata(model="m", provider="p", team_id="team_marketing")
+    assert a != b
+    assert hash(a) != hash(b)
+
+
+def test_user_team_none_vs_set_break_equality():
+    a = MessageMetadata(model="m", provider="p")
+    b = MessageMetadata(model="m", provider="p", user_id="usr_alice")
+    assert a != b
+    assert hash(a) != hash(b)

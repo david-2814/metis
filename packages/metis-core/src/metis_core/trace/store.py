@@ -28,6 +28,13 @@ from metis_core.events.bus import EventBus, EventFilter, Subscription, Subscript
 from metis_core.events.envelope import Actor, Event, Sensitivity
 from metis_core.events.payloads import PAYLOAD_REGISTRY, BusGapDetected, make_event
 
+# Trace-DB schema version. Stored in `PRAGMA user_version` on every opened
+# trace DB so the backup/restore module (`metis_core.trace.backup`) can
+# refuse to restore a backup whose schema doesn't match the running code.
+# Bump in lockstep with breaking edits to `_SCHEMA` below.
+TRACE_SCHEMA_VERSION = 1
+
+
 # Default scan bound for `detect_gaps` / `scan_for_gaps_and_emit`. Spec §6.10
 # documents this as a startup health-check; older events fall out of the
 # window. 10k is well above typical single-user activity and keeps the scan
@@ -59,6 +66,14 @@ class GapInfo:
     estimated_missing_count: int
 
 
+# Schema per event-bus-and-trace-catalog.md §7.1. The FK on `session_id`
+# references the `sessions` table owned by `SqliteSessionStore` (defined in
+# canonical-message-format.md §9.1) — both tables share the same SQLite DB
+# in v1. The FK is declared so the schema matches the spec and tooling
+# (`sqlite3` introspection, future migrations) sees the relationship;
+# enforcement is left at SQLite's default (`PRAGMA foreign_keys = OFF`)
+# because the trace store may open the DB before the sessions table is
+# created (e.g. in unit tests that don't construct a session store).
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
   id TEXT PRIMARY KEY,
@@ -69,7 +84,8 @@ CREATE TABLE IF NOT EXISTS events (
   type TEXT NOT NULL,
   actor TEXT NOT NULL,
   sensitivity TEXT NOT NULL,
-  payload_json TEXT NOT NULL
+  payload_json TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_session_id     ON events(session_id, id);
@@ -121,6 +137,9 @@ class TraceStore:
         # record for any user-visible state.
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
+        # Stamp the schema version so `trace.backup.restore()` can verify the
+        # backup matches the running code. Cheap; runs once per open.
+        self._conn.execute(f"PRAGMA user_version = {TRACE_SCHEMA_VERSION}")
 
     # ---- Writes --------------------------------------------------------
 

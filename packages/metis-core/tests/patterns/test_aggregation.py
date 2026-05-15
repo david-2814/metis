@@ -120,3 +120,45 @@ def test_no_score_signal_returns_zero_chosen() -> None:
     )
     result = aggregate_recommendation(rows, cost_weight=0.0)
     assert result.chosen_model is None
+
+
+def test_a3rev_unblock_lowering_cost_weight_flips_chooser() -> None:
+    # The §A3-rev third-unblock headline test: with the §A3-rev cluster
+    # shape (haiku cheaper but lower quality, sonnet more expensive but
+    # higher quality), the old `cost_weight=0.3` default rewards cost too
+    # heavily and picks haiku; the new `0.1` default lets a ~0.2 success
+    # delta flip the ranking and pick sonnet. The scoring formula is
+    # unchanged — only the constant moves. See routing-engine.md §5.5
+    # "Default rationale" and benchmarks/RESULTS.md §A3-rev unblock #2.
+    rows = (
+        _row(
+            model="anthropic:claude-haiku-4-5",
+            success_mean=0.7,
+            success_count=10,
+            sample_size=10,
+            avg_cost="0.01",  # cheap → cost_efficiency = 1.0
+        ),
+        _row(
+            model="anthropic:claude-sonnet-4-6",
+            success_mean=0.9,
+            success_count=10,
+            sample_size=10,
+            avg_cost="0.10",  # expensive → cost_efficiency = 0.0
+        ),
+    )
+
+    # Old default: cost dominates.
+    #   haiku  = 0.7*0.7 + 0.3*1.0 = 0.79
+    #   sonnet = 0.7*0.9 + 0.3*0.0 = 0.63
+    old = aggregate_recommendation(rows, cost_weight=0.3)
+    assert old.chosen_model == "anthropic:claude-haiku-4-5"
+    assert old.ranked[0].score == pytest.approx(0.79)
+    assert old.ranked[1].score == pytest.approx(0.63)
+
+    # New default: quality delta of 0.2 clears the 0.1 cost margin.
+    #   haiku  = 0.9*0.7 + 0.1*1.0 = 0.73
+    #   sonnet = 0.9*0.9 + 0.1*0.0 = 0.81
+    new = aggregate_recommendation(rows, cost_weight=0.1)
+    assert new.chosen_model == "anthropic:claude-sonnet-4-6"
+    assert new.ranked[0].score == pytest.approx(0.81)
+    assert new.ranked[1].score == pytest.approx(0.73)

@@ -21,6 +21,7 @@ from metis_core.events.payloads import (
     PolicyEvaluation,
     RouteDecided,
     SessionCreated,
+    TurnCompleted,
     TurnStarted,
     make_event,
     payload_for_type,
@@ -112,6 +113,58 @@ def test_make_event_allows_explicit_sensitivity_upgrade():
         sensitivity=Sensitivity.USER_CONTROLLED,
     )
     assert event.sensitivity == Sensitivity.USER_CONTROLLED
+
+
+def test_make_event_rejects_more_private_sensitivity_override():
+    """§4.4.1: sensitivity can only move toward less private than the floor."""
+    with pytest.raises(EventValidationError) as exc:
+        make_event(
+            type="session.created",  # catalog floor: PSEUDONYMOUS
+            session_id="sess_1",
+            actor=Actor.SYSTEM,
+            payload=SessionCreated(
+                workspace_path="/x",
+                workspace_hash="h",
+                initial_active_model=None,
+                routing_policy_version="v",
+            ),
+            timestamp=_now(),
+            sensitivity=Sensitivity.PRIVATE,
+        )
+    assert "more private" in str(exc.value)
+    assert "private" in str(exc.value) and "pseudonymous" in str(exc.value)
+
+
+def test_make_event_allows_same_or_less_private_override():
+    """§4.4.1: override equal to floor and less private than floor both succeed."""
+    same = make_event(
+        type="session.created",  # floor: PSEUDONYMOUS
+        session_id="sess_1",
+        actor=Actor.SYSTEM,
+        payload=SessionCreated(
+            workspace_path="/x",
+            workspace_hash="h",
+            initial_active_model=None,
+            routing_policy_version="v",
+        ),
+        timestamp=_now(),
+        sensitivity=Sensitivity.PSEUDONYMOUS,
+    )
+    assert same.sensitivity == Sensitivity.PSEUDONYMOUS
+    less = make_event(
+        type="session.created",
+        session_id="sess_1",
+        actor=Actor.SYSTEM,
+        payload=SessionCreated(
+            workspace_path="/x",
+            workspace_hash="h",
+            initial_active_model=None,
+            routing_policy_version="v",
+        ),
+        timestamp=_now(),
+        sensitivity=Sensitivity.AGGREGATABLE,
+    )
+    assert less.sensitivity == Sensitivity.AGGREGATABLE
 
 
 def test_make_event_rejects_wrong_payload_class():
@@ -341,7 +394,7 @@ def test_pattern_make_event_rejects_wrong_payload():
 def test_eval_registry_membership():
     for type_name, expected_class, expected_sens in [
         ("eval.started", EvalStarted, Sensitivity.PSEUDONYMOUS),
-        ("eval.completed", EvalCompleted, Sensitivity.PSEUDONYMOUS),
+        ("eval.completed", EvalCompleted, Sensitivity.USER_CONTROLLED),
         ("eval.failed", EvalFailed, Sensitivity.PSEUDONYMOUS),
     ]:
         assert type_name in PAYLOAD_REGISTRY
@@ -432,8 +485,8 @@ def test_eval_completed_llm_with_cost():
     assert event.payload["parent_eval_id"] == "01HZEVAL2"
 
 
-def test_eval_completed_sensitivity_uplift_on_opt_in():
-    """§4.4.1: rationale_redacted opt-in upgrades sensitivity."""
+def test_eval_completed_floor_holds_when_rationale_present():
+    """§4.4.1: floor is USER_CONTROLLED (worst case, with rationale present)."""
     payload = EvalCompleted(
         eval_id="01HZEVAL4",
         subject_kind="turn",
@@ -458,9 +511,36 @@ def test_eval_completed_sensitivity_uplift_on_opt_in():
         actor=Actor.SYSTEM,
         payload=payload,
         timestamp=_now(),
-        sensitivity=Sensitivity.USER_CONTROLLED,
     )
     assert event.sensitivity == Sensitivity.USER_CONTROLLED
+
+
+def test_eval_completed_downgrades_to_pseudonymous_when_rationale_absent():
+    """§4.4.1: downgrade USER_CONTROLLED → PSEUDONYMOUS is allowed (less private)."""
+    payload = EvalCompleted(
+        eval_id="01HZEVAL5",
+        subject_kind="turn",
+        subject_id="t_4",
+        score=0.9,
+        confidence=0.95,
+        judge_kind="heuristic",
+        judge_cost_usd=Decimal("0"),
+        judge_latency_ms=2,
+        rubric_id="turn-heuristic-v1",
+        rubric_version="1.0.0",
+        signals={"latency_ms": 1200},
+        judge_model=None,
+        judge_pricing_version=None,
+    )
+    event = make_event(
+        type="eval.completed",
+        session_id="sess_1",
+        actor=Actor.SYSTEM,
+        payload=payload,
+        timestamp=_now(),
+        sensitivity=Sensitivity.PSEUDONYMOUS,
+    )
+    assert event.sensitivity == Sensitivity.PSEUDONYMOUS
 
 
 def test_eval_failed_roundtrip_and_event():
@@ -512,3 +592,205 @@ def test_payload_for_type_finds_new_types():
     assert payload_for_type("eval.started") is EvalStarted
     assert payload_for_type("eval.completed") is EvalCompleted
     assert payload_for_type("eval.failed") is EvalFailed
+
+
+# --- Multi-user identity stamping (multi-user.md §4.4) ----------------------
+
+
+def _llm_call_completed(**overrides) -> LLMCallCompleted:
+    base = dict(
+        model="anthropic:claude-sonnet-4-6",
+        provider="anthropic",
+        input_tokens=100,
+        output_tokens=20,
+        cached_input_tokens=0,
+        cache_creation_input_tokens=0,
+        cost_usd=0.001,
+        pricing_version="pt-2026-05-13",
+        latency_ms=420,
+        stop_reason="end_turn",
+        produced_tool_calls=0,
+        produced_thinking_blocks=0,
+    )
+    base.update(overrides)
+    return LLMCallCompleted(**base)
+
+
+def _turn_completed(**overrides) -> TurnCompleted:
+    base = dict(
+        stop_reason="end_turn",
+        llm_call_count=1,
+        tool_call_count=0,
+        total_input_tokens=100,
+        total_output_tokens=20,
+        total_cost_usd=0.001,
+        wall_time_seconds=0.5,
+    )
+    base.update(overrides)
+    return TurnCompleted(**base)
+
+
+def test_llm_call_completed_user_team_default_none():
+    """Agent-loop emit path leaves user_id / team_id as None."""
+    payload = _llm_call_completed()
+    assert payload.user_id is None
+    assert payload.team_id is None
+    data = msgspec.to_builtins(payload)
+    assert data["user_id"] is None
+    assert data["team_id"] is None
+
+
+def test_llm_call_completed_user_team_roundtrip():
+    payload = _llm_call_completed(
+        gateway_key_id="gwk_01HZ",
+        inbound_shape="anthropic",
+        user_id="usr_01HZALICE",
+        team_id="team_01HZENG",
+    )
+    data = msgspec.to_builtins(payload)
+    assert data["user_id"] == "usr_01HZALICE"
+    assert data["team_id"] == "team_01HZENG"
+    decoded = msgspec.convert(data, LLMCallCompleted)
+    assert decoded == payload
+
+
+def test_llm_call_completed_back_compat_decode_without_user_team():
+    """Pre-multi-user wire payloads omit user_id/team_id; decode cleanly to None."""
+    legacy_wire = {
+        "model": "anthropic:claude-sonnet-4-6",
+        "provider": "anthropic",
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cached_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cost_usd": 0.001,
+        "pricing_version": "pt-2026-05-13",
+        "latency_ms": 420,
+        "stop_reason": "end_turn",
+        "produced_tool_calls": 0,
+        "produced_thinking_blocks": 0,
+    }
+    decoded = msgspec.convert(legacy_wire, LLMCallCompleted)
+    assert decoded.user_id is None
+    assert decoded.team_id is None
+    assert decoded.gateway_key_id is None
+    assert decoded.inbound_shape is None
+
+
+def test_llm_call_completed_make_event_stamps_user_team():
+    payload = _llm_call_completed(
+        gateway_key_id="gwk_01HZ",
+        inbound_shape="openai",
+        user_id="usr_01HZALICE",
+        team_id="team_01HZENG",
+    )
+    event = make_event(
+        type="llm.call_completed",
+        session_id="sess_1",
+        turn_id="t_1",
+        actor=Actor.AGENT,
+        payload=payload,
+        timestamp=_now(),
+    )
+    assert event.sensitivity == Sensitivity.PSEUDONYMOUS
+    assert event.payload["user_id"] == "usr_01HZALICE"
+    assert event.payload["team_id"] == "team_01HZENG"
+    assert event.payload["gateway_key_id"] == "gwk_01HZ"
+
+
+def test_turn_completed_user_team_default_none():
+    payload = _turn_completed()
+    assert payload.user_id is None
+    assert payload.team_id is None
+    data = msgspec.to_builtins(payload)
+    assert data["user_id"] is None
+    assert data["team_id"] is None
+
+
+def test_turn_completed_user_team_roundtrip():
+    payload = _turn_completed(
+        signals_extra={"final_response_text": "ok"},
+        user_id="usr_01HZBOB",
+        team_id="team_01HZENG",
+    )
+    data = msgspec.to_builtins(payload)
+    assert data["user_id"] == "usr_01HZBOB"
+    assert data["team_id"] == "team_01HZENG"
+    decoded = msgspec.convert(data, TurnCompleted)
+    assert decoded == payload
+
+
+def test_turn_completed_back_compat_decode_without_user_team():
+    """Pre-multi-user wire payloads omit user_id/team_id; decode cleanly to None."""
+    legacy_wire = {
+        "stop_reason": "end_turn",
+        "llm_call_count": 1,
+        "tool_call_count": 0,
+        "total_input_tokens": 100,
+        "total_output_tokens": 20,
+        "total_cost_usd": 0.001,
+        "wall_time_seconds": 0.5,
+    }
+    decoded = msgspec.convert(legacy_wire, TurnCompleted)
+    assert decoded.user_id is None
+    assert decoded.team_id is None
+    assert decoded.signals_extra is None
+
+
+def test_turn_completed_make_event_stamps_user_team():
+    payload = _turn_completed(user_id="usr_01HZBOB", team_id="team_01HZENG")
+    event = make_event(
+        type="turn.completed",
+        session_id="sess_1",
+        turn_id="t_1",
+        actor=Actor.AGENT,
+        payload=payload,
+        timestamp=_now(),
+    )
+    assert event.sensitivity == Sensitivity.PSEUDONYMOUS
+    assert event.payload["user_id"] == "usr_01HZBOB"
+    assert event.payload["team_id"] == "team_01HZENG"
+
+
+def test_llm_call_completed_catalog_floor_unchanged():
+    """Adding additive fields must not change the catalog sensitivity floor."""
+    cls, sens = PAYLOAD_REGISTRY["llm.call_completed"]
+    assert cls is LLMCallCompleted
+    assert sens is Sensitivity.PSEUDONYMOUS
+
+
+def test_turn_completed_catalog_floor_unchanged():
+    cls, sens = PAYLOAD_REGISTRY["turn.completed"]
+    assert cls is TurnCompleted
+    assert sens is Sensitivity.PSEUDONYMOUS
+
+
+def test_llm_call_completed_rejects_more_private_sensitivity_override():
+    """§4.4.1: cannot override down to PRIVATE; multi-user fields are pseudonymous."""
+    payload = _llm_call_completed(user_id="usr_01HZ", team_id="team_01HZ")
+    with pytest.raises(EventValidationError) as exc:
+        make_event(
+            type="llm.call_completed",
+            session_id="sess_1",
+            turn_id="t_1",
+            actor=Actor.AGENT,
+            payload=payload,
+            timestamp=_now(),
+            sensitivity=Sensitivity.PRIVATE,
+        )
+    assert "more private" in str(exc.value)
+
+
+def test_turn_completed_rejects_more_private_sensitivity_override():
+    payload = _turn_completed(user_id="usr_01HZ", team_id="team_01HZ")
+    with pytest.raises(EventValidationError) as exc:
+        make_event(
+            type="turn.completed",
+            session_id="sess_1",
+            turn_id="t_1",
+            actor=Actor.AGENT,
+            payload=payload,
+            timestamp=_now(),
+            sensitivity=Sensitivity.PRIVATE,
+        )
+    assert "more private" in str(exc.value)

@@ -22,6 +22,7 @@ Validation rules (§5.7):
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,7 @@ from metis_core.routing.policy import (
     RoutingPolicy,
     Rule,
     SkillsMatchingMessageIncludes,
+    TeamBudgetRemainingLt,
     TierMap,
     TimeOfDayBetween,
     WorkspacePathMatches,
@@ -98,7 +100,12 @@ def parse_policy_text(
         raise PolicyValidationError([f"yaml parse error: {exc}"], source=source_path) from exc
     if not isinstance(data, dict):
         raise PolicyValidationError(["routing policy root must be a mapping"], source=source_path)
-    return parse_policy(data, registry, source_path=source_path)
+    # Content-derived version surfaces via GET /sessions/{id} so the SPA can
+    # tell when the active routing.yaml has changed. Truncated sha256 of the
+    # raw yaml — opaque, stable across reloads of identical content, and
+    # changes whenever any rule, tier, or default is edited.
+    version = hashlib.sha256(raw_yaml.encode("utf-8")).hexdigest()[:12]
+    return parse_policy(data, registry, source_path=source_path, version=version)
 
 
 def parse_policy(
@@ -106,6 +113,7 @@ def parse_policy(
     registry: ModelRegistry,
     *,
     source_path: str | None = None,
+    version: str | None = None,
 ) -> RoutingPolicy:
     errors: list[str] = []
 
@@ -136,6 +144,7 @@ def parse_policy(
         rules=tuple(rules),
         workspaces=tuple(workspaces),
         source_path=source_path,
+        version=version,
     )
 
 
@@ -183,19 +192,54 @@ def _parse_pattern(raw: Any, field: str, errors: list[str]) -> PatternConfig:
     if not isinstance(raw, dict):
         errors.append(f"{field}: must be a mapping")
         return PatternConfig()
-    cost_weight = raw.get("cost_weight", 0.3)
-    min_conf = raw.get("min_confidence", 0.3)
-    min_samples = raw.get("min_sample_size", 5)
+    # Fall through to the PatternConfig dataclass defaults so the single
+    # source of truth for `cost_weight` / `min_confidence` / `min_sample_size`
+    # defaults is `policy.PatternConfig` (see its docstring for the rationale
+    # behind the 2026-05-14 cost_weight 0.3 → 0.1 and min_confidence 0.3 →
+    # 0.05 migrations).
+    defaults = PatternConfig()
+    cost_weight = raw.get("cost_weight", defaults.cost_weight)
+    min_conf = raw.get("min_confidence", defaults.min_confidence)
+    min_samples = raw.get("min_sample_size", defaults.min_sample_size)
+    fingerprint_version = raw.get("fingerprint_version", defaults.fingerprint_version)
+    embedding_provider = raw.get("embedding_provider", defaults.embedding_provider)
+    embedding_alpha = raw.get("embedding_alpha", defaults.embedding_alpha)
     if not isinstance(cost_weight, int | float) or not (0.0 <= cost_weight <= 1.0):
         errors.append(f"{field}.cost_weight must be in [0.0, 1.0] (got {cost_weight!r})")
     if not isinstance(min_conf, int | float) or not (0.0 <= min_conf <= 1.0):
         errors.append(f"{field}.min_confidence must be in [0.0, 1.0] (got {min_conf!r})")
     if not isinstance(min_samples, int) or min_samples < 1:
         errors.append(f"{field}.min_sample_size must be int >= 1 (got {min_samples!r})")
+    if fingerprint_version not in ("v1", "v2"):
+        errors.append(
+            f"{field}.fingerprint_version must be 'v1' or 'v2' (got {fingerprint_version!r})"
+        )
+    if embedding_provider is not None and not isinstance(embedding_provider, str):
+        errors.append(f"{field}.embedding_provider must be a string (got {embedding_provider!r})")
+    if not isinstance(embedding_alpha, int | float) or not (0.0 <= embedding_alpha <= 1.0):
+        errors.append(
+            f"{field}.embedding_alpha must be in [0.0, 1.0] (got {embedding_alpha!r})"
+        )
+    if fingerprint_version == "v2" and not embedding_provider:
+        errors.append(
+            f"{field}.fingerprint_version='v2' requires {field}.embedding_provider"
+        )
+    # If we detected a v2-without-provider error above, fall back to v1 in
+    # the constructed config so PatternConfig.__post_init__ doesn't raise
+    # before the caller sees the aggregated errors via PolicyValidationError.
+    safe_fingerprint_version = fingerprint_version if fingerprint_version in ("v1", "v2") else "v1"
+    safe_embedding_provider = (
+        embedding_provider if isinstance(embedding_provider, str) and embedding_provider else None
+    )
+    if safe_fingerprint_version == "v2" and safe_embedding_provider is None:
+        safe_fingerprint_version = "v1"
     return PatternConfig(
         cost_weight=float(cost_weight),
         min_confidence=float(min_conf),
         min_sample_size=int(min_samples) if isinstance(min_samples, int) else 5,
+        fingerprint_version=safe_fingerprint_version,
+        embedding_provider=safe_embedding_provider,
+        embedding_alpha=float(embedding_alpha) if isinstance(embedding_alpha, int | float) else 0.6,
     )
 
 
@@ -318,6 +362,7 @@ _LEAF_PREDICATES = {
     "workspace_path_matches",
     "time_of_day_between",
     "cost_today_exceeds_usd",
+    "team_budget_remaining_lt",
 }
 _COMPOUND = {"any_of", "all_of", "not"}
 _ALL_KEYS = _LEAF_PREDICATES | _COMPOUND
@@ -370,6 +415,8 @@ def _parse_predicate(raw: Any, prefix: str, errors: list[str]) -> Predicate | No
         return _parse_time_window(value, prefix, errors)
     if key == "cost_today_exceeds_usd":
         return _parse_float(value, prefix, errors, factory=CostTodayExceedsUsd)
+    if key == "team_budget_remaining_lt":
+        return _parse_float(value, prefix, errors, factory=TeamBudgetRemainingLt)
     if key == "any_of":
         return _parse_list_predicate(value, prefix, errors, factory=AnyOf)
     if key == "all_of":

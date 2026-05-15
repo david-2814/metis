@@ -143,7 +143,8 @@ class Evaluator:
                 error_message="turn_id missing on turn.completed event",
             )
         events = self._trace.events_for_turn(turn_id)
-        if not any(e.type == "turn.completed" for e in events):
+        turn_completed_event = next((e for e in events if e.type == "turn.completed"), None)
+        if turn_completed_event is None:
             return await self._emit_failed(
                 subject_kind="turn",
                 subject_id=turn_id,
@@ -152,7 +153,19 @@ class Evaluator:
                 failure_mode="subject_not_found",
                 error_message=f"no turn.completed found for turn_id={turn_id}",
             )
-        ctx = SubjectContext(subject_kind="turn", subject_id=turn_id, events=events)
+        # Forward `signals_extra` (carries `final_response_text` from the
+        # session manager) into the SubjectContext so the heuristic judge's
+        # content-penalty path — refusal / empty-response — fires on the
+        # online subscriber path, not just the workload harness. See
+        # `evaluator.md §5.1` "Content penalty (opt-in)".
+        signals_extra = turn_completed_event.payload.get("signals_extra") or None
+        ctx = SubjectContext(
+            subject_kind="turn",
+            subject_id=turn_id,
+            events=events,
+            session_id=session_id,
+            signals_extra=signals_extra,
+        )
         return await self._run_judge(
             ctx,
             session_id=session_id,
@@ -185,6 +198,7 @@ class Evaluator:
             subject_kind="tool_cycle",
             subject_id=tool_use_id,
             events=events,
+            session_id=session_id,
         )
         return await self._run_judge(
             ctx,
@@ -220,6 +234,7 @@ class Evaluator:
             subject_id=workload_run_id,
             events=[],
             workload_rubric=workload_rubric,
+            session_id=session_id,
             signals_extra={
                 "per_turn_scores": per_turn_scores,
                 "final_response_text": final_response_text,
@@ -274,6 +289,7 @@ class Evaluator:
             subject_kind="session",
             subject_id=session_id,
             events=session_events,
+            session_id=session_id,
             signals_extra={
                 "child_turn_scores": list(reversed(child_scores)),
                 "child_eval_ids": list(reversed(child_eval_ids)),
@@ -467,11 +483,13 @@ class Evaluator:
         return WORKLOAD_HEURISTIC_RUBRIC_ID, WORKLOAD_HEURISTIC_RUBRIC_VERSION
 
     def _sensitivity_for(self, verdict: EvalVerdict) -> Sensitivity | None:
-        # §4.4: when rationale_redacted is populated (LLM-judge opt-in),
-        # sensitivity uplifts to user_controlled. v1 heuristic never sets it.
+        # §4.4.1: catalog floor is `user_controlled` (the worst case, when
+        # rationale_redacted is populated). When rationale is absent the event
+        # carries structural metadata only, so we downgrade to `pseudonymous`
+        # — a move toward less private, which §4.4.1 explicitly allows.
         if verdict.signals.get("rationale_redacted"):
-            return Sensitivity.USER_CONTROLLED
-        return None  # let make_event use the catalog default
+            return None  # keep the floor
+        return Sensitivity.PSEUDONYMOUS
 
 
 def register_evaluator(

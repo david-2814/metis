@@ -6,6 +6,7 @@ Two store implementations: `InMemorySessionStore` for ephemeral / test use, and
 
 from metis_core.sessions.manager import (
     AmbiguousModelError,
+    OverrideError,
     SessionManager,
     TurnResult,
     UnknownAliasError,
@@ -17,6 +18,7 @@ from metis_core.sessions.store import InMemorySessionStore, Session, SessionStor
 __all__ = [
     "AmbiguousModelError",
     "InMemorySessionStore",
+    "OverrideError",
     "Session",
     "SessionManager",
     "SessionStore",

@@ -168,9 +168,20 @@ class EventBus:
             )
 
     async def stop(self) -> None:
-        """Stop the dispatch worker after draining outstanding events."""
-        self._stopping = True
+        """Stop the dispatch worker after draining outstanding events.
+
+        Drains *before* setting `_stopping` so the dispatch loop's
+        `while not self._stopping` check doesn't exit on the first iteration
+        with events still in the queue — which would deadlock `drain()`
+        (queue.join blocks on unfinished_tasks > 0 with no consumer left).
+        Detach subscribers before calling `stop()` to guarantee no new
+        events arrive once drain returns; the §A3-rev3 outcome-update bug
+        traced to this ordering when `shutdown_runtime` detached after
+        draining and then called stop with the unregister events still in
+        flight.
+        """
         await self.drain()
+        self._stopping = True
         if self._dispatch_task is not None:
             self._dispatch_task.cancel()
             try:
@@ -180,10 +191,37 @@ class EventBus:
             self._dispatch_task = None
 
     async def drain(self) -> None:
-        """Wait for the queue and all in-flight handler tasks to complete."""
-        await self._queue.join()
-        if self._pending_tasks:
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+        """Wait for the queue and all in-flight handler tasks to complete.
+
+        Loops to quiescent. Two reasons one pass isn't enough:
+
+        - Handler tasks can emit new events (the pattern subscriber emits
+          `pattern.recorded`, the evaluator emits `eval.completed`, the
+          latter's handler then writes the score back via `update_score`).
+        - Python 3.13's `asyncio.Queue.join` returns the *first* time
+          `unfinished_tasks` drops to zero. A handler task scheduled
+          during dispatch may not have run when `join` returns; the
+          events it then emits are still in flight when callers expect
+          drain to be complete. Callers that detach subscribers
+          immediately after drain — `shutdown_runtime` in the agent loop
+          — drop those cascading events
+          ([`benchmarks/RESULTS.md §A3-rev3 caveats`](../../../../benchmarks/RESULTS.md);
+          regression in `tests/patterns/test_subscriber.py`).
+
+        The `_pending_tasks` filter excludes already-done tasks because
+        the `discard` done-callback runs via `loop.call_soon`, so a task
+        that just finished may still be in the set on the next loop
+        iteration — without the filter we'd busy-loop gathering done
+        tasks. We re-check `_unfinished_tasks` so that gathered handlers
+        which emitted events block on the next iteration's `join`.
+        """
+        while True:
+            await self._queue.join()
+            pending = [t for t in self._pending_tasks if not t.done()]
+            if not pending and self._queue._unfinished_tasks == 0:
+                return
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
     # ---- Subscription --------------------------------------------------
 

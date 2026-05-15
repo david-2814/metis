@@ -1,7 +1,7 @@
 [project]
 name = "metis"
 version = "0.1.0"
-description = "Metis monorepo root: metis-core library, metis-server HTTP/WS surface, metis-cli (chat/tui/serve)."
+description = "Metis monorepo root: metis-core library, metis-server HTTP/WS surface, metis-gateway transparent proxy, metis-cli (chat/tui/serve/gateway)."
 authors = [
     { name = "David Ji", email = "david.ji.2814@gmail.com" }
 ]
@@ -9,6 +9,7 @@ requires-python = ">=3.13"
 dependencies = [
     "metis-core",
     "metis-server",
+    "metis-gateway",
     "metis-cli",
 ]
 
@@ -21,6 +22,7 @@ members = ["packages/*", "apps/*"]
 [tool.uv.sources]
 metis-core = { workspace = true }
 metis-server = { workspace = true }
+metis-gateway = { workspace = true }
 metis-cli = { workspace = true }
 
 [dependency-groups]
@@ -43,6 +45,7 @@ ignore = ["E501"]
 testpaths = [
     "packages/metis-core/tests",
     "apps/server/tests",
+    "apps/gateway/tests",
     "apps/cli/tests",
 ]
 asyncio_mode = "auto"

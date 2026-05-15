@@ -14,6 +14,7 @@ from metis_core.routing.policy import (
     MessageContainsAny,
     MessageMatches,
     Not,
+    TeamBudgetRemainingLt,
     TimeOfDayBetween,
     WorkspacePathMatches,
 )
@@ -208,6 +209,20 @@ rules:
     assert when.threshold == 80000
 
 
+def test_team_budget_remaining_lt_parses(registry):
+    """multi-user.md §6.1 — yaml parser accepts the new predicate key."""
+    raw = """
+rules:
+  - name: "team-eng-headroom-soft-cap"
+    when: { team_budget_remaining_lt: 10.0 }
+    use: anthropic:claude-haiku-4-5
+"""
+    policy = parse_policy_text(raw, registry)
+    when = policy.rules[0].when
+    assert isinstance(when, TeamBudgetRemainingLt)
+    assert when.threshold_usd == 10.0
+
+
 # ---- Validation errors --------------------------------------------------
 
 
@@ -307,6 +322,57 @@ rules:
 
 def test_pattern_cost_weight_out_of_range(registry):
     _expect_error("pattern: { cost_weight: 1.5 }\n", registry, match="cost_weight must be in")
+
+
+def test_pattern_cost_weight_default_is_zero_point_one(registry):
+    # Policy file with no `pattern` block at all → dataclass default applies.
+    # The default was lowered from 0.3 → 0.1 on 2026-05-14 per the §A3-rev
+    # benchmark finding (routing-engine.md §5.5 "Default rationale").
+    policy = parse_policy_text("schema_version: 1\n", registry)
+    assert policy.pattern.cost_weight == 0.1
+
+    # Same default when `pattern:` is present but `cost_weight` is omitted.
+    policy_partial = parse_policy_text(
+        "schema_version: 1\npattern: { min_confidence: 0.4 }\n", registry
+    )
+    assert policy_partial.pattern.cost_weight == 0.1
+    assert policy_partial.pattern.min_confidence == 0.4
+
+
+def test_pattern_cost_weight_explicit_override_preserves_old_default(registry):
+    # The 0.3 → 0.1 default change is opt-out: a workspace that depended on
+    # the prior cost-bias restates `cost_weight: 0.3` in routing.yaml and
+    # gets the old behavior back. This guarantees explicit overrides keep
+    # working after the default migration.
+    policy = parse_policy_text("schema_version: 1\npattern: { cost_weight: 0.3 }\n", registry)
+    assert policy.pattern.cost_weight == 0.3
+
+
+def test_pattern_min_confidence_default_is_zero_point_zero_five(registry):
+    # Policy file with no `pattern` block at all → dataclass default applies.
+    # The default was lowered from 0.3 → 0.05 on 2026-05-14 per the §A3-rev2
+    # benchmark finding (routing-engine.md §5.5 "Default rationale" /
+    # benchmarks/RESULTS.md §A3-rev2 finding). The gate scales down to match
+    # the smaller score gaps the post-Wave-8 `cost_weight=0.1` produces.
+    policy = parse_policy_text("schema_version: 1\n", registry)
+    assert policy.pattern.min_confidence == 0.05
+
+    # Same default when `pattern:` is present but `min_confidence` is omitted.
+    policy_partial = parse_policy_text(
+        "schema_version: 1\npattern: { cost_weight: 0.2 }\n", registry
+    )
+    assert policy_partial.pattern.min_confidence == 0.05
+    assert policy_partial.pattern.cost_weight == 0.2
+
+
+def test_pattern_min_confidence_explicit_override_preserves_old_default(registry):
+    # The 0.3 → 0.05 default change is opt-out: a workspace that depended on
+    # the tighter pre-2026-05-14 gate restates `min_confidence: 0.3` in
+    # routing.yaml and gets the old behavior back. This guarantees explicit
+    # overrides keep working after the default migration; the per-rule
+    # override path is untouched.
+    policy = parse_policy_text("schema_version: 1\npattern: { min_confidence: 0.3 }\n", registry)
+    assert policy.pattern.min_confidence == 0.3
 
 
 def test_pattern_min_sample_size_zero(registry):

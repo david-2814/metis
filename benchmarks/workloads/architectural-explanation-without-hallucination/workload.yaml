@@ -1,0 +1,65 @@
+name: architectural-explanation-without-hallucination
+description: >-
+  Explain how Metis's routing engine selects a model. The workspace
+  ships a snapshot of `packages/metis-core/src/metis_core/routing/`
+  under `routing/`; the agent must read those files and name real
+  symbols. Models that don't ground in the source tend to fabricate
+  plausible-sounding identifiers ("PATTERN_LOOKUP", "RouterChain",
+  "ModelSelector"). v1.1 of this workload uses the evaluator's
+  `grounding_tokens` / `forbidden_grounding` rubric primitive
+  (evaluator.md §5.4) instead of a single UPPERCASE substring check.
+  The §A3-rev finding (benchmarks/RESULTS.md) showed the original
+  `expect_substring_in_final_response="PATTERN_RECOMMENDATION"` rewarded
+  stylistic mimicry: sonnet cited the real `PolicyEvaluation` /
+  `RoutingDecision` dataclasses and lowercase `policy=` literals
+  (strictly more grounded) but scored 0.50 because it didn't parrot the
+  docstring's UPPERCASE label. The grounding lists below capture
+  multiple real-symbol entry points so the score reflects whether the
+  agent opened the files, not whether it copied one specific phrase.
+suite_version: 1
+turns:
+  - prompt: >-
+      The directory `routing/` in this workspace is a snapshot of
+      Metis's routing engine source code (the real
+      `packages/metis-core/src/metis_core/routing/`). Read the source
+      files and then explain how the 7-slot routing chain selects a
+      model for a turn. Your explanation MUST reference at least
+      four specific class names, function names, or enum values that
+      actually appear in the source (e.g. the central engine class,
+      the registry, the availability state type, and the slot policy
+      that consults the pattern store). Do not invent identifiers —
+      every symbol you name must be one you can point to in the
+      files. Walk through the slot order and explain what each slot
+      does. Cite the file each symbol lives in.
+    expect:
+      min_tool_calls: 3
+      max_tool_calls: 20
+      contains_substring: "RoutingEngine"
+expect:
+  max_total_cost_usd: 0.20
+  min_llm_calls: 1
+  max_hard_failures: 0
+evaluate:
+  rubric: hybrid
+  llm_judge_model: anthropic:claude-haiku-4-5
+  # Real symbols the agent must cite to count as grounded. Mix of class
+  # names, the actual lowercase `policy=` literal used on the wire, and
+  # the real `PolicyEvaluation` dataclass — none of these reward
+  # parroting the UPPERCASE_SLOT_LABEL convention from the module
+  # docstring. An agent that opened the files will name several of
+  # these; one that hallucinated will miss most.
+  grounding_tokens:
+    - "RoutingEngine"
+    - "ModelRegistry"
+    - "AvailabilityState"
+    - "PolicyEvaluation"
+    - "policy="
+  # Plausible-but-fabricated names a hallucinating agent would invent
+  # (each follows English/snake-case conventions for a "router" but is
+  # NOT in routing/ source). Presence of any of these is positive
+  # evidence of fabrication, not paraphrase.
+  forbidden_grounding:
+    - "PATTERN_LOOKUP"
+    - "RouterChain"
+    - "ModelSelector"
+    - "PolicyChain"

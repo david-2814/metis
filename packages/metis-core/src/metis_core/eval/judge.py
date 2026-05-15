@@ -46,6 +46,10 @@ class SubjectContext:
     walking the trace store for the subject. `signals_extra` lets the
     benchmark harness pass workload-rubric inputs (assistant text,
     workload-name etc.) the bus events don't carry directly.
+
+    `session_id` is the session that owns this subject — required by the
+    LLM/Hybrid judges so they can charge their inference cost against the
+    shared BudgetTracker's per-session cap. The heuristic tier ignores it.
     """
 
     subject_kind: EvalSubjectKind
@@ -54,6 +58,7 @@ class SubjectContext:
     parent_eval_id: str | None = None
     workload_rubric: WorkloadRubric | None = None
     signals_extra: dict | None = None
+    session_id: str | None = None
 
 
 @runtime_checkable
@@ -151,6 +156,20 @@ class HeuristicJudge:
             weighted += cfg.weight_no_tool_failure
         else:
             flags_negative.append("tool_failed")
+
+        # `tool.failed` only fires on uncaught Python exceptions; a shell tool
+        # returning a non-zero exit code emits `tool.completed` with
+        # `success=False`. Without this gate the heuristic awards a clean
+        # lifecycle score to runs that printed "FAIL N/M" and exited non-zero
+        # (see benchmarks/RESULTS.md §A3 for the case this closes).
+        tool_exit_failure = any(
+            e.type == "tool.completed" and e.payload.get("success") is False for e in ctx.events
+        )
+        if not tool_exit_failure:
+            flags.append("no_tool_exit_failure")
+            weighted += cfg.weight_no_tool_exit_failure
+        else:
+            flags_negative.append("tool_returned_failure")
 
         # max_tokens: any nested llm.call_completed with stop_reason=max_tokens
         # within the turn signals an over-long response.
@@ -373,6 +392,17 @@ class HeuristicJudge:
             else:
                 flags_negative.append("expected_substring_missing")
 
+        # Grounding-check primitive (evaluator.md §5.4, added v1.1 after
+        # benchmarks/RESULTS.md §A3-rev exposed the substring check rewarding
+        # stylistic mimicry over real source-code grounding). Returns a score
+        # in [0, 1] and a separate flag set; folded into the composed score
+        # alongside the substring assertion.
+        grounding_score, grounding_flags, grounding_neg_flags, grounding_signal = _grounding_score(
+            rubric, final_response_text
+        )
+        flags.extend(grounding_flags)
+        flags_negative.extend(grounding_neg_flags)
+
         # Assertion-set pass = no assertion failures and substring matches if
         # required. Heavy weight when explicit assertions exist.
         if assertion_failures:
@@ -390,6 +420,15 @@ class HeuristicJudge:
         elif substring_present is False:
             score = score * 0.5
 
+        # Grounding score (when configured) is averaged into the composed
+        # score with equal weight — a workload that fully grounds in real
+        # symbols and avoids fabricated ones receives an unchanged score; a
+        # workload with no grounding tokens present and forbidden ones
+        # present is halved. Workloads that don't configure grounding pass
+        # `grounding_score is None` and the multiplier is a no-op.
+        if grounding_score is not None:
+            score = (score + grounding_score) / 2.0
+
         # Same opt-in content check as the turn rubric. Workloads without a
         # substring expectation would otherwise score 1.0 even on a refusal.
         content_penalty, content_flags = _content_penalty(extra, prefix="workload_")
@@ -397,8 +436,13 @@ class HeuristicJudge:
         score = score * content_penalty
 
         # Workload-level confidence: high when we have per-turn signal AND
-        # at least one explicit assertion (substring or assertion-set).
-        has_explicit = substring_present is not None or bool(extra.get("assertions_checked"))
+        # at least one explicit assertion (substring, assertion-set, or
+        # grounding tokens).
+        has_explicit = (
+            substring_present is not None
+            or bool(extra.get("assertions_checked"))
+            or grounding_score is not None
+        )
         if per_turn_scores and has_explicit:
             confidence = 0.8
         elif per_turn_scores:
@@ -415,6 +459,11 @@ class HeuristicJudge:
             "assertion_failures": assertion_failures,
             "workload_name": extra.get("workload_name"),
         }
+        if grounding_signal is not None:
+            signals["workload_grounding_score"] = grounding_signal["score"]
+            signals["grounding_tokens_present"] = grounding_signal["tokens_present"]
+            signals["grounding_tokens_missing"] = grounding_signal["tokens_missing"]
+            signals["forbidden_grounding_present"] = grounding_signal["forbidden_present"]
         return score, confidence, signals
 
 
@@ -472,3 +521,68 @@ def _content_penalty(extra: dict, *, prefix: str) -> tuple[float, list[str]]:
     if any(pat in head for pat in _REFUSAL_PATTERNS):
         return 0.5, [f"{prefix}assistant_refusal_detected"]
     return 1.0, []
+
+
+def _grounding_score(
+    rubric: WorkloadRubric, final_response_text: str
+) -> tuple[float | None, list[str], list[str], dict[str, Any] | None]:
+    """Score how well a final response grounds in expected source-code symbols.
+
+    Workload-rubric primitive added in v1.1 after benchmarks/RESULTS.md
+    §A3-rev showed the original substring assertion rewarded stylistic
+    mimicry over real grounding (sonnet cited the real `PolicyEvaluation`
+    dataclass and lowercase `policy=` literals — strictly more grounded —
+    but scored 0.50 because it didn't parrot the UPPERCASE
+    `PATTERN_RECOMMENDATION` label from the module docstring).
+
+    Heuristic algorithm (cost: $0):
+
+    - For each `grounding_tokens` substring present in the response, count
+      a positive hit. Score component = `present / total`.
+    - For each `forbidden_grounding` substring present, count a negative
+      hit. Score component = `1 - (present / total)`.
+    - Combined score = `(positive + forbidden_clean) / 2` when both lists
+      are non-empty; otherwise the configured side alone.
+
+    Returns (score | None, positive_flags, negative_flags, signal_dict).
+    Returns `None` for the score when the rubric configures neither list —
+    callers treat None as a no-op multiplier.
+    """
+    grounding_tokens = rubric.grounding_tokens
+    forbidden_grounding = rubric.forbidden_grounding
+    if not grounding_tokens and not forbidden_grounding:
+        return None, [], [], None
+
+    text_lower = final_response_text.lower()
+
+    tokens_present = [t for t in grounding_tokens if t.lower() in text_lower]
+    tokens_missing = [t for t in grounding_tokens if t.lower() not in text_lower]
+    forbidden_present = [t for t in forbidden_grounding if t.lower() in text_lower]
+
+    pos_flags: list[str] = []
+    neg_flags: list[str] = []
+    components: list[float] = []
+
+    if grounding_tokens:
+        pos_score = len(tokens_present) / len(grounding_tokens)
+        components.append(pos_score)
+        if tokens_present:
+            pos_flags.append("workload_grounding_tokens_present")
+        if tokens_missing:
+            neg_flags.append("workload_grounding_tokens_missing")
+    if forbidden_grounding:
+        clean_score = 1.0 - (len(forbidden_present) / len(forbidden_grounding))
+        components.append(clean_score)
+        if forbidden_present:
+            neg_flags.append("workload_forbidden_grounding_present")
+        else:
+            pos_flags.append("workload_forbidden_grounding_clean")
+
+    score = sum(components) / len(components)
+    signal: dict[str, Any] = {
+        "score": score,
+        "tokens_present": tokens_present,
+        "tokens_missing": tokens_missing,
+        "forbidden_present": forbidden_present,
+    }
+    return score, pos_flags, neg_flags, signal

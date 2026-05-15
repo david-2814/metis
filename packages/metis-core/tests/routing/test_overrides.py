@@ -55,7 +55,16 @@ def test_inline_at_not_override(registry: ModelRegistry):
     assert result.cleaned_text == "ping @haiku tomorrow"
 
 
-def test_override_with_no_remaining_text(registry: ModelRegistry):
+def test_bare_alias_rejected_no_body(registry: ModelRegistry):
+    """Per spec §9.2, the override syntax must be followed by whitespace.
+
+    `@haiku` with nothing after it doesn't meet that requirement; the
+    parse flags `body_missing` so the caller raises `OverrideError`.
+    """
     result = parse_per_message_override("@haiku", registry)
-    assert result.resolved_model == "anthropic:claude-haiku-4-5"
-    assert result.cleaned_text == ""
+    assert result.had_override_attempt is True
+    assert result.body_missing is True
+    assert result.raw_alias == "haiku"
+    assert result.resolved_model is None
+    # The malformed-body case is distinct from unknown-alias.
+    assert result.is_unknown_alias is False

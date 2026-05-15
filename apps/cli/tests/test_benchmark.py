@@ -24,9 +24,12 @@ def test_shipped_workloads_load_clean():
     workloads = benchmark.discover_workloads()
     names = {w.name for w in workloads}
     assert names == {
+        "architectural-explanation-without-hallucination",
         "fix-a-bug-small",
         "intentionally-failing-task",
+        "multi-file-refactor-with-shared-types",
         "multi-turn-refactor",
+        "regex-with-edge-cases",
         "write-a-doc-from-notes",
     }
     for w in workloads:

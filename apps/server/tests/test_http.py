@@ -97,6 +97,38 @@ async def test_get_session_returns_attach_token(client, workspace):
     assert f"/sessions/{sid}/stream?attach=" in body["ws_url"]
 
 
+async def test_get_session_routing_policy_version_null_without_policy(client, workspace):
+    """With no policy loaded, the field is null on both POST and GET responses."""
+    r = await client.post("/sessions", json={"workspace_path": str(workspace)})
+    assert r.status_code == 201
+    assert r.json()["routing_policy_version"] is None
+    sid = r.json()["id"]
+    r = await client.get(f"/sessions/{sid}")
+    assert r.status_code == 200
+    assert r.json()["routing_policy_version"] is None
+
+
+async def test_get_session_routing_policy_version_surfaces_when_loaded(client, workspace, runtime):
+    """When a policy is loaded, the field surfaces the content-derived version."""
+    from metis_core.routing.policy_loader import parse_policy_text
+
+    raw_yaml = "schema_version: 1\nglobal_default: anthropic:claude-sonnet-4-6\n"
+    policy = parse_policy_text(raw_yaml, runtime.registry, source_path="test://routing.yaml")
+    assert policy.version is not None
+    runtime.routing.set_policy(policy)
+    r = await client.post("/sessions", json={"workspace_path": str(workspace)})
+    assert r.status_code == 201
+    assert r.json()["routing_policy_version"] == policy.version
+    sid = r.json()["id"]
+    r = await client.get(f"/sessions/{sid}")
+    assert r.status_code == 200
+    assert r.json()["routing_policy_version"] == policy.version
+    # Editing the policy changes the version.
+    raw_yaml2 = raw_yaml + "# trailing comment\n"
+    policy2 = parse_policy_text(raw_yaml2, runtime.registry, source_path="test://routing.yaml")
+    assert policy2.version != policy.version
+
+
 async def test_get_session_not_found(client):
     r = await client.get("/sessions/sess_nope")
     assert r.status_code == 404

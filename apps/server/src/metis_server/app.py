@@ -39,6 +39,7 @@ from metis_core.sessions.manager import UnknownAliasError
 from metis_core.tools.confirmation import ConfirmationDecision
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.routing import Mount, Route, WebSocketRoute
@@ -60,6 +61,7 @@ from metis_server.errors import (
     workspace_not_found,
 )
 from metis_server.hub import StreamingHub
+from metis_server.middleware_versioning import VersioningMiddleware
 from metis_server.streaming import StreamingConnection
 from metis_server.tokens import AttachTokenRegistry
 from metis_server.turns import TurnExecutor
@@ -157,6 +159,9 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         Route("/analytics/sessions", analytics_handlers.sessions, methods=["GET"]),
         Route("/analytics/turns/{turn_id}", analytics_handlers.turn, methods=["GET"]),
         Route("/analytics/savings", analytics_handlers.savings, methods=["GET"]),
+        Route("/analytics/by_key", analytics_handlers.by_key, methods=["GET"]),
+        Route("/analytics/by_team", analytics_handlers.by_team, methods=["GET"]),
+        Route("/analytics/quality", analytics_handlers.quality, methods=["GET"]),
         WebSocketRoute("/sessions/{session_id}/stream", _stream),
         # Dashboard SPA — vanilla HTML + JS, served as static files from
         # `metis_server/static/`. Mounted last so API/WS routes take priority.
@@ -167,6 +172,7 @@ def build_app(runtime: ChatRuntime) -> Starlette:
     app = Starlette(
         routes=routes,
         exception_handlers={Exception: _err_handler, APIError: _err_handler},
+        middleware=[Middleware(VersioningMiddleware)],
     )
     app.state.app_state = state
     return app
@@ -234,7 +240,7 @@ async def _post_session(request: Request) -> Response:
             "workspace_path": session.workspace_path,
             "active_model": session.active_model,
             "created_at": session.created_at.isoformat(),
-            "routing_policy_version": None,
+            "routing_policy_version": st.runtime.manager.routing_policy_version(),
         },
         status=201,
     )
@@ -280,7 +286,7 @@ async def _get_session(request: Request) -> Response:
             "id": session.id,
             "workspace_path": session.workspace_path,
             "active_model": session.active_model,
-            "routing_policy_version": None,
+            "routing_policy_version": st.runtime.manager.routing_policy_version(),
             "cost_so_far_usd": session.cost_so_far_usd,
             "turn_count": session.turn_count,
             "current_turn_id": None,

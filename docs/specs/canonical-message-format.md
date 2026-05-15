@@ -161,6 +161,13 @@ class MessageMetadata:
     # Provider-specific opaque payload (round-trip aid; see §6.4)
     provider_raw: dict | None = None
 
+    # Multi-user identity dimensions (multi-user.md §3, §4.4). Stable
+    # principal ids resolved from the gateway key at request entry; both
+    # `None` for agent-loop traffic and for pre-multi-user gateway keys.
+    # Pseudonymous — no plaintext PII; emails live in `users.json` only.
+    user_id: str | None = None
+    team_id: str | None = None
+
 class MessageStatus(StrEnum):
     COMPLETE  = "complete"
     PARTIAL   = "partial"             # streaming in progress

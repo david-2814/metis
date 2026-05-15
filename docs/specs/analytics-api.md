@@ -96,7 +96,13 @@ Aggregated cost and token counts. Combines what would otherwise be a separate `/
 | Parameter   | Type                                                | Required | Default |
 |-------------|-----------------------------------------------------|----------|---------|
 | `from`,`to` | ISO 8601 UTC                                        | no       | last 7d |
-| `group_by`  | `model` \| `provider` \| `session` \| `day` \| `hour` \| `none` | no | `model` |
+| `group_by`  | `model` \| `provider` \| `session` \| `day` \| `hour` \| `gateway_key` \| `user` \| `team` \| `parent_session` \| `is_worker` \| `none` | no | `model` |
+| `gateway_key` | exact-match filter on `payload.gateway_key_id`    | no       | (all)   |
+| `user`      | exact-match filter on `payload.user_id`             | no       | (all)   |
+| `team`      | exact-match filter on `payload.team_id`             | no       | (all)   |
+| `include_workers` | bool — when `false`, excludes rows whose `payload.parent_session_id` is set (delegation.md §8.2) | no | `true` |
+
+The three filter parameters (`gateway_key` / `user` / `team`) are passed via SQL placeholders and additionally regex-validated at the HTTP boundary (`^[A-Za-z0-9_-]{1,200}$`); malformed values return 400 `invalid_gateway_key` / `invalid_user` / `invalid_team`. Combinations AND together — `?user=alice&team=eng` narrows to events stamped with both. v1 of multi-user.md treats names → ids resolution as a future step; the implementation accepts whatever stable id (`usr_<ulid>` / `team_<ulid>`) the trace event carries.
 
 **Source:** `events` table, `type = 'llm.call_completed'`. Cost is the stamped value (matches invoice).
 
@@ -130,14 +136,19 @@ For `group_by=none`, the GROUP BY clause is omitted entirely and the response ca
 
 Every row carries the same numeric columns (`cost_usd`, `input_tokens`, `output_tokens`, `cached_input_tokens`, `cache_creation_input_tokens`, `avg_latency_ms`, `call_count`). What differs is the grouping key, summarized below:
 
-| `group_by` | Key columns                            | Shape   | Order                       |
-|------------|----------------------------------------|---------|-----------------------------|
-| `model`    | `model`, `provider`                    | array   | `cost_usd DESC`             |
-| `provider` | `provider`                             | array   | `cost_usd DESC`             |
-| `session`  | `session_id` (from events column)      | array   | `cost_usd DESC`             |
-| `day`      | `bucket` (UTC date, `YYYY-MM-DD`)      | array   | `bucket ASC` (time series)  |
-| `hour`     | `bucket` (UTC hour, `YYYY-MM-DDTHH`)   | array   | `bucket ASC` (time series)  |
-| `none`     | (no key)                               | object  | n/a (single aggregate)      |
+| `group_by`    | Key columns                            | Shape   | Order                       |
+|---------------|----------------------------------------|---------|-----------------------------|
+| `model`       | `model`, `provider`                    | array   | `cost_usd DESC`             |
+| `provider`    | `provider`                             | array   | `cost_usd DESC`             |
+| `session`     | `session_id` (from events column)      | array   | `cost_usd DESC`             |
+| `day`         | `bucket` (UTC date, `YYYY-MM-DD`)      | array   | `bucket ASC` (time series)  |
+| `hour`        | `bucket` (UTC hour, `YYYY-MM-DDTHH`)   | array   | `bucket ASC` (time series)  |
+| `gateway_key` | `gateway_key_id` (nullable; in-process agent traffic rolls up under `null`) | array | `cost_usd DESC` |
+| `user`        | `user_id` (nullable; agent-loop + pre-v1 keys roll up under `null`) | array | `cost_usd DESC` |
+| `team`        | `team_id` (nullable; same null convention)         | array | `cost_usd DESC` |
+| `parent_session` | `parent_session_id` (`COALESCE(payload.parent_session_id, events.session_id)` — workers roll up under their planner, top-level sessions are their own key) | array | `cost_usd DESC` |
+| `is_worker`   | `is_worker` (string `"planner"` or `"worker"`; partitions by whether the call came from a worker session — delegation.md §8.2) | array | `cost_usd DESC` |
+| `none`        | (no key)                               | object  | n/a (single aggregate)      |
 
 `day`/`hour` are single-dimension time buckets — they do not also split by model. A future `group_by=day,model` (multi-key) is non-breaking but out of scope for v1. `none` returns a single JSON object as `data` rather than an array — the response envelope is otherwise unchanged.
 
@@ -505,6 +516,116 @@ Both `actual_repriced_usd` and `actual_stamped_usd` are returned so the SPA can 
 
 **Negative savings are a valid result.** If the user runs with an unusually expensive baseline or genuinely consumed more than the baseline would have, `savings_usd` and `savings_pct` can be negative — meaning "you spent 26% *more* than baseline." The SPA must render this case explicitly (e.g. red label, "26% over baseline"), not absolute-value, hide, or floor it to zero. The math is correct; suppressing the sign would lie about the workload.
 
+### 4.8 `GET /analytics/by_key`
+
+Per-(gateway-key) cost / token / call-count rollup with an inbound-shape breakdown per key. The companion view to `gateway.md §6` — the gateway stamps `gateway_key_id` and `inbound_shape` onto every `llm.call_completed`; this endpoint is where operators consume the rollup.
+
+**Query parameters:**
+
+| Parameter     | Type                | Required | Default |
+|---------------|---------------------|----------|---------|
+| `from`,`to`   | ISO 8601 UTC        | no       | last 7d |
+| `gateway_key` | exact-match filter  | no       | (all keys) |
+
+The `gateway_key` filter is passed via parameterized SQL placeholder; the HTTP layer additionally rejects values that don't match `^[A-Za-z0-9_-]{1,200}$` with a 400 `invalid_gateway_key` — defense in depth even though the SQL itself is safe by construction.
+
+**Source:** `events` table, `type = 'llm.call_completed'`. Costs are stamped (matches the invoice).
+
+**Algorithm:** the SQL fetches one row per call within the window, including `gateway_key_id` and `inbound_shape` from the payload. The handler aggregates in Python by `gateway_key_id` (using `Decimal` per §5.1) and tracks a per-shape sub-aggregate. Rows that originated from the in-process agent loop (CLI / TUI / `metis serve`) carry `gateway_key_id: null` and roll up under the `null` key.
+
+**Response:**
+
+```json
+{
+  "window": {"start": "...", "end": "..."},
+  "current_pricing_version": "2026-05-08",
+  "data": [
+    {
+      "gateway_key_id": "gk_01HZ...",
+      "cost_usd": 0.4231,
+      "input_tokens": 14820,
+      "output_tokens": 612,
+      "cached_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "call_count": 12,
+      "by_inbound_shape": [
+        {"inbound_shape": "openai", "call_count": 8, "cost_usd": 0.3010},
+        {"inbound_shape": "anthropic", "call_count": 4, "cost_usd": 0.1221}
+      ]
+    },
+    {
+      "gateway_key_id": null,
+      "cost_usd": 1.0512,
+      "input_tokens": 51220,
+      "output_tokens": 1842,
+      "cached_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "call_count": 30,
+      "by_inbound_shape": [{"inbound_shape": null, "call_count": 30, "cost_usd": 1.0512}]
+    }
+  ]
+}
+```
+
+Rows are sorted by `cost_usd` DESC. The `by_inbound_shape` sub-array is also `cost_usd` DESC. `inbound_shape: null` is the natural shape for in-process agent traffic (no inbound translator ran).
+
+### 4.9 `GET /analytics/by_team`
+
+Per-(team) cost / token / call-count rollup with a per-user breakdown. Companion to `/analytics/by_key`; the buyer surface for the multi-user.md §5.2 contract. The gateway stamps `team_id` (and `user_id`) onto every `llm.call_completed` it serves (multi-user.md §4.4); this endpoint is where the budget owner consumes the rollup.
+
+**Query parameters:**
+
+| Parameter   | Type           | Required | Default |
+|-------------|----------------|----------|---------|
+| `from`,`to` | ISO 8601 UTC   | no       | last 7d |
+| `team`      | exact-match filter on `payload.team_id` | no | (all teams) |
+
+The `team` filter follows the same regex guard as `/analytics/by_key`'s `gateway_key` (`^[A-Za-z0-9_-]{1,200}$`); malformed values return 400 `invalid_team`. The id is bound via SQL placeholder.
+
+**Source:** `events` table, `type = 'llm.call_completed'`. Cost is the stamped value (matches invoice). Per multi-user.md §3.4 the agent-loop path emits `team_id: null` / `user_id: null`, so that traffic rolls up under a single `team_id: null` row whose `by_user` array contains the matching `user_id: null` sub-row.
+
+**Algorithm:** the SQL fetches one row per call within the window with the stamped `team_id` / `user_id`. The handler aggregates by `team_id` (Python, `Decimal` per §5.1) and tracks a per-user sub-aggregate inside each team. `user_count` is the number of distinct **non-null** `user_id` values seen in the team — the null bucket represents un-tagged traffic, not a separate identity.
+
+**Response:**
+
+```json
+{
+  "window": {"start": "...", "end": "..."},
+  "current_pricing_version": "2026-05-08",
+  "data": [
+    {
+      "team_id": "team_01HZ...",
+      "cost_usd": 12.4231,
+      "input_tokens": 4910220,
+      "output_tokens": 81502,
+      "cached_input_tokens": 2500000,
+      "cache_creation_input_tokens": 410220,
+      "call_count": 412,
+      "user_count": 2,
+      "by_user": [
+        {"user_id": "usr_01HZ...", "cost_usd": 8.1010, "call_count": 281},
+        {"user_id": "usr_01HZ...", "cost_usd": 4.3221, "call_count": 131}
+      ]
+    },
+    {
+      "team_id": null,
+      "cost_usd": 1.0512,
+      "input_tokens": 51220,
+      "output_tokens": 1842,
+      "cached_input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "call_count": 30,
+      "user_count": 0,
+      "by_user": [{"user_id": null, "cost_usd": 1.0512, "call_count": 30}]
+    }
+  ]
+}
+```
+
+Rows sorted by `cost_usd` DESC; `by_user` sub-array is also `cost_usd` DESC.
+
+**v1 scope.** The implementation ships the rollup shape; the team-record join (`team_name`, `daily_cap_usd`, `monthly_cap_usd` from `teams.json`) and the `partial_coverage` flag described in multi-user.md §5.2 / §5.4 are deferred until the keystore-side user/team records are wired in (Agent 8a's downstream wave). When that lands, the join is additive — these fields appear next to `team_id` without changing the existing shape.
+
 ---
 
 ## 5. Pricing semantics
@@ -545,6 +666,9 @@ Follows [server-api.md §5](server-api.md) conventions. New error codes specific
 | `invalid_order`           | 400  | `order` is not in the allowed set (`cost` \| `recency`).            |
 | `invalid_limit`           | 400  | `limit` is not an integer or is less than 1.                        |
 | `unknown_baseline_model`  | 400  | Savings baseline isn't registered in the current `PriceTable`.      |
+| `invalid_gateway_key`     | 400  | `gateway_key` filter value violates the `^[A-Za-z0-9_-]{1,200}$` shape guard. |
+| `invalid_user`            | 400  | `user` filter value violates the shape guard.                       |
+| `invalid_team`            | 400  | `team` filter value violates the shape guard.                       |
 | `turn_not_found`          | 404  | No events match the given `turn_id`.                                |
 
 Naming follows the symmetric convention `invalid_<param>` for value-rejection errors and `unknown_<resource>` / `<resource>_not_found` for lookup failures, matching [server-api.md §5](server-api.md).

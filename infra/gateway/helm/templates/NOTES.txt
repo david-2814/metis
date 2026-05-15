@@ -1,0 +1,80 @@
+{{ include "metis-gateway.fullname" . }} is installed.
+
+What you got:
+  Deployment      : {{ include "metis-gateway.fullname" . }}  (replicas: {{ .Values.replicaCount }})
+  Service         : {{ include "metis-gateway.fullname" . }}  (type: {{ .Values.service.type }}, port: {{ .Values.service.port }})
+  {{- if .Values.podDisruptionBudget.enabled }}
+  PDB             : {{ include "metis-gateway.fullname" . }}
+  {{- end }}
+  {{- if .Values.autoscaling.enabled }}
+  HPA             : {{ include "metis-gateway.fullname" . }}  (min: {{ .Values.autoscaling.minReplicas }}, max: {{ .Values.autoscaling.maxReplicas }})
+  {{- end }}
+  {{- if .Values.networkPolicy.enabled }}
+  NetworkPolicy   : {{ include "metis-gateway.fullname" . }}  (deny-by-default + provider-egress)
+  {{- end }}
+  {{- if .Values.persistence.enabled }}
+  PVC             : {{ include "metis-gateway.pvcName" . }}  ({{ .Values.persistence.size }})
+  {{- end }}
+  Provider secret : {{ include "metis-gateway.providerSecretName" . }}
+  Keystore source : {{ if .Values.keystore.existingSecret }}Secret/{{ .Values.keystore.existingSecret }}{{ else }}ConfigMap/{{ include "metis-gateway.keystoreConfigMapName" . }} (seed){{ end }}
+
+Next steps:
+
+{{- if not .Values.keystore.existingSecret }}
+
+1. IMPORTANT: this release was installed against the chart's seed keystore
+   (ConfigMap `{{ include "metis-gateway.keystoreConfigMapName" . }}` with `{"keys": []}`).
+   The gateway rejects an empty keys array at startup, so the pod will
+   CrashLoopBackOff until you bundle at least one issued key.
+
+   Issue a key out-of-band, then upgrade to a Secret-backed keystore:
+
+     # Option A: locally (requires a uv-checked-out metis workspace)
+     uv run metis gateway issue-key \
+         --keystore ./keys.json \
+         --name "my-client" --workspace /workspace
+
+     # Option B: via the gateway image (no local workspace needed)
+     docker run --rm -v "$PWD:/etc/metis" \
+         {{ .Values.image.repository }}:{{ .Values.image.tag }} issue-key \
+             --name "my-client" --workspace /workspace
+
+     kubectl -n {{ .Release.Namespace }} create secret generic metis-gateway-keystore \
+         --from-file=keys.json=./keys.json
+
+     helm upgrade {{ .Release.Name }} ./infra/gateway/helm/ \
+         --namespace {{ .Release.Namespace }} --reuse-values \
+         --set keystore.existingSecret=metis-gateway-keystore
+
+   See "First production smoke" in docs/gateway-deployment.md for the full recipe.
+{{- else }}
+
+1. You installed with `keystore.existingSecret={{ .Values.keystore.existingSecret }}`.
+   To rotate keys, regenerate `keys.json`, recreate the Secret, then
+   `kubectl rollout restart deploy/{{ include "metis-gateway.fullname" . }}`.
+{{- end }}
+
+2. Sanity-check the gateway over the Service:
+
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "metis-gateway.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+   # then in a second shell:
+   curl http://127.0.0.1:{{ .Values.service.port }}/healthz
+
+{{- if .Values.ingress.enabled }}
+
+3. Ingress is enabled. Your hosts:
+{{- range .Values.ingress.hosts }}
+   - https://{{ .host }}
+{{- end }}
+   Make sure your TLS cert is in place (cert-manager / cloud-LB cert).
+{{- else }}
+
+3. Ingress is disabled. Reach the gateway in one of three ways:
+   - In-cluster: point clients at  http://{{ include "metis-gateway.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+   - port-forward (see step 2) for local dev / smoke
+   - Enable ingress.* values and add a TLS terminator before exposing publicly
+{{- end }}
+
+Production-readiness notes are in docs/gateway-deployment.md ("Kubernetes
+via helm" + "Production-readiness audit"). The gateway is single-tenant v1;
+multi-user / team rollups are tracked in docs/specs/multi-user.md.

@@ -83,6 +83,116 @@ async def test_turn_heuristic_tool_failure_lowers_score_and_confidence():
     assert "tool_failed" in verdict.signals["flags_negative"]
 
 
+async def test_turn_heuristic_tool_exit_failure_lowers_score_materially():
+    """A `tool.completed` with `success=False` (clean-exit-nonzero — e.g. the
+    shell tool's non-zero exit path) must drop the score by ≥0.3 from a
+    clean baseline. This is the headline assertion that refutes the §A3
+    null result: a regex-fail turn that exited 1 used to score 1.0 because
+    the heuristic only watched `tool.failed` (exception path).
+    """
+    session_id = "sess_test"
+    turn_id = new_turn_id()
+    tool_use_id = new_tool_use_id()
+    judge = HeuristicJudge()
+
+    clean_events = [
+        build_turn_completed(session_id=session_id, turn_id=turn_id, tool_call_count=1),
+        build_tool_called(
+            session_id=session_id,
+            turn_id=turn_id,
+            tool_use_id=tool_use_id,
+            tool_name="shell",
+        ),
+        build_tool_completed(
+            session_id=session_id, turn_id=turn_id, tool_use_id=tool_use_id, success=True
+        ),
+    ]
+    clean = await judge.evaluate(
+        SubjectContext(subject_kind="turn", subject_id=turn_id, events=clean_events)
+    )
+
+    failed_events = [
+        build_turn_completed(session_id=session_id, turn_id=turn_id, tool_call_count=1),
+        build_tool_called(
+            session_id=session_id,
+            turn_id=turn_id,
+            tool_use_id=tool_use_id,
+            tool_name="shell",
+        ),
+        build_tool_completed(
+            session_id=session_id, turn_id=turn_id, tool_use_id=tool_use_id, success=False
+        ),
+    ]
+    failed = await judge.evaluate(
+        SubjectContext(subject_kind="turn", subject_id=turn_id, events=failed_events)
+    )
+
+    assert clean.score == 1.0
+    assert "no_tool_exit_failure" in clean.signals["flags"]
+    assert failed.score <= clean.score - 0.3, (
+        f"clean={clean.score}, failed={failed.score}; drop must be ≥0.3"
+    )
+    assert "tool_returned_failure" in failed.signals["flags_negative"]
+    assert "no_tool_exit_failure" not in failed.signals["flags"]
+
+
+async def test_turn_heuristic_tool_exit_failure_drops_confidence_below_hybrid_threshold():
+    """The new gate must drop heuristic confidence under 0.7 so HybridJudge
+    (escalation_threshold=0.7 in v1, evaluator.md §5.3) escalates to the
+    LLM judge. Without this property, the rubric extension wouldn't
+    unblock §A3 on its own — see CHANGES.md note."""
+    session_id = "sess_test"
+    turn_id = new_turn_id()
+    tool_use_id = new_tool_use_id()
+    events = [
+        build_turn_completed(session_id=session_id, turn_id=turn_id, tool_call_count=1),
+        build_tool_called(
+            session_id=session_id,
+            turn_id=turn_id,
+            tool_use_id=tool_use_id,
+            tool_name="shell",
+        ),
+        build_tool_completed(
+            session_id=session_id, turn_id=turn_id, tool_use_id=tool_use_id, success=False
+        ),
+    ]
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(subject_kind="turn", subject_id=turn_id, events=events)
+    )
+    assert verdict.confidence < 0.7, (
+        f"confidence={verdict.confidence} must be < hybrid escalation threshold 0.7"
+    )
+
+
+async def test_turn_heuristic_tool_completed_success_true_does_not_fire_negative():
+    """A clean `tool.completed` with `success=True` is the common case and
+    must not fire the new negative flag — extension is additive against
+    the existing clean-turn fixture set."""
+    session_id = "sess_test"
+    turn_id = new_turn_id()
+    tool_use_id = new_tool_use_id()
+    events = [
+        build_turn_completed(session_id=session_id, turn_id=turn_id, tool_call_count=1),
+        build_tool_called(
+            session_id=session_id,
+            turn_id=turn_id,
+            tool_use_id=tool_use_id,
+            tool_name="read_file",
+        ),
+        build_tool_completed(
+            session_id=session_id, turn_id=turn_id, tool_use_id=tool_use_id, success=True
+        ),
+    ]
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(subject_kind="turn", subject_id=turn_id, events=events)
+    )
+    assert verdict.score == 1.0
+    assert "no_tool_exit_failure" in verdict.signals["flags"]
+    assert "tool_returned_failure" not in verdict.signals["flags_negative"]
+
+
 async def test_turn_heuristic_score_bounded_in_unit_interval():
     """Property check: any input → score in [0, 1]."""
     session_id = "sess_test"
@@ -521,3 +631,159 @@ async def test_workload_heuristic_assertion_failure_penalty():
     )
     assert verdict.score < 1.0
     assert "workload_assertions_failed" in verdict.signals["flags_negative"]
+
+
+# ---------------------------------------------------------------------------
+# Grounding-check primitive (evaluator.md §5.4 v1.1; benchmarks/RESULTS.md §A3-rev)
+# ---------------------------------------------------------------------------
+
+
+_GROUNDING_RUBRIC = WorkloadRubric(
+    rubric="heuristic",
+    grounding_tokens=("RoutingEngine", "ModelRegistry", "PolicyEvaluation", "policy="),
+    forbidden_grounding=("PATTERN_LOOKUP", "RouterChain", "ModelSelector", "PolicyChain"),
+)
+
+
+async def _score_with_response(text: str, rubric: WorkloadRubric = _GROUNDING_RUBRIC):
+    judge = HeuristicJudge()
+    return await judge.evaluate(
+        SubjectContext(
+            subject_kind="workload",
+            subject_id="wl_grounding",
+            events=[],
+            workload_rubric=rubric,
+            signals_extra={
+                "per_turn_scores": [1.0],
+                "final_response_text": text,
+                "assertion_failures": [],
+                "assertions_checked": True,
+            },
+        )
+    )
+
+
+async def test_workload_grounding_present_scores_higher_than_absent():
+    """A response that names real symbols scores materially higher than one
+    that names none — the heuristic floor must reward grounding, not just
+    stylistic keyword matches.
+    """
+    grounded = (
+        "The RoutingEngine class delegates to ModelRegistry; the chain emits "
+        "a PolicyEvaluation per slot and the events serialize policy=pattern."
+    )
+    ungrounded = (
+        "The router consults a chain of policies in order, picking the first "
+        "that returns a model. Each policy can short-circuit."
+    )
+    grounded_v = await _score_with_response(grounded)
+    ungrounded_v = await _score_with_response(ungrounded)
+    assert grounded_v.score - ungrounded_v.score >= 0.2, (
+        f"grounded {grounded_v.score} vs ungrounded {ungrounded_v.score}"
+    )
+    assert "workload_grounding_tokens_present" in grounded_v.signals["flags"]
+    assert "workload_grounding_tokens_missing" in ungrounded_v.signals["flags_negative"]
+    assert (
+        grounded_v.signals["workload_grounding_score"]
+        > ungrounded_v.signals["workload_grounding_score"]
+    )
+
+
+async def test_workload_forbidden_grounding_present_lowers_score():
+    """A response that names fabricated symbols scores lower than one that
+    avoids them, even when both are otherwise comparable.
+    """
+    fabricated = (
+        "The RoutingEngine consults a RouterChain via PATTERN_LOOKUP; the "
+        "ModelSelector picks the winning policy."
+    )
+    clean = (
+        "The RoutingEngine consults policies in slot order; the ModelRegistry "
+        "validates the chosen model."
+    )
+    fabricated_v = await _score_with_response(fabricated)
+    clean_v = await _score_with_response(clean)
+    assert clean_v.score > fabricated_v.score
+    assert "workload_forbidden_grounding_present" in fabricated_v.signals["flags_negative"]
+    assert "workload_forbidden_grounding_clean" in clean_v.signals["flags"]
+    # Audit trail captures which forbidden tokens fired.
+    assert set(fabricated_v.signals["forbidden_grounding_present"]) >= {
+        "RouterChain",
+        "PATTERN_LOOKUP",
+        "ModelSelector",
+    }
+
+
+async def test_workload_grounding_paraphrase_beats_uppercase_label_parroting():
+    """End-to-end §A3-rev fix: a response citing real symbols (PolicyEvaluation,
+    lowercase policy=) scores ≥ a response that only parrots the
+    UPPERCASE_LABEL convention from a docstring without other grounding.
+
+    This is the literal regression case the §A3-rev finding documented:
+    sonnet was strictly more grounded but the old substring rubric scored
+    it 0.50 vs haiku's 1.00. The new primitive must reverse that.
+    """
+    sonnet_style = (
+        "Routing slot 4 reads the PolicyEvaluation dataclass produced by the "
+        "RoutingEngine; on the wire the slot serializes as policy=pattern. "
+        "The ModelRegistry validates the candidate before commit."
+    )
+    haiku_style_uppercase_only = (
+        "The slots are MANUAL_OVERRIDE, MANUAL_STICKY, RULE_MATCH, "
+        "PATTERN_RECOMMENDATION, DELEGATE_REQUEST, WORKSPACE_DEFAULT, and "
+        "GLOBAL_DEFAULT. The router walks them in order."
+    )
+    sonnet_v = await _score_with_response(sonnet_style)
+    haiku_v = await _score_with_response(haiku_style_uppercase_only)
+    assert sonnet_v.score >= haiku_v.score, (
+        f"sonnet {sonnet_v.score} vs haiku-uppercase {haiku_v.score}"
+    )
+    assert (
+        sonnet_v.signals["workload_grounding_score"] > haiku_v.signals["workload_grounding_score"]
+    )
+
+
+async def test_workload_grounding_absent_when_lists_empty():
+    """No grounding lists configured → no grounding signal in the verdict."""
+    rubric = WorkloadRubric(rubric="heuristic")
+    verdict = await _score_with_response("anything", rubric=rubric)
+    assert "workload_grounding_score" not in verdict.signals
+    assert "grounding_tokens_present" not in verdict.signals
+
+
+async def test_workload_grounding_only_forbidden_list_scored():
+    """A rubric that configures only forbidden_grounding still produces a
+    grounding score (clean-on-absence)."""
+    rubric = WorkloadRubric(
+        rubric="heuristic",
+        forbidden_grounding=("PATTERN_LOOKUP", "RouterChain"),
+    )
+    clean = await _score_with_response("All is grounded.", rubric=rubric)
+    assert clean.signals["workload_grounding_score"] == 1.0
+    assert "workload_forbidden_grounding_clean" in clean.signals["flags"]
+    fabricated = await _score_with_response("PATTERN_LOOKUP and RouterChain.", rubric=rubric)
+    assert fabricated.signals["workload_grounding_score"] == 0.0
+
+
+async def test_architectural_explanation_workload_fixture_uses_grounding_primitive():
+    """Load the real workload.yaml and confirm the v1.1 fixture parses with
+    the grounding lists wired."""
+    import pathlib
+
+    import yaml
+    from metis_core.eval.rubric import parse_workload_rubric
+
+    repo_root = pathlib.Path(__file__).resolve().parents[4]
+    workload_path = (
+        repo_root
+        / "benchmarks/workloads/architectural-explanation-without-hallucination/workload.yaml"
+    )
+    raw = yaml.safe_load(workload_path.read_text())
+    rubric = parse_workload_rubric(raw.get("evaluate"))
+    assert rubric.rubric == "hybrid"
+    assert "RoutingEngine" in rubric.grounding_tokens
+    assert "PolicyEvaluation" in rubric.grounding_tokens
+    assert "policy=" in rubric.grounding_tokens
+    assert "PATTERN_LOOKUP" in rubric.forbidden_grounding
+    # The misleading substring assertion is dropped per §A3-rev fix.
+    assert rubric.expect_substring_in_final_response is None

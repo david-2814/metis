@@ -1,0 +1,17 @@
+[project]
+name = "metis-gateway"
+version = "0.1.0"
+description = "Metis transparent HTTP gateway (OpenAI/Anthropic-shape inbound, routed via metis-core)."
+authors = [
+    { name = "David Ji", email = "david.ji.2814@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "metis-core",
+    "starlette>=0.41.0",
+    "uvicorn>=0.32.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.11.0"]
+build-backend = "uv_build"

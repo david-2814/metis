@@ -48,10 +48,16 @@ import yaml
 from metis_core.analytics import AnalyticsStore
 from metis_core.analytics.windows import TimeWindow
 from metis_core.eval import (
+    DEFAULT_ESCALATION_THRESHOLD,
     HeuristicJudge,
+    HybridJudge,
+    LLMJudge,
+    LLMJudgeConfig,
     WorkloadRubric,
     parse_workload_rubric,
+    register_evaluator,
 )
+from metis_core.eval.judge import Judge
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKLOADS_DIR = REPO_ROOT / "benchmarks" / "workloads"
@@ -261,6 +267,50 @@ def _now_us() -> int:
     return int(datetime.now(UTC).timestamp() * 1_000_000)
 
 
+def _enable_delegation(registry, policy: str) -> None:
+    """Re-register the planner + worker models with delegation flags so the
+    `delegate()` tool becomes visible to the planner (delegation.md §3.1).
+
+    `policy` is either the literal "sonnet-planner-haiku-worker" (the §A3-rev4
+    default — sonnet plans, haiku executes) or a path to a yaml file with
+    `planner_model` / `worker_model` keys. The registry preserves adapter,
+    aliases, and task_profile from the existing entries; only the
+    `can_delegate` + `delegation_tier` fields are updated.
+    """
+    if policy == "sonnet-planner-haiku-worker":
+        planner = "anthropic:claude-sonnet-4-6"
+        worker = "anthropic:claude-haiku-4-5"
+    else:
+        import yaml as _yaml
+
+        with open(policy, encoding="utf-8") as f:
+            raw = _yaml.safe_load(f) or {}
+        planner = raw.get("planner_model")
+        worker = raw.get("worker_model")
+        if not planner or not worker:
+            raise RuntimeError(
+                f"delegation-policy {policy}: missing planner_model / worker_model"
+            )
+    for model_id, can_delegate, tier in (
+        (planner, True, "balanced"),
+        (worker, False, "fast"),
+    ):
+        entry = registry._entries.get(model_id)
+        if entry is None:
+            raise RuntimeError(
+                f"--delegation-policy: model {model_id!r} not registered "
+                f"(set the corresponding API key or pick another policy)"
+            )
+        registry.register(
+            model_id=model_id,
+            adapter=entry.adapter,
+            aliases=list(entry.aliases),
+            task_profile=list(entry.task_profile),
+            can_delegate=can_delegate,
+            delegation_tier=tier,
+        )
+
+
 def _check_assertions(
     workload: Workload,
     per_turn_metrics: list[dict],
@@ -309,6 +359,12 @@ async def run_workload(
     pattern_seed_path: Path | None = None,
     pattern_save_path: Path | None = None,
     no_active_model: bool = False,
+    judge_kind: str = "heuristic",
+    judge_escalation_threshold: float = DEFAULT_ESCALATION_THRESHOLD,
+    judge_model: str = "anthropic:claude-haiku-4-5",
+    fingerprint_version: str = "v1",
+    embedding_provider: str | None = None,
+    delegation_policy: str | None = None,
 ) -> tuple[int, int, list[dict], Decimal, int, int, str]:
     """Drive one workload end-to-end. Returns (started_us, ended_us,
     per_turn_metrics, total_cost_usd, total_llm_calls, total_tool_calls, session_id).
@@ -344,11 +400,68 @@ async def run_workload(
             seed_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(pattern_seed_path, seed_dst)
             print(f"  [{workload.name}] seeded pattern store from {pattern_seed_path}")
+        # When v2 fingerprint is requested, materialize a workspace-local
+        # routing.yaml so the engine reads the new PatternConfig fields.
+        # Without this, setup_runtime falls back to `~/.metis/routing.yaml`
+        # or EMPTY_POLICY, and PatternConfig stays at v1.
+        routing_policy_path: str | None = None
+        if fingerprint_version == "v2":
+            if not embedding_provider:
+                raise RuntimeError(
+                    "--fingerprint-version v2 requires --embedding-provider "
+                    "(e.g. openai:text-embedding-3-small)"
+                )
+            policy_path = ws / ".metis" / "routing.yaml"
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy_path.write_text(
+                "schema_version: 1\n"
+                "pattern:\n"
+                "  fingerprint_version: v2\n"
+                f"  embedding_provider: {embedding_provider}\n",
+                encoding="utf-8",
+            )
+            routing_policy_path = str(policy_path)
         runtime = await setup_runtime(
             workspace_path=str(ws),
             db_path=str(db_path),
             global_default_model=actual_model,
+            routing_policy_path=routing_policy_path,
         )
+        if delegation_policy is not None:
+            _enable_delegation(runtime.registry, delegation_policy)
+        # Swap the default heuristic-only evaluator for a hybrid / LLM one
+        # when requested. setup_runtime() registers HeuristicJudge by
+        # default — we unregister it and re-register against the same bus
+        # + trace store with the configured judge.
+        if judge_kind != "heuristic":
+            try:
+                runtime.evaluator.unregister()
+            except Exception:
+                pass
+            anthropic_adapter = None
+            for adapter in runtime.adapters:
+                if type(adapter).__name__ == "AnthropicAdapter":
+                    anthropic_adapter = adapter
+                    break
+            if anthropic_adapter is None:
+                raise RuntimeError(
+                    f"--judge {judge_kind} requires an Anthropic adapter; none found"
+                )
+            llm_judge = LLMJudge(
+                adapter=anthropic_adapter,
+                pricing=runtime.pricing,
+                config=LLMJudgeConfig(judge_model=judge_model),
+            )
+            if judge_kind == "llm":
+                replacement: Judge = llm_judge
+            else:  # hybrid
+                replacement = HybridJudge(
+                    llm_judge=llm_judge,
+                    heuristic=HeuristicJudge(),
+                    escalation_threshold=judge_escalation_threshold,
+                )
+            new_evaluator, _ = register_evaluator(runtime.bus, runtime.trace, judge=replacement)
+            runtime.evaluator = new_evaluator
         try:
             if no_active_model:
                 session = runtime.manager.create_session(workspace_path=str(ws))
@@ -366,7 +479,10 @@ async def run_workload(
                     f"  [{workload.name}] turn {i + 1}/{len(workload.turns)}: ", end="", flush=True
                 )
                 result = await runtime.manager.submit_turn(
-                    session.id, turn.prompt, temperature=temperature
+                    session.id,
+                    turn.prompt,
+                    temperature=temperature,
+                    workload_id=workload.name,
                 )
                 per_turn_metrics.append(
                     {
@@ -416,6 +532,45 @@ async def run_workload(
     return started_us, ended_us, per_turn_metrics, total_cost, total_llm, total_tool, session_id
 
 
+def _make_judge_factory(
+    *,
+    judge_kind: str,
+    judge_escalation_threshold: float,
+    judge_model: str,
+    anthropic_api_key: str | None,
+    pricing: Any,
+) -> Any:
+    """Build a callable returning a fresh Judge for the workload-level eval.
+
+    `evaluate_workload_quality` opens a short-lived AnthropicAdapter inside
+    the factory so the surrounding bus/trace stays self-contained. Returns
+    None when judge_kind=='heuristic' (caller falls back to HeuristicJudge).
+    """
+    if judge_kind == "heuristic":
+        return None
+
+    def factory() -> Judge:
+        from metis_core.adapters.anthropic import AnthropicAdapter
+
+        if not anthropic_api_key:
+            raise RuntimeError(f"--judge {judge_kind} requires ANTHROPIC_API_KEY")
+        adapter = AnthropicAdapter(api_key=anthropic_api_key)
+        llm = LLMJudge(
+            adapter=adapter,
+            pricing=pricing,
+            config=LLMJudgeConfig(judge_model=judge_model),
+        )
+        if judge_kind == "llm":
+            return llm
+        return HybridJudge(
+            llm_judge=llm,
+            heuristic=HeuristicJudge(),
+            escalation_threshold=judge_escalation_threshold,
+        )
+
+    return factory
+
+
 async def evaluate_workload_quality(
     workload: Workload,
     *,
@@ -423,6 +578,7 @@ async def evaluate_workload_quality(
     session_id: str,
     per_turn_metrics: list[dict],
     assertion_failures: list[str],
+    judge_factory: Any = None,
 ) -> tuple[float | None, float | None]:
     """Compute the workload-level quality verdict and write it to the trace DB.
 
@@ -450,7 +606,8 @@ async def evaluate_workload_quality(
                 continue
             per_turn_scores.append(float(e.payload.get("score") or 0.0))
         final_response_text = per_turn_metrics[-1]["assistant_text"] if per_turn_metrics else ""
-        evaluator, _ = register_evaluator(bus, trace, judge=HeuristicJudge())
+        judge = judge_factory() if judge_factory is not None else HeuristicJudge()
+        evaluator, _ = register_evaluator(bus, trace, judge=judge)
         try:
             verdict = await evaluator.evaluate_workload(
                 workload_run_id=f"{workload.name}/{session_id}",
@@ -578,6 +735,57 @@ async def amain() -> int:
         "default) can win. Use together with `--patterns-db-path` pointed "
         "at a populated DB to test whether slot 4 (`pattern`) actually fires.",
     )
+    parser.add_argument(
+        "--judge",
+        choices=["heuristic", "hybrid", "llm"],
+        default="heuristic",
+        help="Judge tier wired into per-turn evaluations AND the workload-level "
+        "evaluation. 'heuristic' (default) preserves Run 3 behavior. 'hybrid' "
+        "runs the heuristic first and escalates to the LLM judge when "
+        "heuristic confidence < --judge-escalation-threshold. 'llm' bypasses "
+        "the heuristic and calls the LLM on every turn (most expensive).",
+    )
+    parser.add_argument(
+        "--judge-escalation-threshold",
+        type=float,
+        default=DEFAULT_ESCALATION_THRESHOLD,
+        help=f"Heuristic confidence below which --judge hybrid escalates to "
+        f"the LLM (default {DEFAULT_ESCALATION_THRESHOLD}). Ignored when "
+        "--judge is heuristic or llm.",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default="anthropic:claude-haiku-4-5",
+        help="LLM judge model id (default anthropic:claude-haiku-4-5). "
+        "Ignored when --judge is heuristic.",
+    )
+    parser.add_argument(
+        "--fingerprint-version",
+        choices=["v1", "v2"],
+        default="v1",
+        help="Pattern store fingerprint version. v1 is structural-only (default). "
+        "v2 is the hybrid embedding fingerprint (pattern-store.md §16). "
+        "v2 requires --embedding-provider. The harness writes a routing.yaml "
+        "per workload that pins the choice into `routing-engine.md §5 pattern`.",
+    )
+    parser.add_argument(
+        "--embedding-provider",
+        default=None,
+        help="Embedding provider id for --fingerprint-version v2. One of "
+        "'openai:text-embedding-3-small', 'cohere:embed-multilingual-v3.0', "
+        "'local:sentence-transformers:all-MiniLM-L6-v2'. The corresponding API "
+        "key must be set (OPENAI_API_KEY / COHERE_API_KEY) — see "
+        "pattern-store.md §16.5.",
+    )
+    parser.add_argument(
+        "--delegation-policy",
+        default=None,
+        help="When set, registers the global default model with "
+        "`can_delegate=True` and the worker model with `delegation_tier='fast'` "
+        "(delegation.md §3.1 / §4.2) so the planner sees the `delegate()` tool. "
+        "Value is either 'sonnet-planner-haiku-worker' (the §A3-rev4 default) "
+        "or a path to a yaml file with `planner_model`/`worker_model` keys.",
+    )
     args = parser.parse_args()
 
     _load_dotenv(REPO_ROOT / ".env")
@@ -669,9 +877,7 @@ async def amain() -> int:
     pattern_save_dir = Path(args.pattern_save_dir).expanduser() if args.pattern_save_dir else None
     if pattern_save_dir is not None:
         pattern_save_dir.mkdir(parents=True, exist_ok=True)
-    shared_patterns_db = (
-        Path(args.patterns_db_path).expanduser() if args.patterns_db_path else None
-    )
+    shared_patterns_db = Path(args.patterns_db_path).expanduser() if args.patterns_db_path else None
     if shared_patterns_db is not None:
         shared_patterns_db.parent.mkdir(parents=True, exist_ok=True)
 
@@ -700,6 +906,12 @@ async def amain() -> int:
                     pattern_seed_path=seed_path,
                     pattern_save_path=save_path,
                     no_active_model=args.no_active_model,
+                    judge_kind=args.judge,
+                    judge_escalation_threshold=args.judge_escalation_threshold,
+                    judge_model=args.judge_model,
+                    fingerprint_version=args.fingerprint_version,
+                    embedding_provider=args.embedding_provider,
+                    delegation_policy=args.delegation_policy,
                 )
             except Exception as exc:
                 workload_results.append(
@@ -759,6 +971,13 @@ async def amain() -> int:
                 session_id=session_id,
                 per_turn_metrics=per_turn,
                 assertion_failures=assertion_failures,
+                judge_factory=_make_judge_factory(
+                    judge_kind=args.judge,
+                    judge_escalation_threshold=args.judge_escalation_threshold,
+                    judge_model=args.judge_model,
+                    anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
+                    pricing=DEFAULT_PRICE_TABLE,
+                ),
             )
             workload_results.append(
                 WorkloadResult(

@@ -125,27 +125,43 @@ class DBSeeder:
         latency_ms: int = 1000,
         session_id: str = "sess_test",
         turn_id: str | None = None,
+        gateway_key_id: str | None = None,
+        inbound_shape: str | None = None,
+        user_id: str | None = None,
+        team_id: str | None = None,
+        parent_session_id: str | None = None,
     ) -> str:
+        payload: dict = {
+            "model": model,
+            "provider": provider,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_input_tokens": cached_input_tokens,
+            "cache_creation_input_tokens": cache_creation_input_tokens,
+            "cost_usd": cost_usd,
+            "pricing_version": "test-1",
+            "latency_ms": latency_ms,
+            "stop_reason": "end_turn",
+            "produced_tool_calls": 0,
+            "produced_thinking_blocks": 0,
+        }
+        if gateway_key_id is not None:
+            payload["gateway_key_id"] = gateway_key_id
+        if inbound_shape is not None:
+            payload["inbound_shape"] = inbound_shape
+        if user_id is not None:
+            payload["user_id"] = user_id
+        if team_id is not None:
+            payload["team_id"] = team_id
+        if parent_session_id is not None:
+            payload["parent_session_id"] = parent_session_id
         return self.insert_event(
             event_type="llm.call_completed",
             timestamp=timestamp,
             session_id=session_id,
             turn_id=turn_id,
             actor="agent",
-            payload={
-                "model": model,
-                "provider": provider,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cached_input_tokens": cached_input_tokens,
-                "cache_creation_input_tokens": cache_creation_input_tokens,
-                "cost_usd": cost_usd,
-                "pricing_version": "test-1",
-                "latency_ms": latency_ms,
-                "stop_reason": "end_turn",
-                "produced_tool_calls": 0,
-                "produced_thinking_blocks": 0,
-            },
+            payload=payload,
         )
 
     def insert_llm_call_failed(

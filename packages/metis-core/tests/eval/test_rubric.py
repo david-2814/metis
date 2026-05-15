@@ -44,3 +44,36 @@ def test_parse_workload_rubric_rejects_negative_weight():
 def test_parse_workload_rubric_rejects_non_string_substring():
     with pytest.raises(WorkloadRubricError, match="must be a string"):
         parse_workload_rubric({"expect_substring_in_final_response": 42})
+
+
+def test_parse_workload_rubric_accepts_grounding_lists():
+    rubric = parse_workload_rubric(
+        {
+            "rubric": "hybrid",
+            "grounding_tokens": ["RoutingEngine", "policy="],
+            "forbidden_grounding": ["PATTERN_LOOKUP", "RouterChain"],
+        }
+    )
+    assert rubric.grounding_tokens == ("RoutingEngine", "policy=")
+    assert rubric.forbidden_grounding == ("PATTERN_LOOKUP", "RouterChain")
+
+
+def test_parse_workload_rubric_grounding_defaults_to_empty():
+    rubric = parse_workload_rubric({"rubric": "heuristic"})
+    assert rubric.grounding_tokens == ()
+    assert rubric.forbidden_grounding == ()
+
+
+def test_parse_workload_rubric_rejects_non_string_grounding_token():
+    with pytest.raises(WorkloadRubricError, match="grounding_tokens must be a list"):
+        parse_workload_rubric({"grounding_tokens": ["ok", 42]})
+
+
+def test_parse_workload_rubric_rejects_empty_grounding_token():
+    with pytest.raises(WorkloadRubricError, match="grounding_tokens must be a list"):
+        parse_workload_rubric({"grounding_tokens": ["ok", ""]})
+
+
+def test_parse_workload_rubric_rejects_non_list_forbidden_grounding():
+    with pytest.raises(WorkloadRubricError, match="forbidden_grounding must be a list"):
+        parse_workload_rubric({"forbidden_grounding": "PATTERN_LOOKUP"})

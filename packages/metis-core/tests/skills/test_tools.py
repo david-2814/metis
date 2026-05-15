@@ -74,7 +74,7 @@ def _tool_use(tool: str, **input: object) -> ToolUseBlock:
 
 
 async def test_skill_tools_registered(dispatcher: ToolDispatcher):
-    names = {d.name for d in dispatcher.get_definitions()}
+    names = {d.name for d in dispatcher.get_definitions_for_session()}
     assert names == {"skill_search", "skill_load"}
 
 

@@ -31,16 +31,55 @@ class TierMap:
 class PatternConfig:
     """Pattern store knobs (routing-engine §5.5).
 
+    `cost_weight` defaults to `0.1` (was `0.3` before 2026-05-14). The §A3-rev
+    benchmark run found 0.3 over-rewards cost when the LLM judge produces
+    real cluster-level quality deltas of 0.15-0.30: the cost-efficiency term
+    required a ~0.43 success delta to flip the chooser, so slot 4 picked
+    haiku on every routed turn. At 0.1 a success delta of ~0.143 inverts
+    the ranking, which the observed deltas do clear. See routing-engine.md
+    §5.5 and benchmarks/RESULTS.md §A3-rev unblock #2.
+
+    `min_confidence` defaults to `0.05` (was `0.3` before 2026-05-14). The
+    §A3-rev2 benchmark run produced the first cluster-level inversion in
+    any A3 series — on `write-a-doc-from-notes` Pass C turn 2 the K-NN
+    aggregated `sonnet=0.900` ahead of `haiku=0.842`. The confidence
+    formula `(top - runner_up) / top` evaluates to `0.064` on that gap,
+    well below the legacy `0.3` gate that was calibrated for the older
+    `cost_weight=0.3` regime where the cost-efficiency term alone
+    produced ~0.35 confidence on tied-quality clusters. With
+    `cost_weight=0.1` the same near-tied data produces ~0.10 confidence,
+    so the gate must scale down with it. At `0.05` slot 4 fires on real
+    cluster inversions; cluster-empty / zero-score / fewer-than-K-cluster
+    cases still gate off in `aggregation.py`. See routing-engine.md §5.5
+    and benchmarks/RESULTS.md §A3-rev2 finding.
+
     `min_eval_confidence` is the consumer-side confidence gate from
     `pattern-store.md §15.4`: verdicts with `confidence < min_eval_confidence`
     are recorded but excluded from K-cluster success aggregation. Default
     `0.5` matches `evaluator.md §4.3`.
+
+    `fingerprint_version` toggles the v2 hybrid fingerprint (pattern-store.md
+    §16). v1 (default) is structural-only; v2 blends a cosine score over a
+    per-workspace embedding into the similarity function. When set to "v2",
+    `embedding_provider` must also be set (validated at PatternStore
+    construction). v1 workspaces are unaffected by the new fields.
     """
 
-    cost_weight: float = 0.3
-    min_confidence: float = 0.3
+    cost_weight: float = 0.1
+    min_confidence: float = 0.05
     min_sample_size: int = 5
     min_eval_confidence: float = 0.5
+    fingerprint_version: Literal["v1", "v2"] = "v1"
+    embedding_provider: str | None = None
+    embedding_alpha: float = 0.6
+
+    def __post_init__(self) -> None:
+        if self.fingerprint_version == "v2" and self.embedding_provider is None:
+            raise ValueError("PatternConfig: fingerprint_version='v2' requires embedding_provider")
+        if not (0.0 <= self.embedding_alpha <= 1.0):
+            raise ValueError(
+                f"PatternConfig: embedding_alpha must be in [0.0, 1.0] (got {self.embedding_alpha})"
+            )
 
 
 # ---- Predicates ------------------------------------------------------------
@@ -126,6 +165,24 @@ class CostTodayExceedsUsd:
     threshold_usd: float
 
 
+@dataclass(frozen=True)
+class TeamBudgetRemainingLt:
+    """Team budget headroom soft predicate (multi-user.md §6.1).
+
+    Evaluates True when the team's remaining monthly budget (cap minus
+    current month spend) is below `threshold_usd`. Lets a configured
+    rule route Opus turns to Sonnet when the team is approaching its
+    monthly cap — softer than the gateway's hard breaker (which
+    short-circuits the request entirely).
+
+    Returns False when the turn has no team binding or no team-level
+    cap is configured (`TurnContext.team_budget_remaining_usd is None`)
+    — agent-loop traffic and pre-multi-user keys never trip this rule.
+    """
+
+    threshold_usd: float
+
+
 # Compound predicates.
 
 
@@ -156,6 +213,7 @@ Predicate = (
     | SkillsMatchingMessageIncludes
     | FileExtensionsInContext
     | CostTodayExceedsUsd
+    | TeamBudgetRemainingLt
     | AnyOf
     | AllOf
     | Not
@@ -208,6 +266,11 @@ class RoutingPolicy:
     rules: tuple[Rule, ...]
     workspaces: tuple[WorkspaceScope, ...]
     source_path: str | None = None  # for /rules check display; None for in-memory
+    # Opaque per-load identifier surfaced by `GET /sessions/{id}` so the SPA
+    # / clients can label "rules vN" and notice when the active policy
+    # changes. Computed from the raw yaml content at parse time; `None` for
+    # `EMPTY_POLICY` and other in-memory fixtures that don't carry a source.
+    version: str | None = None
 
     def workspace_for(self, workspace_path: str) -> WorkspaceScope | None:
         """Best-match workspace scope for a given absolute workspace path.

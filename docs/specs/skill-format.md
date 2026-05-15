@@ -309,6 +309,21 @@ Use `skill_search(query)` to filter and `skill_load(name)` to read a body.
 One line per skill, format `- {name}: {description}`. Bodies are NOT injected
 in this stage. The discovery index is omitted entirely if the store is empty.
 
+**`[preloaded]` annotation (context-assembler.md v3 §5.2.2).** When the
+v2 §5.1 padding rule inlines a skill body into the stable prefix as
+pre-activation, that skill's discovery line gains a `[preloaded]`
+annotation:
+
+```
+- pdf-processing [preloaded]: Extract PDF text, fill forms, merge files. ...
+```
+
+The annotation tells the agent "the body is already in this system
+prompt; calling `skill_load(name)` returns a pointer rather than the
+body." Pre-activation is observable on the bus via
+`skill.loaded(load_reason="always")` emitted once per inlined body at
+session init.
+
 **Cache impact:** the index lives in the stable system prompt segment, so it
 becomes part of the cached prefix on Anthropic and OpenAI. Adding or removing
 a skill invalidates the cache; editing a skill's description invalidates the
@@ -422,13 +437,32 @@ Return the full SKILL.md body for a named skill.
 - A skill store that wasn't configured for this session raises
   `ToolExecutionError("skills are not configured for this session")`.
 - Output is the body prefixed with `# Skill: {name} (source: {source})\n\n`.
+- **Pre-activated path** (context-assembler.md v3 §5.2.2): if the
+  skill's body was already inlined into the stable system prefix as
+  v2 §5.1 padding, the tool returns a short pointer instead of the
+  body. No `skill.loaded` event fires (the pre-activation event at
+  session init already covered it). Output metadata carries
+  `already_preloaded: True`.
+- **Already-activated path** (context-assembler.md v3 §5.2.7 q4): if
+  the agent already called `skill_load(name)` earlier in the session,
+  the tool returns a pointer rather than re-injecting the body. No new
+  `skill.loaded` event fires, the activation budget is not incremented.
+  Output metadata carries `already_loaded: True`.
+- **Budget exhaustion** (context-assembler.md v3 §5.2.4): if returning
+  the body would push the session past
+  `MAX_EXPLICIT_ACTIVATIONS_PER_SESSION` or
+  `HARD_CAP_CUMULATIVE_ACTIVATION_TOKENS`, the tool raises
+  `ToolExecutionError` with a descriptive message. Surfaces as
+  `tool.failed` per §5.2.6.
 
-**Side effects:** emits exactly one `skill.loaded` event per successful call
-(see §9). No file is touched, no memory is mutated, no bus events beyond
-`skill.loaded`.
+**Side effects:** emits exactly one `skill.loaded` event per
+*body-returning* call (the pre-activated and re-load paths emit no
+event; budget-exhaustion paths fail before emitting). No file is
+touched, no memory is mutated, no bus events beyond `skill.loaded`.
 
 **Output metadata:** `skill_id`, `skill_version`, `source`,
-`load_size_tokens`.
+`load_size_tokens`. Plus `already_preloaded: True` on the pre-activated
+pointer path, or `already_loaded: True` on the re-load pointer path.
 
 ---
 
@@ -454,12 +488,16 @@ payload).
 
 The implementation in `skills/tools.py::SkillLoadTool` emits with
 `load_reason="on_demand"` and `triggered_by_tool_use_id=context.tool_use_id`.
-The other `load_reason` values are reserved for Phase 2.5 features:
 
-- `always` — a future "core skills always in context" mechanism.
-- `auto_suggested` — a future router-suggested activation path.
+`load_reason="always"` is the pre-activation path
+(context-assembler.md v3 §5.2.2): `SessionManager.create_session`
+emits one such event per body inlined into the stable prefix as v2
+§5.1 padding, with `triggered_by_tool_use_id=None` and no `turn_id`.
+Pre-activation fires before any `turn.started` in the session.
 
-Neither is wired in v1.
+`load_reason="auto_suggested"` remains reserved for a later
+description-match-driven activation mechanism
+(context-assembler.md v3 §5.2.7 q3). Not wired in v3.
 
 ### 9.2 No `skill.created` in v1
 

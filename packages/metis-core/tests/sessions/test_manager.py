@@ -327,6 +327,22 @@ async def test_unknown_alias_raises_before_llm_call(bus, event_log, workspace):
     assert adapter.requests == []
 
 
+async def test_bare_alias_with_no_body_raises_override_error(bus, event_log, workspace):
+    """Per routing-engine.md §9.2, `@<alias>` must be followed by whitespace +
+    body. A bare `@haiku` is malformed and the turn does not start."""
+    from metis_core.sessions import OverrideError
+
+    adapter = _ScriptedAnthropicAdapter([])
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    with pytest.raises(OverrideError) as excinfo:
+        await manager.submit_turn(session.id, "@haiku")
+    await bus.drain()
+    await bus.stop()
+    assert excinfo.value.alias == "haiku"
+    assert adapter.requests == []
+
+
 async def test_set_active_model_changes_sticky(bus, event_log, workspace):
     adapter = _ScriptedAnthropicAdapter(
         [
@@ -976,3 +992,509 @@ async def test_submit_turn_persists_normalized_shared_text(bus, event_log, works
     # And the trailing whitespace after [coding] is gone.
     assert "[coding]   " not in user_text
     assert "[coding]\n" in user_text or user_text.endswith("[coding]") or "[coding]" in user_text
+
+
+# ---- Cache-floor padding (context-assembler.md §5.1) -------------------
+
+
+def test_pad_stable_prefix_noop_when_already_above_floor():
+    """Caller-supplied long prompts already clear the floor; helper is a no-op."""
+    from metis_core.sessions.manager import (
+        MIN_CACHEABLE_PREFIX_TOKENS,
+        _pad_stable_prefix_for_cache,
+    )
+
+    class _Adapter:
+        def estimate_input_tokens(self, messages, tools, system_prompt):
+            return MIN_CACHEABLE_PREFIX_TOKENS + 100
+
+    prompt = "already long enough"
+    out, inlined = _pad_stable_prefix_for_cache(
+        stable_prefix=prompt, adapter=_Adapter(), tools=[], skill_store=None
+    )
+    assert out == prompt
+    assert inlined == []
+
+
+def test_pad_stable_prefix_appends_operating_context_when_below_floor():
+    """No skills + short base prompt → operating-context block fills the prefix."""
+    from metis_core.sessions.manager import (
+        MIN_CACHEABLE_PREFIX_TOKENS,
+        _pad_stable_prefix_for_cache,
+    )
+
+    class _Adapter:
+        # ~4 chars per token, matching the production heuristic.
+        def estimate_input_tokens(self, messages, tools, system_prompt):
+            return max(1, len(system_prompt or "") // 4)
+
+    base = "You are Metis. Be concise."
+    out, inlined = _pad_stable_prefix_for_cache(
+        stable_prefix=base, adapter=_Adapter(), tools=[], skill_store=None
+    )
+    # Padded prefix must clear the floor.
+    assert len(out) // 4 >= MIN_CACHEABLE_PREFIX_TOKENS
+    # Padding came from the operating-context block (substantive, not lorem-ipsum).
+    assert "## Operating context" in out
+    # Base prompt preserved at the front.
+    assert out.startswith(base)
+    # No skills supplied → no skills inlined.
+    assert inlined == []
+
+
+def test_pad_stable_prefix_respects_upper_bound():
+    """Padded prefix stays under MAX_CACHEABLE_PREFIX_TOKENS with margin."""
+    from metis_core.sessions.manager import (
+        MAX_CACHEABLE_PREFIX_TOKENS,
+        _pad_stable_prefix_for_cache,
+    )
+
+    class _Adapter:
+        def estimate_input_tokens(self, messages, tools, system_prompt):
+            return max(1, len(system_prompt or "") // 4)
+
+    base = "You are Metis."
+    out, _ = _pad_stable_prefix_for_cache(
+        stable_prefix=base, adapter=_Adapter(), tools=[], skill_store=None
+    )
+    # ~4 chars/token: stay near or under the upper bound (small overshoot
+    # allowed for tail whitespace + the rstrip + "\n\n" assembly).
+    assert len(out) // 4 <= MAX_CACHEABLE_PREFIX_TOKENS + 50
+
+
+def test_pad_stable_prefix_byte_stable_across_calls():
+    """Determinism is load-bearing: same inputs → identical bytes every call."""
+    from metis_core.sessions.manager import _pad_stable_prefix_for_cache
+
+    class _Adapter:
+        def estimate_input_tokens(self, messages, tools, system_prompt):
+            return max(1, len(system_prompt or "") // 4)
+
+    base = "You are Metis."
+    a, a_inlined = _pad_stable_prefix_for_cache(
+        stable_prefix=base, adapter=_Adapter(), tools=[], skill_store=None
+    )
+    b, b_inlined = _pad_stable_prefix_for_cache(
+        stable_prefix=base, adapter=_Adapter(), tools=[], skill_store=None
+    )
+    assert a == b
+    assert a_inlined == b_inlined == []
+
+
+def test_pad_stable_prefix_prefers_skill_bodies_then_operating_context():
+    """Skills load substantive content first; ops-context fills remaining headroom."""
+    from metis_core.sessions.manager import _pad_stable_prefix_for_cache
+
+    class _Adapter:
+        def estimate_input_tokens(self, messages, tools, system_prompt):
+            return max(1, len(system_prompt or "") // 4)
+
+    class _FakeSkill:
+        def __init__(self, name: str, body: str) -> None:
+            self.name = name
+            self.body = body
+
+    class _FakeSkillStore:
+        def __init__(self, skills):
+            self._skills = list(skills)
+
+        def __len__(self):
+            return len(self._skills)
+
+        def list_skills(self):
+            return list(self._skills)
+
+    # Two short skill bodies; deterministic order by name.
+    skills = _FakeSkillStore(
+        [
+            _FakeSkill("zeta", "Zeta skill body content.\n" * 5),
+            _FakeSkill("alpha", "Alpha skill body content.\n" * 5),
+        ]
+    )
+    base = "You are Metis."
+    out, inlined = _pad_stable_prefix_for_cache(
+        stable_prefix=base, adapter=_Adapter(), tools=[], skill_store=skills
+    )
+    # Both skill headings present; alpha appears before zeta (name-ascending).
+    assert "### Skill: alpha" in out
+    assert "### Skill: zeta" in out
+    assert out.index("### Skill: alpha") < out.index("### Skill: zeta")
+    # Short skill bodies don't fill the headroom alone, so the ops-context
+    # block runs to top up.
+    assert "## Operating context" in out
+    # Both skills got inlined (v3 §5.2.2 pre-activation), name-ascending.
+    assert [s.name for s in inlined] == ["alpha", "zeta"]
+
+
+def test_pad_stable_prefix_truncates_huge_skill_body():
+    """A huge skill body is truncated; total stays near MAX_CACHEABLE_PREFIX_TOKENS."""
+    from metis_core.sessions.manager import (
+        MAX_CACHEABLE_PREFIX_TOKENS,
+        _pad_stable_prefix_for_cache,
+    )
+
+    class _Adapter:
+        def estimate_input_tokens(self, messages, tools, system_prompt):
+            return max(1, len(system_prompt or "") // 4)
+
+    class _BigSkill:
+        name = "big"
+        body = "X" * 80_000  # would blow past the upper bound if not truncated
+
+    class _Store:
+        def __len__(self):
+            return 1
+
+        def list_skills(self):
+            return [_BigSkill()]
+
+    out, _ = _pad_stable_prefix_for_cache(
+        stable_prefix="short base", adapter=_Adapter(), tools=[], skill_store=_Store()
+    )
+    assert len(out) // 4 <= MAX_CACHEABLE_PREFIX_TOKENS + 50
+
+
+async def test_session_manager_pads_short_default_prompt(bus, event_log, workspace):
+    """End-to-end: the request sent to the adapter carries a padded prefix.
+
+    Today's DEFAULT_SYSTEM_PROMPT is ~290 chars (~75 tokens). The scripted
+    adapter reports `estimate_input_tokens=100` for any input, so the
+    padding helper still sees current_tokens (100) < min (4500) and
+    appends padding. The CanonicalRequest.system_prompt arriving at the
+    adapter must reflect the padded prefix.
+    """
+    from metis_core.sessions.manager import MIN_CACHEABLE_PREFIX_TOKENS
+
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    await manager.submit_turn(session.id, "hello")
+    await bus.drain()
+    await bus.stop()
+
+    assert len(adapter.requests) == 1
+    sent = adapter.requests[0].system_prompt or ""
+    # The padded prefix must include the operating-context block.
+    assert "## Operating context" in sent
+    # ~4 chars/token: the padded prefix tokenizes above the haiku floor.
+    assert len(sent) // 4 >= MIN_CACHEABLE_PREFIX_TOKENS - 200
+
+
+async def test_session_manager_does_not_pad_already_long_prompt(bus, event_log, workspace):
+    """Caller passes a custom long system_prompt: §5.1 is a no-op."""
+    from metis_core.sessions.manager import _OPERATING_CONTEXT_PADDING
+
+    # Custom prompt that, when measured by len//4, already clears MIN.
+    long_prompt = ("Be precise. " * 2000).strip()  # ~24 KB, well above the floor
+
+    class _RealEstimateAdapter(_ScriptedAnthropicAdapter):
+        def estimate_input_tokens(self, messages, tools, system_prompt):
+            return max(1, len(system_prompt or "") // 4)
+
+    adapter = _RealEstimateAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    registry = ModelRegistry()
+    registry.register(model_id="anthropic:claude-sonnet-4-6", adapter=adapter, aliases=["sonnet"])
+    routing = RoutingEngine(registry=registry, bus=bus)
+    dispatcher = ToolDispatcher(bus)
+    manager = SessionManager(
+        registry=registry,
+        routing=routing,
+        dispatcher=dispatcher,
+        bus=bus,
+        store=InMemorySessionStore(),
+        pricing=DEFAULT_PRICE_TABLE,
+        system_prompt=long_prompt,
+    )
+    session = manager.create_session(workspace_path=str(workspace))
+    await manager.submit_turn(session.id, "hello")
+    await bus.drain()
+    await bus.stop()
+
+    sent = adapter.requests[0].system_prompt or ""
+    assert sent == long_prompt
+    # Padding constant did NOT get appended.
+    assert _OPERATING_CONTEXT_PADDING.split("\n")[0] not in sent
+
+
+async def test_session_manager_pads_byte_stable_across_turns(bus, event_log, workspace):
+    """Two consecutive turns send byte-identical stable prefixes.
+
+    The cache only fires when the prefix is identical turn-to-turn. Any
+    per-call variation (timestamps, session-id interpolation, etc.)
+    invalidates the cache and defeats §5.1.
+    """
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="one")],
+                stop_reason=StopReason.END_TURN,
+            ),
+            _ScriptedResponse(
+                content=[TextBlock(text="two")],
+                stop_reason=StopReason.END_TURN,
+            ),
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+    await manager.submit_turn(session.id, "hello")
+    await manager.submit_turn(session.id, "again")
+    await bus.drain()
+    await bus.stop()
+
+    assert len(adapter.requests) == 2
+    assert adapter.requests[0].system_prompt == adapter.requests[1].system_prompt
+
+
+async def test_turn_completed_carries_final_response_text_in_signals_extra(
+    bus, event_log, workspace
+):
+    """Producer-side plumbing: `_emit_turn_completed` stamps the assistant's
+    final text on `turn.completed.signals_extra.final_response_text` so the
+    evaluator's content-penalty path fires on the online subscriber path
+    (evaluator.md §5.1)."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="I cannot help with that request.")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+
+    await manager.submit_turn(session.id, "please do something disallowed")
+    await bus.drain()
+    await bus.stop()
+
+    turn_completed = next(e for e in event_log if e.type == "turn.completed")
+    extras = turn_completed.payload.get("signals_extra")
+    assert extras is not None
+    assert extras.get("final_response_text") == "I cannot help with that request."
+
+
+async def test_turn_completed_omits_signals_extra_when_no_assistant_text(bus, event_log, workspace):
+    """When the assistant produced no text (rare; e.g., tool-only stop), the
+    emitter leaves `signals_extra` as None so the heuristic judge sees
+    "no signal" rather than a sentinel that would mis-trigger the empty-
+    response penalty."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[
+                    ToolUseBlock(id="tu_x", name="read_file", input={"path": "README.md"}),
+                ],
+                stop_reason=StopReason.TOOL_USE,
+            ),
+            _ScriptedResponse(
+                content=[TextBlock(text="done")],
+                stop_reason=StopReason.END_TURN,
+            ),
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+
+    await manager.submit_turn(session.id, "go")
+    await bus.drain()
+    await bus.stop()
+
+    turn_completed = next(e for e in event_log if e.type == "turn.completed")
+    extras = turn_completed.payload.get("signals_extra")
+    assert extras is not None
+    assert extras["final_response_text"] == "done"
+
+
+async def test_refusal_signals_drop_eval_score_below_baseline(bus, event_log, workspace, tmp_path):
+    """End-to-end: SessionManager → bus → trace → evaluator subscriber.
+
+    With `final_response_text` plumbed, the heuristic judge multiplies the
+    base score by 0.5 (refusal) so the final eval score falls below 0.6
+    even on a clean stop-reason turn. Previously this turn would have
+    scored 1.0 because the evaluator never saw the refusal text.
+    """
+    from metis_core.eval import register_evaluator
+    from metis_core.trace.store import TraceStore
+
+    trace = TraceStore(tmp_path / "trace.db")
+    trace.attach_to(bus)
+    evaluator, _ = register_evaluator(bus, trace)
+    try:
+        adapter = _ScriptedAnthropicAdapter(
+            [
+                _ScriptedResponse(
+                    content=[TextBlock(text="I cannot help with that.")],
+                    stop_reason=StopReason.END_TURN,
+                )
+            ]
+        )
+        manager, _ = _build_manager(bus, adapter)
+        session = manager.create_session(workspace_path=str(workspace))
+        await manager.submit_turn(session.id, "please do something disallowed")
+        await bus.drain()
+    finally:
+        evaluator.unregister()
+        await bus.drain()
+        await bus.stop()
+        trace.close()
+
+    completed = [e for e in event_log if e.type == "eval.completed"]
+    assert completed, "evaluator should have emitted an eval.completed event"
+    payload = completed[0].payload
+    assert payload["subject_kind"] == "turn"
+    assert float(payload["score"]) < 0.6, (
+        f"refusal should multiply by 0.5; got score={payload['score']!r}"
+    )
+    flags_negative = payload.get("signals", {}).get("flags_negative", [])
+    assert "assistant_refusal_detected" in flags_negative
+
+
+async def test_clean_response_keeps_eval_score_at_baseline(bus, event_log, workspace, tmp_path):
+    """Control: a non-refusal response with the same lifecycle signals keeps
+    the score at 1.0. This pins the delta in the refusal test to the
+    content-penalty path firing, not to other lifecycle drift."""
+    from metis_core.eval import register_evaluator
+    from metis_core.trace.store import TraceStore
+
+    trace = TraceStore(tmp_path / "trace.db")
+    trace.attach_to(bus)
+    evaluator, _ = register_evaluator(bus, trace)
+    try:
+        adapter = _ScriptedAnthropicAdapter(
+            [
+                _ScriptedResponse(
+                    content=[TextBlock(text="Here is the answer you asked for.")],
+                    stop_reason=StopReason.END_TURN,
+                )
+            ]
+        )
+        manager, _ = _build_manager(bus, adapter)
+        session = manager.create_session(workspace_path=str(workspace))
+        await manager.submit_turn(session.id, "explain something")
+        await bus.drain()
+    finally:
+        evaluator.unregister()
+        await bus.drain()
+        await bus.stop()
+        trace.close()
+
+    completed = [e for e in event_log if e.type == "eval.completed"]
+    assert completed
+    assert float(completed[0].payload["score"]) == 1.0
+
+
+async def test_turn_completed_carries_user_prompt_text_in_signals_extra(bus, event_log, workspace):
+    """Producer-side plumbing: `_emit_turn_completed` stamps the user's
+    prompt text on `turn.completed.signals_extra.user_prompt_text` so the
+    LLM judge's `_build_user_message` reader sees real intent on the
+    online subscriber path (evaluator.md §5.1, §5.2). Closes the second
+    A3 unblock identified in benchmarks/RESULTS.md."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="Here is the factorization.")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+
+    user_text = "Help me factor 1729."
+    await manager.submit_turn(session.id, user_text)
+    await bus.drain()
+    await bus.stop()
+
+    turn_completed = next(e for e in event_log if e.type == "turn.completed")
+    extras = turn_completed.payload.get("signals_extra")
+    assert extras is not None
+    assert extras.get("user_prompt_text") == user_text
+
+
+async def test_turn_completed_aliases_assistant_response_text_to_final_response_text(
+    bus, event_log, workspace
+):
+    """The LLM judge reads `assistant_response_text`; the heuristic content-
+    penalty path reads `final_response_text`. Producer keeps them aliased
+    at the same string so a single mutation stays consistent
+    (evaluator.md §5.1)."""
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="1729 = 7 * 13 * 19.")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+
+    await manager.submit_turn(session.id, "Help me factor 1729.")
+    await bus.drain()
+    await bus.stop()
+
+    turn_completed = next(e for e in event_log if e.type == "turn.completed")
+    extras = turn_completed.payload.get("signals_extra")
+    assert extras is not None
+    assert extras.get("final_response_text") == "1729 = 7 * 13 * 19."
+    assert extras.get("assistant_response_text") == extras.get("final_response_text")
+
+
+async def test_turn_completed_signals_extra_feeds_llm_judge_build_user_message(
+    bus, event_log, workspace
+):
+    """End-to-end: SessionManager produces signals_extra → LLM judge's
+    `_build_user_message` reads it. Asserts the rendered prompt contains
+    the real user + assistant text (not the "(not available)" fallback)
+    so the LLM judge can actually grade content, not just lifecycle
+    (evaluator.md §5.2; benchmarks/RESULTS.md §A3 unblock 2)."""
+    from metis_core.eval.judge import SubjectContext
+    from metis_core.eval.llm_judge import _build_user_message
+
+    adapter = _ScriptedAnthropicAdapter(
+        [
+            _ScriptedResponse(
+                content=[TextBlock(text="FAIL 15/16 — one edge case is still broken.")],
+                stop_reason=StopReason.END_TURN,
+            )
+        ]
+    )
+    manager, _ = _build_manager(bus, adapter)
+    session = manager.create_session(workspace_path=str(workspace))
+
+    user_text = "Run the regex test fixture and report pass/fail."
+    await manager.submit_turn(session.id, user_text)
+    await bus.drain()
+    await bus.stop()
+
+    turn_completed = next(e for e in event_log if e.type == "turn.completed")
+    extras = turn_completed.payload.get("signals_extra")
+    assert extras is not None
+
+    ctx = SubjectContext(
+        subject_kind="turn",
+        subject_id=turn_completed.turn_id or "",
+        events=[turn_completed],
+        session_id=session.id,
+        signals_extra=extras,
+    )
+    rendered = _build_user_message(ctx)
+    assert user_text in rendered
+    assert "FAIL 15/16" in rendered
+    assert "USER PROMPT:\n(not available)" not in rendered
+    assert "ASSISTANT FINAL RESPONSE:\n(not available)" not in rendered

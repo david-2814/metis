@@ -2,7 +2,13 @@
 
 A local-first AI dev agent — provider-agnostic, self-improving, and cost-aware.
 
-> **Status:** Phase 1 + early Phase 2 wedges shipped. Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, and SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), and `metis serve` (HTTP/WebSocket on loopback) all run. 729 tests passing. Configured routing rules, the tool-confirmation REST endpoint, and the pattern store are the next-up work.
+> **Status:** Phase 1 + Phase 2 + Phase 2.5 shipped; Phase 3 in flight — **ready for review whether to promote to "Phase 3 shipped."** The three Phase-3 wedges (transparent HTTP gateway, multi-user identity / per-team cost attribution, evaluator) are live, and the model-selection differentiator inverted on its first end-to-end demonstration ([`benchmarks/RESULTS.md §A3-rev3`](benchmarks/RESULTS.md): Pass C picks sonnet on the one hard turn of `regex-with-edge-cases`, quality 5.55 vs Pass A 5.16 at $0.0477/quality between haiku-only $0.0383 and sonnet-only $0.1176). Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), `metis serve` (HTTP/WebSocket), `metis gateway` (transparent provider-shape proxy) all run. 1405 tests passing.
+
+---
+
+## Why Metis
+
+Metis optimizes a buyer's LLM bill by composing three levers — context engineering (prompt-cache discipline, lean prompts), skills (focused expert instructions loaded on demand), and model selection (route each turn to the cheapest model that succeeds on the task class). The order of typical impact is context > skills > selection; the routing wedge is the one with the cleanest demonstration. On our shipped benchmark suite, slot 4 of the routing chain picked sonnet on the one hard turn of `regex-with-edge-cases` and haiku on every other turn — recovering 99% of sonnet-only's quality at roughly 25% above haiku-only's cost. See [`docs/savings-demo.md`](docs/savings-demo.md) for the evidence and [`docs/customer-trial-recipe.md`](docs/customer-trial-recipe.md) for how to reproduce on your own workload.
 
 ---
 
@@ -30,6 +36,27 @@ Sanity-check the full loop against the real API in under a minute (~$0.015 with 
 ```bash
 uv run python scripts/smoke.py --model haiku
 ```
+
+## Try it — transparent gateway in Docker
+
+Want to drop Metis in front of an existing OpenAI / Anthropic SDK client without changing any code? The gateway is the high-floor adoption path from [`docs/STRATEGY.md §3`](docs/STRATEGY.md) — buyer flips one env var, savings show up on the dashboard within hours.
+
+```bash
+cp .env.example .env && $EDITOR .env   # set ANTHROPIC_API_KEY
+docker compose run --rm gateway issue-key --name "my-client" --workspace /workspace
+docker compose up -d
+curl http://127.0.0.1:8422/healthz
+```
+
+Full deployment reference (env vars, volumes, key rotation, TLS termination, cost attribution) at [`docs/gateway-deployment.md`](docs/gateway-deployment.md).
+
+## Buyer trial
+
+Once the gateway is up, point your devs' existing tools at it: flip
+`ANTHROPIC_BASE_URL` (Claude Code) or `OPENAI_BASE_URL` (Cursor, openai-python)
+to the gateway URL, hand over a `gw_…` key, and every turn is cost-stamped per
+dev, per project — no client code changes. End-to-end recipe (Claude Code,
+Cursor, raw curl/SDK) at [`docs/gateway-client-quickstart.md`](docs/gateway-client-quickstart.md).
 
 ## What it is
 

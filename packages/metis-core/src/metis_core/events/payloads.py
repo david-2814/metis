@@ -16,7 +16,7 @@ from typing import Literal
 
 import msgspec
 
-from metis_core.events.envelope import Actor, Event, Sensitivity, new_event_id
+from metis_core.events.envelope import Actor, Event, Sensitivity, new_event_id, sensitivity_rank
 from metis_core.events.errors import EventValidationError, UnknownEventTypeError
 
 # --- §6.1 Session domain ----------------------------------------------------
@@ -60,6 +60,26 @@ class TurnCompleted(msgspec.Struct, frozen=True):
     total_output_tokens: int
     total_cost_usd: float
     wall_time_seconds: float
+    # Supplementary content/judgement fields downstream subscribers (the
+    # evaluator's content-penalty path; future LLM judge tier) need but
+    # the lifecycle event itself doesn't structurally model. Keys are
+    # conventions, not contract: `final_response_text` carries the
+    # assistant's terminal text blocks so the evaluator subscriber path
+    # can fire the refusal / empty-response penalties from `evaluator.md`
+    # §5.1. Bus emitters set fields they have; subscribers treat missing
+    # keys as "no signal," not as an error.
+    signals_extra: dict | None = None
+    # Multi-user identity dimensions (multi-user.md §3, §4.4). Mirrors the
+    # `LLMCallCompleted` stamping so the analytics surface can roll up by
+    # user/team at the turn grain (matches the pattern of `gateway_key_id`).
+    # `None` for agent-loop traffic and pre-multi-user gateway keys; rolls up
+    # under the null bucket per multi-user.md §3.4.
+    user_id: str | None = None
+    team_id: str | None = None
+    # Delegation dimension (delegation.md §8.1). Set on every turn that ran
+    # inside a worker session; analytics joins worker spend back to the
+    # planner via this field. `None` for non-worker sessions.
+    parent_session_id: str | None = None
 
 
 class TurnCancelled(msgspec.Struct, frozen=True):
@@ -77,6 +97,7 @@ class LLMCallStarted(msgspec.Struct, frozen=True):
     estimated_input_tokens: int
     request_id: str
     is_worker: bool
+    parent_session_id: str | None = None
 
 
 class LLMCallCompleted(msgspec.Struct, frozen=True):
@@ -92,6 +113,25 @@ class LLMCallCompleted(msgspec.Struct, frozen=True):
     stop_reason: Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]
     produced_tool_calls: int
     produced_thinking_blocks: int
+    # Gateway dimensions (gateway.md §6). Both `None` when the call originated
+    # from the in-process agent loop (CLI / TUI / `metis serve`); set when the
+    # call entered through the gateway HTTP surface so analytics can roll up by
+    # key and inbound translator.
+    gateway_key_id: str | None = None
+    inbound_shape: Literal["openai", "anthropic"] | None = None
+    # Multi-user identity dimensions (multi-user.md §3, §4.4). Stable
+    # principal ids resolved from the gateway key at request entry; agent-loop
+    # traffic and pre-multi-user gateway keys leave both as `None` and roll up
+    # under the null bucket per multi-user.md §3.4. Both are pseudonymous
+    # identifiers — no plaintext PII; emails live in `users.json` only
+    # (multi-user.md §3.3).
+    user_id: str | None = None
+    team_id: str | None = None
+    # Delegation dimension (delegation.md §8.1). Set on every LLM call made
+    # from inside a worker session; the analytics surface joins worker spend
+    # back to the planner via this field. `None` for non-worker sessions and
+    # all gateway traffic (gateway never delegates).
+    parent_session_id: str | None = None
 
 
 # 8-value error_class enum per provider-adapter §6.1.
@@ -442,6 +482,197 @@ class EvalFailed(msgspec.Struct, frozen=True):
     judge_latency_ms: int
 
 
+# --- §6.4 Gateway quota domain (multi-user.md §5, §7.2) ---------------------
+
+QuotaScopeLiteral = Literal[
+    "key_daily",
+    "key_monthly",
+    "user_daily",
+    "user_monthly",
+    "team_daily",
+    "team_monthly",
+]
+
+QuotaSeverityLiteral = Literal["warning", "critical"]
+
+InboundShapeLiteral = Literal["openai", "anthropic"]
+
+
+class QuotaAlert(msgspec.Struct, frozen=True):
+    """`quota.alert` per multi-user.md §5 / gateway.md §6.4.
+
+    Soft alert emitted when an authenticated request lands on a key /
+    user / team whose spend has crossed a configured warn threshold
+    (`warning` at 80%, `critical` at 95%) but is still below the hard
+    breaker (1.0). One event per request that crosses the threshold —
+    no alert when spend stays under 80%, no alert when the hard breaker
+    fires (the `gateway.quota_exceeded` event covers that case).
+
+    `current_usd` and `limit_usd` are Decimals (the same convention as
+    `EvalCompleted.judge_cost_usd`). `percentage` is `float(current/limit)`,
+    convenient for SPA rendering.
+    """
+
+    scope: QuotaScopeLiteral
+    severity: QuotaSeverityLiteral
+    current_usd: Decimal
+    limit_usd: Decimal
+    percentage: float
+    gateway_key_id: str | None = None
+    user_id: str | None = None
+    team_id: str | None = None
+
+
+class GatewayQuotaExceeded(msgspec.Struct, frozen=True):
+    """`gateway.quota_exceeded` per multi-user.md §7.2.
+
+    Hard-cap rejection: an inbound gateway request hit a configured cap
+    and the harness short-circuited before routing/adapter invocation.
+    The HTTP layer concurrently returns 429 with the documented body
+    (gateway.md §6.4); this event is the audit trail.
+    """
+
+    scope: QuotaScopeLiteral
+    current_usd: Decimal
+    limit_usd: Decimal
+    inbound_shape: InboundShapeLiteral
+    gateway_key_id: str | None = None
+    user_id: str | None = None
+    team_id: str | None = None
+
+
+# --- §6.8 Delegate domain (delegation.md §9; v1 MVP) -----------------------
+
+DelegateTierLiteral = Literal["fast", "balanced", "deep"]
+DelegateContextModeLiteral = Literal["minimal", "explicit"]
+DelegateFailureModeLiteral = Literal[
+    "worker_error",
+    "max_tokens_exceeded",
+    "insufficient_context",
+    "output_schema_validation_failed",
+    "no_model_available_for_tier",
+    "cancelled_by_user",
+]
+
+
+class DelegateStarted(msgspec.Struct, frozen=True):
+    """`delegate.started` per event-bus-and-trace-catalog §6.8.
+
+    Emitted by the `delegate()` tool body after the worker session has been
+    created and immediately before the worker's turn loop runs. `tool_use_id`
+    is the planner's `delegate()` tool_use_id; the worker session is the row
+    created with `parent_tool_use_id == tool_use_id`.
+    """
+
+    tool_use_id: str
+    worker_session_id: str
+    tier: DelegateTierLiteral
+    resolved_model: str
+    context_mode: DelegateContextModeLiteral
+    context_reference_count: int
+    task_size_tokens: int
+    allowed_tool_count: int
+    dropped_tools: list[str]
+
+
+class DelegateCompleted(msgspec.Struct, frozen=True):
+    """`delegate.completed` per event-bus-and-trace-catalog §6.8.
+
+    Emitted when the worker session ends with `disposition: completed` and
+    the delegate-tool body has the worker's final `TurnResult`. The cost
+    summary is **derived** — analytics joins worker spend via
+    `llm.call_completed.parent_session_id` (delegation.md §8.3).
+    """
+
+    tool_use_id: str
+    worker_session_id: str
+    success: bool
+    output_size_bytes: int
+    worker_total_cost_usd: Decimal
+    pricing_version: str
+    turn_count: int
+    llm_call_count: int
+    tool_call_count: int
+    wall_time_seconds: float
+    model: str
+
+
+class DelegateFailed(msgspec.Struct, frozen=True):
+    """`delegate.failed` per event-bus-and-trace-catalog §6.8.
+
+    Emitted instead of `delegate.completed` when the worker couldn't produce a
+    usable result (no model for tier, worker raised, schema validation
+    failed, cancelled mid-flight, etc.). Partial cost is still recorded.
+    """
+
+    tool_use_id: str
+    worker_session_id: str | None  # None when failure precedes session creation
+    failure_mode: DelegateFailureModeLiteral
+    error_message: str
+    worker_total_cost_usd: Decimal
+    pricing_version: str
+
+
+# --- §6.13 Gateway admin domain (gateway.md §11 — Wave 10 key lifecycle) ----
+
+GatewayKeyRevokeReason = Literal["admin_revoke", "grace_period_expired", "rotated"]
+
+
+class GatewayKeyIssued(msgspec.Struct, frozen=True):
+    """`gateway.key_issued` per gateway.md §11.
+
+    Emitted once by `metis gateway issue-key` after the keystore is
+    updated. The audit trail records who/what the key is scoped to so
+    operators can correlate cost-attribution rows back to the issuance
+    event; the plaintext token is never on the bus.
+
+    Both identity tags follow the multi-user.md §3.4 null-bucket
+    convention — pre-multi-user issuance leaves them `None`.
+    """
+
+    gateway_key_id: str
+    name: str
+    workspace_path: str
+    issued_at: datetime
+    user_id: str | None = None
+    team_id: str | None = None
+    allowed_models: list[str] | None = None
+    daily_cap_usd: Decimal | None = None
+    monthly_cap_usd: Decimal | None = None
+
+
+class GatewayKeyRevoked(msgspec.Struct, frozen=True):
+    """`gateway.key_revoked` per gateway.md §11.
+
+    Emitted on explicit `metis gateway revoke-key` invocation or when the
+    grace-period sweep auto-revokes a rotated predecessor. `reason`
+    distinguishes the two paths so dashboards can chart manual revocations
+    separately from rotation tail-offs.
+    """
+
+    gateway_key_id: str
+    revoked_at: datetime
+    reason: GatewayKeyRevokeReason
+
+
+class GatewayKeyRotated(msgspec.Struct, frozen=True):
+    """`gateway.key_rotated` per gateway.md §11.
+
+    Emitted by `metis gateway rotate-key`. Carries both the predecessor
+    and successor ids so operators can follow the migration in the trace.
+    The predecessor stays `active` until `grace_period_until`; after that
+    boundary the next admin sweep emits a paired `gateway.key_revoked`
+    with `reason="grace_period_expired"`.
+    """
+
+    old_gateway_key_id: str
+    new_gateway_key_id: str
+    grace_period_until: datetime
+    workspace_path: str
+    user_id: str | None = None
+    team_id: str | None = None
+
+
 # --- §6.10 Bus meta-events --------------------------------------------------
 
 
@@ -502,8 +733,19 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     "pattern.evicted": (PatternEvicted, Sensitivity.PSEUDONYMOUS),
     # eval (Phase 3)
     "eval.started": (EvalStarted, Sensitivity.PSEUDONYMOUS),
-    "eval.completed": (EvalCompleted, Sensitivity.PSEUDONYMOUS),
+    "eval.completed": (EvalCompleted, Sensitivity.USER_CONTROLLED),
     "eval.failed": (EvalFailed, Sensitivity.PSEUDONYMOUS),
+    # gateway quota (Phase 3 — multi-user.md §5, §7.2)
+    "quota.alert": (QuotaAlert, Sensitivity.PSEUDONYMOUS),
+    "gateway.quota_exceeded": (GatewayQuotaExceeded, Sensitivity.PSEUDONYMOUS),
+    # delegate (Phase 4 v1 MVP — delegation.md §9)
+    "delegate.started": (DelegateStarted, Sensitivity.PSEUDONYMOUS),
+    "delegate.completed": (DelegateCompleted, Sensitivity.PSEUDONYMOUS),
+    "delegate.failed": (DelegateFailed, Sensitivity.PSEUDONYMOUS),
+    # gateway admin (Wave 10 — gateway.md §11 key lifecycle)
+    "gateway.key_issued": (GatewayKeyIssued, Sensitivity.PSEUDONYMOUS),
+    "gateway.key_revoked": (GatewayKeyRevoked, Sensitivity.PSEUDONYMOUS),
+    "gateway.key_rotated": (GatewayKeyRotated, Sensitivity.PSEUDONYMOUS),
     # bus
     "bus.subscriber_registered": (BusSubscriberRegistered, Sensitivity.PSEUDONYMOUS),
     "bus.subscriber_unregistered": (BusSubscriberUnregistered, Sensitivity.PSEUDONYMOUS),
@@ -545,6 +787,17 @@ def make_event(
             [
                 f"payload class {payload.__class__.__name__} does not match "
                 f"registered {expected_class.__name__}"
+            ],
+        )
+    if sensitivity is not None and sensitivity_rank(sensitivity) < sensitivity_rank(
+        default_sensitivity
+    ):
+        raise EventValidationError(
+            type,
+            [
+                f"sensitivity override {sensitivity.value!r} is more private than the "
+                f"catalog floor {default_sensitivity.value!r}; §4.4.1 allows only "
+                f"moves toward less private"
             ],
         )
     return Event(

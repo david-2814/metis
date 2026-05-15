@@ -27,9 +27,11 @@ from metis_core.events.payloads import (
     PatternRecorded,
     make_event,
 )
+from metis_core.patterns.embeddings import EmbeddingProvider
 from metis_core.patterns.fingerprint import (
     Fingerprint,
     FingerprintInputs,
+    attach_embedding_for_recording,
     compute_fingerprint,
 )
 from metis_core.patterns.store import PatternStore, RecordResult
@@ -84,11 +86,13 @@ class PatternEventSubscriber:
         workspace_resolver: WorkspaceResolver,
         bus: EventBus,
         fingerprint_builder: Callable[..., FingerprintInputs] | None = None,
+        embedder: EmbeddingProvider | None = None,
     ) -> None:
         self._store_factory = store_factory
         self._workspace_resolver = workspace_resolver
         self._bus = bus
         self._fingerprint_builder = fingerprint_builder
+        self._embedder = embedder
         self._stores: dict[str, PatternStore] = {}
         # turn_id -> (route_decided event, fingerprint_inputs_override)
         self._pending_routes: dict[str, Event] = {}
@@ -207,6 +211,24 @@ class PatternEventSubscriber:
             latency_ms=latency_ms,
             pricing_version=pricing_version,
         )
+        # v2 recording-side cache warm-up (pattern-store.md §16.6): once
+        # the outcome row is durable and `_turn_outcomes` is set, populate
+        # the embedding cache for this user message so future routing-time
+        # `_attach_cached_embedding` lookups hit. Done AFTER record() to
+        # avoid racing with `_on_eval_completed`, which depends on
+        # `_turn_outcomes[turn_id]` being set before it fires.
+        if (
+            self._embedder is not None
+            and getattr(store, "fingerprint_version", "v1") == "v2"
+            and inputs.embedding is None
+            and inputs.user_message_text
+        ):
+            try:
+                await attach_embedding_for_recording(
+                    inputs, store=store, embedder=self._embedder
+                )
+            except Exception:
+                logger.exception("pattern subscriber: attach_embedding_for_recording failed")
 
     async def _on_eval_completed(self, event: Event) -> None:
         payload = event.payload

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 
 from metis_core.events.payloads import PolicyEvaluation
 
@@ -38,6 +39,25 @@ class TurnContext:
     workspace_path: str = ""  # session's absolute workspace path
     timezone: str | None = None  # IANA zone name for time_of_day_between
     now_override: datetime | None = None  # for deterministic time-based tests
+
+    # Caller-provided workload tag for pattern-store K-NN clustering. Set by
+    # the benchmark harness (one workload per run); None for agent-loop
+    # sessions, which have no notion of a "workload." See pattern-store.md §5.1.
+    workload_id: str | None = None
+
+    # Headroom in the team's monthly budget at turn start, in USD.
+    # multi-user.md §6.1 — drives the `team_budget_remaining_lt` predicate.
+    # `None` when the call has no team binding, no team-level cap, or comes
+    # from the agent path; predicates evaluate to False in that case.
+    team_budget_remaining_usd: Decimal | None = None
+
+    # Delegation re-entry (delegation.md §7). When this turn is the first
+    # turn of a worker session, the session manager populates
+    # `worker_tier_model` with the resolved tier model so slot 5
+    # (`DELEGATE_REQUEST`) emits `chose: <model>` instead of the default
+    # `not_applicable: "not a delegation re-entry"`. Non-worker turns leave
+    # it `None` and slot 5 keeps its top-level behavior.
+    worker_tier_model: str | None = None
 
     # For tracing
     parent_event_id: str | None = None  # typically the turn.started event id

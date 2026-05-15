@@ -159,8 +159,16 @@ async def test_discovery_injected_into_system_prompt(bus, workspace, skill_dir):
     await bus.stop()
     sp = adapter.requests[0].system_prompt
     assert "Available skills" in sp
-    assert "alpha: first skill description" in sp
-    assert "beta: second skill description" in sp
+    # v3 §5.2.2: short bodies are inlined as v2 §5.1 padding and the
+    # discovery line gains a `[preloaded]` annotation. Allow either form
+    # — we're testing that the description text reaches the prompt, not
+    # the exact annotation state.
+    assert ("alpha: first skill description" in sp) or (
+        "alpha [preloaded]: first skill description" in sp
+    )
+    assert ("beta: second skill description" in sp) or (
+        "beta [preloaded]: second skill description" in sp
+    )
 
 
 async def test_empty_skill_store_does_not_add_section(bus, workspace, tmp_path):

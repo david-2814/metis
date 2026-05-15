@@ -10,8 +10,10 @@
 > the existing pattern domain (§6.5b) — `pattern.recorded`, `pattern.matched`,
 > `pattern.evicted` per `pattern-store.md §10`. All six payloads landed in
 > `events/payloads.py` and `PAYLOAD_REGISTRY`. Sensitivity floor is
-> `pseudonymous` for all six; `eval.completed` admits opt-in uplift to
-> `user_controlled` per §4.4.1.
+> `pseudonymous` for five; `eval.completed`'s floor is `user_controlled`
+> (the worst case, when `signals.rationale_redacted` is populated) and
+> downgrades to `pseudonymous` when the rationale field is absent — a
+> move toward less private, which §4.4.1 explicitly allows.
 
 > **v3 changes:** Streaming events explicitly excluded from catalog (§4.5);
 > streaming server removed from bus subscriber table (§5.4) — they receive
@@ -250,13 +252,16 @@ Some event types have payload fields that are populated only when the user opts 
 
 When such a field is populated, the event's *recorded* sensitivity may upgrade to a less-restrictive class than the catalog default. The rule:
 
-- The catalog declares the *floor* sensitivity for an event type — what it is when only required fields are set.
+- The catalog declares the *floor* sensitivity for an event type — the **worst case**, i.e., the most-private classification the event can have when all opt-in fields are populated.
 - An event's actual `sensitivity` value is computed at emit time based on which optional fields are populated.
-- The classification can only move *toward less private* (i.e., from `private` to `user_controlled` to `pseudonymous` to `aggregatable`) and only when the user has explicitly opted into that level of sharing for that field.
+- The classification can only move *toward less private* (i.e., from `private` to `user_controlled` to `pseudonymous` to `aggregatable`) — never toward more private than the floor. `make_event` enforces this: a sensitivity override more private than the catalog floor raises `EventValidationError`.
 
-Concrete: a `turn.started` event with `user_message_text_redacted: null` is recorded as `private`. The same event type with the field populated (because the user opted in) is recorded as `user_controlled`. Both are valid; the difference is observable in the event's `sensitivity` field.
+Concrete examples:
 
-This keeps the catalog contract honest: it declares the floor, the actual record reflects what was actually included.
+- `turn.started` floor is `private`. A `turn.started` event with `user_message_text_redacted: null` is recorded as the floor `private`. The same event type with the field populated (because the user opted into trace sharing) is recorded as `user_controlled` — a downgrade toward less private, which the rule allows.
+- `eval.completed` floor is `user_controlled`. With `signals.rationale_redacted` populated, recorded as the floor `user_controlled`. With the rationale field absent (heuristic verdict, or LLM verdict without rationale opt-in), the subscriber passes `pseudonymous` — again a downgrade toward less private.
+
+This keeps the catalog contract honest: the floor is the most-private possible recording for that event type, and the actual sensitivity tag reflects what was actually included.
 
 ### 4.5 Type names
 
@@ -444,8 +449,14 @@ The full user message text is *not* in the event payload — it's persisted as p
     "total_output_tokens": int,
     "total_cost_usd": float,
     "wall_time_seconds": float,
+    # --- additive (default null; existing consumers ignore unknown fields) ---
+    "signals_extra": dict | None,           # evaluator §5.1 supplementary keys (e.g. final_response_text)
+    "user_id": str | None,                  # multi-user.md §4.4; null on agent-loop and pre-multi-user keys
+    "team_id": str | None,                  # multi-user.md §4.4; same null convention as user_id
 }
 ```
+
+`user_id` and `team_id` are stable pseudonymous identifiers (`usr_<ulid>` / `team_<ulid>`) resolved from the gateway key at request entry per `multi-user.md` §3 and §4.4. They roll up under the null bucket in the analytics surface for agent-loop traffic and for keys issued before the multi-user fields were added. Plaintext PII (email, real name) lives in `users.json` only — the trace store carries the stable id only (`multi-user.md` §3.3).
 
 #### `turn.cancelled`
 
@@ -502,8 +513,15 @@ The full user message text is *not* in the event payload — it's persisted as p
     "stop_reason": Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"],
     "produced_tool_calls": int,      # number of tool_use blocks in the response
     "produced_thinking_blocks": int,
+    # --- additive (default null; existing consumers ignore unknown fields) ---
+    "gateway_key_id": str | None,           # gateway.md §6; null on agent-loop traffic
+    "inbound_shape": Literal["openai", "anthropic"] | None,  # gateway.md §6
+    "user_id": str | None,                  # multi-user.md §4.4; null on agent-loop and pre-multi-user keys
+    "team_id": str | None,                  # multi-user.md §4.4; same null convention as user_id
 }
 ```
+
+`gateway_key_id` and `inbound_shape` are stamped at the gateway boundary per `gateway.md` §6; both are `null` when the call originated from the in-process agent loop (CLI / TUI / `metis serve`). `user_id` and `team_id` are stable pseudonymous identifiers (`usr_<ulid>` / `team_<ulid>`) resolved from the gateway key per `multi-user.md` §3 and §4.4 — they roll up under the null bucket for agent-loop traffic and for keys issued before the multi-user fields were added. Plaintext PII (email, real name) lives in `users.json` only — the trace store carries the stable id only (`multi-user.md` §3.3).
 
 #### `llm.call_failed`
 
@@ -849,7 +867,8 @@ Mirrors `memory.eviction`. Fired when (1) a write lands the store over `soft_cap
 > **Sensitivity:** `pseudonymous`
 > **Phase:** 2
 > **Actor:** SYSTEM
-> **Parent:** `turn.started` or `llm.call_completed` (on-demand load)
+> **Parent:** `session.started` (pre-activation, `load_reason="always"`)
+> or `llm.call_completed` (on-demand load via `skill_load` tool)
 
 ```python
 {
@@ -861,6 +880,24 @@ Mirrors `memory.eviction`. Fired when (1) a write lands the store over `soft_cap
     "triggered_by_tool_use_id": str | None,    # for on_demand loads via load_skill tool
 }
 ```
+
+**`load_reason` semantics** (context-assembler.md v3 §5.2.1, wired
+2026-05-14):
+
+- `"always"` — **pre-activation**. Emitted by `SessionManager.create_session`
+  for every skill body inlined into the stable system prefix as v2
+  §5.1 padding. `triggered_by_tool_use_id` is `None`; `turn_id` is
+  `None` (pre-activation stands outside any turn).
+- `"on_demand"` — **explicit activation**. Emitted by `SkillLoadTool`
+  on a successful `skill_load(name)` call when the skill is not
+  already pre-activated and not already explicitly activated in this
+  session. `triggered_by_tool_use_id` is the `ToolUseBlock.id`.
+- `"auto_suggested"` — reserved for a later description-match-driven
+  activation mechanism; not emitted in v3.
+
+No `skill.unloaded` / `skill.evicted` event exists. v3 defers
+mid-session eviction (context-assembler.md v3 §5.2.5); budget
+exhaustion surfaces via `tool.failed` (§6.5) per §5.2.6.
 
 #### `skill.created`
 
@@ -952,14 +989,22 @@ Mirrors `memory.eviction`. Fired when (1) a write lands the store over `soft_cap
 
 ### 6.8 Delegate domain
 
-> *Phase note: the `delegate()` tool itself ships in Phase 4 (per the project overview). However, the routing chain's `delegate_request` policy slot exists from Phase 1 — it just always returns `not_applicable` until the tool exists. This is why `route.decided.chain[].policy` includes `"delegate_request"` from day one even though `delegate.*` events don't fire until Phase 4. The asymmetry is deliberate: the routing pipeline's shape is fixed, so adding the delegation slot later is filling in a stub rather than refactoring the chain.*
+> *Status: v1 MVP shipped (Wave 10). The `delegate()` built-in tool, the
+> worker-session lifecycle, and the three event types below are wired and
+> tested. Streaming, cancellation cascade, recursive delegation, and
+> structured-output schema validation remain deferred per
+> [`delegation.md §2.2`](delegation.md). The routing chain's
+> `delegate_request` policy slot has existed since Phase 1 and continues to
+> report `not_applicable` for top-level sessions; it now reports
+> `chose: <tier model>` inside worker re-entry per
+> [`delegation.md §7`](delegation.md).*
 
 #### `delegate.started`
 
 > **Sensitivity:** `pseudonymous`
-> **Phase:** 4
-> **Actor:** AGENT
-> **Parent:** `llm.call_completed`
+> **Phase:** 4 (v1 MVP — Wave 10)
+> **Actor:** SYSTEM
+> **Parent:** `llm.call_completed` (the planner call that emitted the `delegate()` tool_use)
 
 ```python
 {
@@ -970,49 +1015,62 @@ Mirrors `memory.eviction`. Fired when (1) a write lands the store over `soft_cap
     "context_mode": Literal["minimal", "explicit"],
     "context_reference_count": int,  # for explicit mode
     "task_size_tokens": int,
+    "allowed_tool_count": int,        # tools the planner asked the worker to keep
+    "dropped_tools": list[str],        # tools the planner asked for but worker forbids (§5.6)
 }
 ```
 
 #### `delegate.completed`
 
 > **Sensitivity:** `pseudonymous`
-> **Phase:** 4
-> **Actor:** AGENT
+> **Phase:** 4 (v1 MVP — Wave 10)
+> **Actor:** SYSTEM
 > **Parent:** `delegate.started`
+
+The cost summary is **derived** — analytics joins worker spend back via
+`llm.call_completed.parent_session_id` (delegation.md §8.3).
 
 ```python
 {
     "tool_use_id": str,
     "worker_session_id": str,
     "success": bool,
-    "worker_turn_count": int,
-    "worker_total_input_tokens": int,
-    "worker_total_output_tokens": int,
-    "worker_total_cost_usd": float,
+    "output_size_bytes": int,
+    "worker_total_cost_usd": Decimal,  # serialized as string per §6.4 convention
+    "pricing_version": str,
+    "turn_count": int,
+    "llm_call_count": int,
+    "tool_call_count": int,
     "wall_time_seconds": float,
+    "model": str,                      # the resolved worker model
 }
 ```
 
 #### `delegate.failed`
 
 > **Sensitivity:** `pseudonymous`
-> **Phase:** 4
-> **Actor:** AGENT | SYSTEM
-> **Parent:** `delegate.started`
+> **Phase:** 4 (v1 MVP — Wave 10)
+> **Actor:** SYSTEM
+> **Parent:** `delegate.started` (when the worker session was created) or
+> the planner's `llm.call_completed` (when failure precedes session creation,
+> e.g. `no_model_available_for_tier`)
 
 ```python
 {
     "tool_use_id": str,
-    "worker_session_id": str | None,  # null if worker never started
+    "worker_session_id": str | None,   # None when failure precedes session creation
     "failure_mode": Literal["worker_error", "max_tokens_exceeded", "insufficient_context",
                             "output_schema_validation_failed", "no_model_available_for_tier",
                             "cancelled_by_user"],
     "error_message": str,
-    # When failure_mode == "insufficient_context", this carries the structured request
-    # (see routing-engine.md §6.6.1 for the InsufficientContextRequest schema).
-    "insufficient_context_request": dict | None,
+    "worker_total_cost_usd": Decimal,  # partial spend before failure; serialized as string
+    "pricing_version": str,
 }
 ```
+
+`insufficient_context_request` (typed `InsufficientContextRequest` from
+`routing-engine.md §6.6.1`) is reserved for the streaming-back-to-planner
+follow-up phase; v1 carries the structured ask only in `error_message` text.
 
 ### 6.9 Feedback domain
 
@@ -1155,7 +1213,7 @@ Emitted when the evaluator begins scoring a subject. Pairs 1:1 with a later `eva
 
 #### `eval.completed`
 
-> **Sensitivity:** `pseudonymous` (floor; can upgrade to `user_controlled` per §4.4.1 when `signals.rationale_redacted` is populated on opt-in)
+> **Sensitivity:** `user_controlled` (floor; downgrades to `pseudonymous` per §4.4.1 when `signals.rationale_redacted` is absent)
 > **Phase:** 3
 > **Actor:** SYSTEM
 > **Parent:** `eval.started`
@@ -1181,7 +1239,7 @@ Emitted when the evaluator begins scoring a subject. Pairs 1:1 with a later `eva
 
 `judge_cost_usd` is `Decimal("0")` for heuristic verdicts and `judge_pricing_version` is `None` in that case — pricing semantics don't apply to code that did no inference.
 
-**Sensitivity uplift.** When the user has opted into capturing LLM judge rationales, the emitter populates `signals.rationale_redacted` and passes `Sensitivity.USER_CONTROLLED` to `make_event` per §4.4.1. The catalog floor remains `pseudonymous`.
+**Sensitivity floor.** The catalog floor is `user_controlled` — the worst case, when `signals.rationale_redacted` is populated and the event carries LLM-generated text the user opted into capturing. When the rationale field is absent (heuristic verdicts, opt-in disabled), the emitter passes `Sensitivity.PSEUDONYMOUS` to `make_event` — a move toward less private, which §4.4.1 allows.
 
 #### `eval.failed`
 
@@ -1206,6 +1264,90 @@ Emitted instead of `eval.completed` when the judge couldn't produce a verdict. S
     ],
     "error_message": str,
     "judge_latency_ms": int,
+}
+```
+
+### 6.13 Gateway admin domain
+
+The gateway admin operations (`metis gateway issue-key` / `revoke-key` /
+`rotate-key`) emit one audit event per successful keystore mutation.
+All three fire from the CLI, not from a running gateway process — the
+`session_id` is the bus-lifecycle sentinel (`"system"`) and `turn_id`
+is `null`. See `gateway.md §11` for the operator-facing contract; this
+section is the catalog entry.
+
+Audit emission is best-effort — failures don't roll back the keystore
+mutation. The keystore JSON file is the durable record; these events
+are the operator's trail.
+
+#### `gateway.key_issued`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 3 (Wave 10)
+> **Actor:** SYSTEM
+> **Parent:** none
+
+Emitted by `metis gateway issue-key` after the keystore is written.
+The plaintext token is never on the bus — the event only references
+the stable `gateway_key_id`. Identity tags follow the multi-user.md
+§3.4 null-bucket convention; pre-multi-user issuance leaves both
+`user_id` and `team_id` as `null`.
+
+```python
+{
+    "gateway_key_id": str,
+    "name": str,
+    "workspace_path": str,
+    "issued_at": datetime,
+    "user_id": str | None,
+    "team_id": str | None,
+    "allowed_models": list[str] | None,
+    "daily_cap_usd": str | None,            # Decimal-as-string when set
+    "monthly_cap_usd": str | None,          # Decimal-as-string when set
+}
+```
+
+#### `gateway.key_revoked`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 3 (Wave 10)
+> **Actor:** SYSTEM
+> **Parent:** none (one-shot CLI op)
+
+Emitted on explicit `metis gateway revoke-key` invocation
+(`reason="admin_revoke"`) or when the next admin sweep persists a
+grace-period lapse (`reason="grace_period_expired"`). The third enum
+value `"rotated"` is reserved for a future "fail-fast revoke on
+rotate" variant; it is not emitted in v1.
+
+```python
+{
+    "gateway_key_id": str,
+    "revoked_at": datetime,
+    "reason": Literal["admin_revoke", "grace_period_expired", "rotated"],
+}
+```
+
+#### `gateway.key_rotated`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 3 (Wave 10)
+> **Actor:** SYSTEM
+> **Parent:** none
+
+Emitted by `metis gateway rotate-key`. Carries both predecessor and
+successor ids so dashboards can chart the migration; also stamps the
+inherited identity dimensions so the rotation surfaces in
+`/analytics/by_key` next to the pre-rotation rows.
+
+```python
+{
+    "old_gateway_key_id": str,
+    "new_gateway_key_id": str,
+    "grace_period_until": datetime,
+    "workspace_path": str,
+    "user_id": str | None,
+    "team_id": str | None,
 }
 ```
 
@@ -1269,6 +1411,18 @@ Retention runs as a batch task, deletes oldest events past the threshold. Patter
 In v1, no virtual columns extracted from payload JSON. If specific queries get slow, add them via `ALTER TABLE events ADD COLUMN ... AS (json_extract(...)) VIRTUAL`. This is a non-breaking change.
 
 Likely candidates for Phase 2: `payload_model` (extract from `llm.call_completed` for cost queries), `payload_skill_id` (for skill analytics).
+
+### 7.5 Backup and restore
+
+The trace DB is a single SQLite file. Backups use SQLite's `VACUUM INTO` (atomic, WAL-safe, hot-snapshot — the source DB does not need to be closed). Restore is a file copy with a schema-version guard. The contract is wired by `metis_core.trace.backup` and exposed via the `metis backup` / `metis restore` subcommands; operator recipe lives in `docs/gateway-deployment.md` under "Backup & restore".
+
+**Schema versioning.** Every trace DB opened by `TraceStore` is stamped with `PRAGMA user_version = TRACE_SCHEMA_VERSION` (currently `1`). Bump in lockstep with any breaking edit to the events-table schema in §7.1. `restore()` refuses a backup whose `user_version` doesn't match the running code; the diagnostic names both versions and points at the migration path.
+
+**Clean-backup invariant.** A backup is a single file. `VACUUM INTO` does not produce `-wal` / `-shm` companions. If `restore()` finds either alongside the source backup, it refuses — the file was not produced by `metis backup` (or was hand-edited), and proceeding risks losing in-flight writes.
+
+**Overwrite protection.** Both backup and restore refuse to clobber an existing destination by default. The CLI exposes `--force` on `metis restore` for the "replace a corrupt DB" flow; the library's `restore(..., allow_overwrite=True)` is the matching opt-in.
+
+**Backup metadata.** `BackupResult` (returned by `backup()` and printed by the CLI) captures: source path, dest path, byte count, schema version, event count, oldest/newest event timestamps. The CLI output is deterministic — no random ids — so operators can checksum it alongside the backup as a paper trail.
 
 ---
 

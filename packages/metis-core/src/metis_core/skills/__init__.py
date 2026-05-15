@@ -15,6 +15,13 @@ The runtime registers two tools the agent uses for progressive disclosure:
 See `docs/specs/event-bus-and-trace-catalog.md` §6.6 for the event payload.
 """
 
+from metis_core.skills.activation import (
+    HARD_CAP_CUMULATIVE_ACTIVATION_TOKENS,
+    MAX_EXPLICIT_ACTIVATIONS_PER_SESSION,
+    WARN_CUMULATIVE_ACTIVATION_TOKENS,
+    SkillActivationRegistry,
+    SkillBudgetExceededError,
+)
 from metis_core.skills.store import (
     BODY_TOKEN_WARN_THRESHOLD,
     Skill,
@@ -31,7 +38,12 @@ from metis_core.skills.tools import (
 
 __all__ = [
     "BODY_TOKEN_WARN_THRESHOLD",
+    "HARD_CAP_CUMULATIVE_ACTIVATION_TOKENS",
+    "MAX_EXPLICIT_ACTIVATIONS_PER_SESSION",
+    "WARN_CUMULATIVE_ACTIVATION_TOKENS",
     "Skill",
+    "SkillActivationRegistry",
+    "SkillBudgetExceededError",
     "SkillLoadTool",
     "SkillSearchTool",
     "SkillSource",

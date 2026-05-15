@@ -37,7 +37,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   turn_count INTEGER NOT NULL DEFAULT 0,
   schema_version INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  parent_session_id TEXT,
+  parent_tool_use_id TEXT,
+  is_worker INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -53,7 +56,20 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_created
     ON messages(session_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_parent
+    ON sessions(parent_session_id) WHERE parent_session_id IS NOT NULL;
 """
+
+# Additive columns that must be backfilled on existing DBs (delegation.md
+# §5.1). The migration is run unconditionally; PRAGMA `table_info` tells us
+# what already exists so a SQLite without `ALTER TABLE ... IF NOT EXISTS`
+# stays correct.
+_DELEGATION_COLUMNS = (
+    ("parent_session_id", "TEXT"),
+    ("parent_tool_use_id", "TEXT"),
+    ("is_worker", "INTEGER NOT NULL DEFAULT 0"),
+)
 
 
 class SqliteSessionStore:
@@ -70,8 +86,19 @@ class SqliteSessionStore:
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate_sessions_table()
         self._content_encoder = msgspec.json.Encoder()
         self._metadata_encoder = msgspec.json.Encoder()
+
+    def _migrate_sessions_table(self) -> None:
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        for column, column_type in _DELEGATION_COLUMNS:
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE sessions ADD COLUMN {column} {column_type}")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_parent "
+            "ON sessions(parent_session_id) WHERE parent_session_id IS NOT NULL"
+        )
 
     def close(self) -> None:
         self._conn.close()
@@ -84,14 +111,23 @@ class SqliteSessionStore:
 
     # ---- SessionStore protocol ---------------------------------------
 
-    def create_session(self, *, workspace_path: str, active_model: str | None = None) -> Session:
+    def create_session(
+        self,
+        *,
+        workspace_path: str,
+        active_model: str | None = None,
+        parent_session_id: str | None = None,
+        parent_tool_use_id: str | None = None,
+        is_worker: bool = False,
+    ) -> Session:
         now = _now()
         session_id = new_session_id()
         self._conn.execute(
             "INSERT INTO sessions "
             "(id, workspace_path, active_model, routing_policy_json, "
-            "cost_so_far_usd, turn_count, schema_version, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cost_so_far_usd, turn_count, schema_version, created_at, updated_at, "
+            "parent_session_id, parent_tool_use_id, is_worker) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 workspace_path,
@@ -102,6 +138,9 @@ class SqliteSessionStore:
                 SCHEMA_VERSION,
                 _to_micros(now),
                 _to_micros(now),
+                parent_session_id,
+                parent_tool_use_id,
+                1 if is_worker else 0,
             ),
         )
         return Session(
@@ -111,11 +150,15 @@ class SqliteSessionStore:
             created_at=now,
             cost_so_far_usd=0.0,
             turn_count=0,
+            parent_session_id=parent_session_id,
+            parent_tool_use_id=parent_tool_use_id,
+            is_worker=is_worker,
         )
 
     def get_session(self, session_id: str) -> Session:
         cursor = self._conn.execute(
-            "SELECT id, workspace_path, active_model, cost_so_far_usd, turn_count, created_at "
+            "SELECT id, workspace_path, active_model, cost_so_far_usd, turn_count, created_at, "
+            "parent_session_id, parent_tool_use_id, is_worker "
             "FROM sessions WHERE id = ?",
             (session_id,),
         )
@@ -126,7 +169,8 @@ class SqliteSessionStore:
 
     def list_sessions(self) -> list[Session]:
         cursor = self._conn.execute(
-            "SELECT id, workspace_path, active_model, cost_so_far_usd, turn_count, created_at "
+            "SELECT id, workspace_path, active_model, cost_so_far_usd, turn_count, created_at, "
+            "parent_session_id, parent_tool_use_id, is_worker "
             "FROM sessions ORDER BY created_at DESC"
         )
         return [_row_to_session(row) for row in cursor.fetchall()]
@@ -200,6 +244,9 @@ def _row_to_session(row) -> Session:
         cost_so_far_usd=row[3],
         turn_count=row[4],
         created_at=_from_micros(row[5]),
+        parent_session_id=row[6],
+        parent_tool_use_id=row[7],
+        is_worker=bool(row[8]),
     )
 
 

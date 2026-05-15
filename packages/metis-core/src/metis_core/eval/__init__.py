@@ -1,4 +1,4 @@
-"""Output-quality scoring (v1: heuristic tier only).
+"""Output-quality scoring (heuristic, LLM, hybrid tiers).
 
 Per `docs/specs/evaluator.md`. The evaluator subscribes to terminal
 events (`turn.completed`, `tool.completed`, `tool.failed`,
@@ -7,14 +7,18 @@ and emits `eval.started` / `eval.completed` / `eval.failed` on the bus.
 Re-evaluation is available via `metis evaluate` and the `reevaluate()`
 function.
 
-v1 ships:
+Ships:
 - `HeuristicJudge` — zero-cost rule-based scoring per subject kind.
-- `BudgetTracker` — per-session and per-day caps (structural for the
-  future LLM-as-judge tier; heuristic never spends).
+- `LLMJudge` — prompts a configurable judge model (default haiku) and
+  parses a JSON verdict; budget-gated via the shared `BudgetTracker`.
+- `HybridJudge` — heuristic floor + LLM escalation when heuristic
+  confidence is below `escalation_threshold` (default 0.7).
+- `BudgetTracker` — per-session and per-day caps shared across judges.
 - `register_evaluator()` — bus-wiring helper for the runtime.
 
-LLM-as-judge and hybrid escalation are deferred to a later wave —
-they require provider availability the heuristic tier doesn't have.
+Tool-cycle and session subjects remain heuristic-only in v1
+(evaluator.md §5.5 / §5.6); LLM-eligible subjects are `turn` and
+`workload`.
 """
 
 from metis_core.eval.budget import (
@@ -29,6 +33,22 @@ from metis_core.eval.judge import (
     HeuristicJudge,
     Judge,
     SubjectContext,
+)
+from metis_core.eval.llm_judge import (
+    DEFAULT_ESCALATION_THRESHOLD,
+    DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+    TURN_HYBRID_RUBRIC_ID,
+    TURN_HYBRID_RUBRIC_VERSION,
+    TURN_LLM_RUBRIC_ID,
+    TURN_LLM_RUBRIC_VERSION,
+    WORKLOAD_HYBRID_RUBRIC_ID,
+    WORKLOAD_HYBRID_RUBRIC_VERSION,
+    WORKLOAD_LLM_RUBRIC_ID,
+    WORKLOAD_LLM_RUBRIC_VERSION,
+    HybridJudge,
+    LLMJudge,
+    LLMJudgeConfig,
+    LLMJudgeError,
 )
 from metis_core.eval.rubric import (
     DEFAULT_RUBRICS,
@@ -57,6 +77,8 @@ from metis_core.eval.verdict import (
 )
 
 __all__ = [
+    "DEFAULT_ESCALATION_THRESHOLD",
+    "DEFAULT_JUDGE_MAX_OUTPUT_TOKENS",
     "DEFAULT_PER_DAY_MAX_USD",
     "DEFAULT_PER_SESSION_MAX_USD",
     "DEFAULT_RUBRICS",
@@ -66,15 +88,27 @@ __all__ = [
     "TOOL_CYCLE_HEURISTIC_RUBRIC_VERSION",
     "TURN_HEURISTIC_RUBRIC_ID",
     "TURN_HEURISTIC_RUBRIC_VERSION",
+    "TURN_HYBRID_RUBRIC_ID",
+    "TURN_HYBRID_RUBRIC_VERSION",
+    "TURN_LLM_RUBRIC_ID",
+    "TURN_LLM_RUBRIC_VERSION",
     "WORKLOAD_HEURISTIC_RUBRIC_ID",
     "WORKLOAD_HEURISTIC_RUBRIC_VERSION",
+    "WORKLOAD_HYBRID_RUBRIC_ID",
+    "WORKLOAD_HYBRID_RUBRIC_VERSION",
+    "WORKLOAD_LLM_RUBRIC_ID",
+    "WORKLOAD_LLM_RUBRIC_VERSION",
     "BudgetTracker",
     "EvalJudgeKind",
     "EvalSubjectKind",
     "EvalVerdict",
     "Evaluator",
     "HeuristicJudge",
+    "HybridJudge",
     "Judge",
+    "LLMJudge",
+    "LLMJudgeConfig",
+    "LLMJudgeError",
     "RubricSet",
     "SessionAggregateConfig",
     "SubjectContext",

@@ -35,3 +35,41 @@ def test_chat_default_global_default_model():
     parser = build_parser()
     args = parser.parse_args(["chat", "/some/dir"])
     assert args.global_default == "anthropic:claude-sonnet-4-6"
+
+
+def test_gateway_issue_key_parses_user_and_team_flags():
+    """multi-user.md §4.2 — `--user` / `--team` thread through the parser."""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "gateway",
+            "issue-key",
+            "--name",
+            "alice-claude-code",
+            "--workspace",
+            "/Users/alice/repo",
+            "--user",
+            "alice",
+            "--team",
+            "eng",
+        ]
+    )
+    assert args.gateway_command == "issue-key"
+    assert args.user == "alice"
+    assert args.team == "eng"
+
+
+def test_gateway_issue_key_user_and_team_default_to_none():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "gateway",
+            "issue-key",
+            "--name",
+            "legacy",
+            "--workspace",
+            "/tmp",
+        ]
+    )
+    assert args.user is None
+    assert args.team is None

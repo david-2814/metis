@@ -1,8 +1,8 @@
 // Metis dashboard — single-file vanilla SPA.
 //
-// Layout: a top-bar with two toggles (Cost ⇄ Activity, time window) drives
-// a render() that fetches the relevant /analytics/* endpoints and binds them
-// into the Cost or Activity view. No build step, no framework.
+// Layout: a top-bar with two toggles (Cost ⇄ Activity ⇄ Spend-by-identity,
+// time window) drives a render() that fetches the relevant /analytics/*
+// endpoints and binds them into the active view. No build step, no framework.
 //
 // Chart.js is loaded via CDN in index.html; we reuse Chart instances across
 // renders to avoid leaking canvas state.
@@ -12,9 +12,27 @@ const BASELINE_MODEL = "anthropic:claude-sonnet-4-6";
 // ----- State ---------------------------------------------------------------
 
 const state = {
-  view: "cost", // "cost" | "activity"
+  view: "cost", // "cost" | "activity" | "identity"
   windowKey: "7d", // "today" | "7d" | "30d" | "all"
+  // Drill-down: when a row in the identity view is clicked we filter the
+  // Cost / Activity endpoint calls. `null` means "all traffic". The
+  // agent-loop bucket (gateway_key_id / user_id / team_id IS NULL on the
+  // server) is not drill-downable in v1 — the cost endpoint's filter is an
+  // exact-match `= ?` and can't express IS NULL through the same parameter
+  // shape.
+  identityFilter: null, // { kind: "key" | "user" | "team", value: string }
+  // Identity view: which rollup tiles are visible.
+  identityScope: "all", // "all" | "team" | "user" | "key"
+  // Pills inside the per-key tile. `keysFilter` only filters which rows the
+  // table displays; it doesn't talk to the server. `identitySort` is shared
+  // across all three identity tables and is similarly client-side.
+  keysFilter: "all", // "all" | "agent" | "gateway"
+  identitySort: "cost", // "cost" | "call_count"
+  // Per-team tile: which team rows are expanded to show their by_user
+  // sub-array. Keyed by `team_id`; the null bucket uses the sentinel below.
+  expandedTeams: new Set(),
 };
+const NULL_BUCKET = "__null__";
 
 const charts = {}; // canvasId -> Chart instance
 
@@ -68,6 +86,18 @@ function withWindowParams(win) {
   if (win.from) out.from = win.from.toISOString();
   if (win.to) out.to = win.to.toISOString();
   return out;
+}
+
+// Translate `state.identityFilter` into the param name the analytics
+// endpoints accept (gateway_key / user / team). Cost endpoints support all
+// three independently (multi-user.md §5.3 / analytics-api.md §4.1).
+function identityFilterParam() {
+  if (state.identityFilter === null) return {};
+  const { kind, value } = state.identityFilter;
+  if (kind === "key") return { gateway_key: value };
+  if (kind === "user") return { user: value };
+  if (kind === "team") return { team: value };
+  return {};
 }
 
 // ----- Formatters --------------------------------------------------------
@@ -137,11 +167,15 @@ const baseChartOpts = (extra = {}) => ({
 
 async function renderCostView(win) {
   const params = withWindowParams(win);
-  // Fire all queries in parallel — they're independent.
+  // Only the cost endpoint accepts gateway_key / user / team as filters
+  // (see analytics-api.md §4.1, multi-user.md §5.3). cache_effectiveness
+  // and savings remain global in v1 — the chip stays visible so the user
+  // knows the cost charts are filtered while the other panels aren't.
+  const costParams = { ...params, ...identityFilterParam() };
   const [totals, byDay, byModel, cache, savings] = await Promise.all([
-    fetchAnalytics("cost", { ...params, group_by: "none" }),
-    fetchAnalytics("cost", { ...params, group_by: "day" }),
-    fetchAnalytics("cost", { ...params, group_by: "model" }),
+    fetchAnalytics("cost", { ...costParams, group_by: "none" }),
+    fetchAnalytics("cost", { ...costParams, group_by: "day" }),
+    fetchAnalytics("cost", { ...costParams, group_by: "model" }),
     fetchAnalytics("cache_effectiveness", params),
     fetchAnalytics("savings", { ...params, baseline: BASELINE_MODEL }),
   ]);
@@ -519,21 +553,383 @@ function renderSessions(rows) {
   }
 }
 
+// ----- Spend-by-identity view --------------------------------------------
+// Three rollups share one tab: per-team, per-user, per-key. The scope pills
+// switch which tiles are visible; "all" shows all three.
+
+async function renderIdentityView(win) {
+  // Show/hide tiles up-front so an in-flight fetch doesn't leave the wrong
+  // table visible during the round-trip.
+  for (const tile of ["team", "user", "key"]) {
+    const visible = state.identityScope === "all" || state.identityScope === tile;
+    document.getElementById(`tile-${tile}`).classList.toggle("hidden", !visible);
+  }
+
+  const params = withWindowParams(win);
+  // Fetch in parallel only what we need for the active scope; the per-key
+  // tile fetches via by_key, per-team via by_team, per-user via
+  // cost?group_by=user. The pricing-version stamp comes from whichever
+  // request lands first.
+  const want = state.identityScope;
+  const fetches = [];
+  if (want === "all" || want === "team")
+    fetches.push(["team", fetchAnalytics("by_team", params)]);
+  if (want === "all" || want === "user")
+    fetches.push(["user", fetchAnalytics("cost", { ...params, group_by: "user" })]);
+  if (want === "all" || want === "key")
+    fetches.push(["key", fetchAnalytics("by_key", params)]);
+
+  const results = await Promise.all(fetches.map(([_, p]) => p));
+  document.getElementById("pricing-version").textContent =
+    results[0]?.current_pricing_version || "—";
+
+  for (let i = 0; i < fetches.length; i++) {
+    const kind = fetches[i][0];
+    const resp = results[i];
+    if (kind === "team") renderTeamsTile(resp.data);
+    else if (kind === "user") renderUsersTile(resp.data);
+    else if (kind === "key") renderKeysTile(resp.data);
+  }
+}
+
+// ----- Per-team tile ----------------------------------------------------
+
+function renderTeamsTile(rows) {
+  renderTopSpenderRow({
+    rows,
+    valueKey: "cost_usd",
+    idKey: "team_id",
+    nullLabel: "untagged",
+    calloutId: "top-spender-team",
+    idEl: "top-spender-team-id",
+    shareEl: "top-spender-team-share",
+  });
+
+  const sorted = sortIdentityRows(rows, "team_id");
+  const root = document.getElementById("teams-table");
+  const empty = document.getElementById("teams-empty");
+  root.innerHTML = "";
+  if (!sorted.length) {
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+
+  const head = document.createElement("div");
+  head.className = "row head";
+  head.innerHTML =
+    `<span>Team</span>` +
+    `<span class="cost">Cost</span>` +
+    `<span class="num">Calls</span>` +
+    `<span class="num">Users</span>` +
+    `<span>Quota</span>` +
+    `<span>Filter</span>`;
+  root.appendChild(head);
+
+  for (const r of sorted) {
+    const teamId = r.team_id;
+    const isNull = teamId === null;
+    const expandKey = isNull ? NULL_BUCKET : teamId;
+    const isExpanded = state.expandedTeams.has(expandKey);
+
+    const row = document.createElement("div");
+    row.className = "row identity-row " + (isNull ? "agent-loop" : "expandable");
+    row.innerHTML =
+      `<span class="id" title="${teamId || "untagged traffic"}">` +
+      `${isNull ? "untagged" : teamId}` +
+      `<span class="caret">${isExpanded ? "▾" : "▸"}</span></span>` +
+      `<span class="cost">${usd(r.cost_usd)}</span>` +
+      `<span class="num">${r.call_count.toLocaleString()}</span>` +
+      `<span class="num">${r.user_count.toLocaleString()}</span>` +
+      // Quota pill placeholder. Agent 9a-2 ships the QuotaStatus surface;
+      // until then we render the slot empty so layout doesn't shift when
+      // it lands. Wire here: read r.daily_cap_usd / r.monthly_cap_usd
+      // (echoed from teams.json per multi-user.md §5.2) and render the
+      // pill via quotaPillHtml(r.cost_usd, cap).
+      // TODO(agent-9a-2): replace with quotaPillHtml(...) once the
+      // by_team response carries cap fields.
+      `<span class="quota-slot" data-team-id="${teamId || ""}"></span>` +
+      `<span class="filter-action">` +
+      (isNull
+        ? `<span class="muted">—</span>`
+        : `<button class="link-button" data-filter-team="${teamId}">filter</button>`) +
+      `</span>`;
+    root.appendChild(row);
+
+    // Expanded panel: per-user breakdown from r.by_user.
+    if (isExpanded) {
+      const panel = document.createElement("div");
+      panel.className = "row identity-row expand-panel";
+      panel.innerHTML = renderByUserPanel(r.by_user || []);
+      root.appendChild(panel);
+    }
+
+    // Click anywhere on the row body toggles expand (except on the Filter
+    // button, which has its own handler). Null rows aren't expandable —
+    // their by_user is at most one null entry.
+    if (!isNull) {
+      row.addEventListener("click", (evt) => {
+        if (evt.target.closest("[data-filter-team]")) return;
+        if (state.expandedTeams.has(expandKey)) state.expandedTeams.delete(expandKey);
+        else state.expandedTeams.add(expandKey);
+        render();
+      });
+    }
+  }
+
+  // Filter-action: navigate to Cost view filtered by team.
+  for (const btn of root.querySelectorAll("[data-filter-team]")) {
+    btn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      setIdentityFilter("team", btn.dataset.filterTeam);
+    });
+  }
+}
+
+function renderByUserPanel(byUser) {
+  if (!byUser.length) {
+    return `<div class="sub-empty">No per-user breakdown.</div>`;
+  }
+  const sorted = [...byUser].sort((a, b) => b.cost_usd - a.cost_usd);
+  const rows = sorted
+    .map((u) => {
+      const isNull = u.user_id === null;
+      const idCell = isNull
+        ? `<span class="id muted">untagged</span>`
+        : `<span class="id"><button class="link-button user-link" ` +
+          `data-filter-user="${u.user_id}">${u.user_id}</button></span>`;
+      return (
+        `<div class="row sub-row">` +
+        idCell +
+        `<span class="cost">${usd(u.cost_usd)}</span>` +
+        `<span class="num">${u.call_count.toLocaleString()}</span>` +
+        `</div>`
+      );
+    })
+    .join("");
+  return (
+    `<div class="sub-table">` +
+    `<div class="row sub-row head">` +
+    `<span>User</span><span class="cost">Cost</span><span class="num">Calls</span>` +
+    `</div>` +
+    rows +
+    `</div>`
+  );
+}
+
+// ----- Per-user tile ----------------------------------------------------
+
+function renderUsersTile(rows) {
+  renderTopSpenderRow({
+    rows,
+    valueKey: "cost_usd",
+    idKey: "user_id",
+    nullLabel: "untagged",
+    calloutId: "top-spender-user",
+    idEl: "top-spender-user-id",
+    shareEl: "top-spender-user-share",
+  });
+
+  const sorted = sortIdentityRows(rows, "user_id");
+  const root = document.getElementById("users-table");
+  const empty = document.getElementById("users-empty");
+  root.innerHTML = "";
+  if (!sorted.length) {
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+
+  const head = document.createElement("div");
+  head.className = "row head";
+  head.innerHTML =
+    `<span>User</span>` +
+    `<span class="cost">Cost</span>` +
+    `<span class="num">Calls</span>` +
+    `<span>Quota</span>` +
+    `<span>Filter</span>`;
+  root.appendChild(head);
+
+  for (const r of sorted) {
+    const userId = r.user_id;
+    const isNull = userId === null;
+    const row = document.createElement("div");
+    row.className = "row identity-row " + (isNull ? "agent-loop" : "clickable");
+    row.innerHTML =
+      `<span class="id" title="${userId || "untagged traffic"}">` +
+      `${isNull ? "untagged" : userId}</span>` +
+      `<span class="cost">${usd(r.cost_usd)}</span>` +
+      `<span class="num">${r.call_count.toLocaleString()}</span>` +
+      // TODO(agent-9a-2): replace with quotaPillHtml(...) once
+      // /analytics/cost?group_by=user (or a sibling) carries per-user caps.
+      `<span class="quota-slot" data-user-id="${userId || ""}"></span>` +
+      `<span class="filter-action">` +
+      (isNull
+        ? `<span class="muted">—</span>`
+        : `<button class="link-button" data-filter-user="${userId}">filter</button>`) +
+      `</span>`;
+    root.appendChild(row);
+
+    if (!isNull) {
+      // Skip the row-level click when the user actually clicked the
+      // filter button — the document-level [data-filter-user] delegate
+      // handles that path. Without the bail-out, both handlers would
+      // fire and we'd render twice.
+      row.addEventListener("click", (evt) => {
+        if (evt.target.closest("[data-filter-user]")) return;
+        setIdentityFilter("user", userId);
+      });
+    }
+  }
+}
+
+// ----- Per-key tile (Wave-6 view, preserved) ----------------------------
+
+function renderKeysTile(rows) {
+  // Top-spender callout uses the unfiltered set so the share denominator
+  // matches "all traffic in this window" — flipping the source pill changes
+  // *which rows are visible*, not what counts toward "top spender".
+  renderTopSpenderRow({
+    rows,
+    valueKey: "cost_usd",
+    idKey: "gateway_key_id",
+    nullLabel: "agent-loop",
+    calloutId: "top-spender",
+    idEl: "top-spender-id",
+    shareEl: "top-spender-share",
+  });
+
+  let filtered = rows;
+  if (state.keysFilter === "gateway")
+    filtered = filtered.filter((r) => r.gateway_key_id !== null);
+  else if (state.keysFilter === "agent")
+    filtered = filtered.filter((r) => r.gateway_key_id === null);
+
+  const sorted = sortIdentityRows(filtered, "gateway_key_id");
+  const root = document.getElementById("keys-table");
+  const empty = document.getElementById("keys-empty");
+  root.innerHTML = "";
+  if (!sorted.length) {
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+
+  const head = document.createElement("div");
+  head.className = "row head";
+  head.innerHTML =
+    `<span>Gateway key</span>` +
+    `<span class="cost">Cost</span>` +
+    `<span class="num">Calls</span>` +
+    `<span>Last call</span>` +
+    `<span>Inbound shapes</span>`;
+  root.appendChild(head);
+
+  for (const r of sorted) {
+    const isAgent = r.gateway_key_id === null;
+    const row = document.createElement("div");
+    row.className = isAgent ? "row agent-loop" : "row clickable";
+    const shapes = (r.by_inbound_shape || [])
+      .map(
+        (s) =>
+          `<span class="shape-tag">${s.inbound_shape || "in-process"}` +
+          `<span class="count">${s.call_count}</span></span>`,
+      )
+      .join("");
+    row.innerHTML =
+      `<span class="id" title="${r.gateway_key_id || "in-process agent loop"}">` +
+      `${isAgent ? "agent-loop" : r.gateway_key_id}</span>` +
+      `<span class="cost">${usd(r.cost_usd)}</span>` +
+      `<span class="num">${r.call_count.toLocaleString()}</span>` +
+      `<span>${localTime(r.last_call_at)}</span>` +
+      `<span class="shapes">${shapes}</span>`;
+    if (!isAgent) {
+      row.addEventListener("click", () => setIdentityFilter("key", r.gateway_key_id));
+    }
+    root.appendChild(row);
+  }
+}
+
+// ----- Shared identity-tile helpers -------------------------------------
+
+// Sort rows in-place by the active client-side `identitySort` selector.
+// `idKey` lets us put the null bucket last regardless of value so it never
+// dominates the leaderboard.
+function sortIdentityRows(rows, idKey) {
+  const cmpKey = state.identitySort === "call_count" ? "call_count" : "cost_usd";
+  return [...rows].sort((a, b) => {
+    if (a[idKey] === null && b[idKey] !== null) return 1;
+    if (a[idKey] !== null && b[idKey] === null) return -1;
+    return b[cmpKey] - a[cmpKey];
+  });
+}
+
+// Shared top-spender callout renderer. The >50% threshold flags concentrated
+// spend that's worth a conversation; below it we hide the callout — equal
+// distribution is the boring case.
+function renderTopSpenderRow({ rows, valueKey, idKey, nullLabel, calloutId, idEl, shareEl }) {
+  const el = document.getElementById(calloutId);
+  if (!rows || !rows.length) {
+    el.classList.add("hidden");
+    return;
+  }
+  const total = rows.reduce((a, r) => a + r[valueKey], 0);
+  if (total <= 0) {
+    el.classList.add("hidden");
+    return;
+  }
+  const top = [...rows].sort((a, b) => b[valueKey] - a[valueKey])[0];
+  const share = top[valueKey] / total;
+  if (share <= 0.5) {
+    el.classList.add("hidden");
+    return;
+  }
+  el.classList.remove("hidden");
+  document.getElementById(idEl).textContent = top[idKey] || nullLabel;
+  document.getElementById(shareEl).textContent = pct(share);
+}
+
+// Set the active drill-down filter and bounce the user to Cost so they see
+// the immediate effect. Closes the loop the per-key tile already had —
+// extended to team / user filters via multi-user.md §5.3 params.
+function setIdentityFilter(kind, value) {
+  state.identityFilter = { kind, value };
+  state.view = "cost";
+  for (const b of document.querySelectorAll("#audience button"))
+    b.classList.toggle("on", b.dataset.view === "cost");
+  render();
+}
+
 // ----- Top-level render ---------------------------------------------------
 
 async function render() {
   const win = resolveWindow(state.windowKey);
   document.getElementById("window-label").textContent = win.label;
-  document.getElementById("view-cost").classList.toggle("hidden", state.view !== "cost");
-  document
-    .getElementById("view-activity")
-    .classList.toggle("hidden", state.view !== "activity");
+  for (const id of ["view-cost", "view-activity", "view-identity"]) {
+    const key = id.replace("view-", "");
+    document.getElementById(id).classList.toggle("hidden", state.view !== key);
+  }
+
+  // Active-identity filter chip: visible on Cost / Activity when a filter
+  // is set. On the identity view itself we hide it — the table is the
+  // place to drill in/out.
+  const chip = document.getElementById("identity-filter-chip");
+  if (state.identityFilter && state.view !== "identity") {
+    chip.classList.remove("hidden");
+    document.getElementById("identity-filter-kind").textContent =
+      state.identityFilter.kind;
+    document.getElementById("identity-filter-id").textContent =
+      state.identityFilter.value;
+  } else {
+    chip.classList.add("hidden");
+  }
 
   const root = document.getElementById("view-root");
   root.setAttribute("aria-busy", "true");
   try {
     if (state.view === "cost") await renderCostView(win);
-    else await renderActivityView(win);
+    else if (state.view === "activity") await renderActivityView(win);
+    else await renderIdentityView(win);
     document.getElementById("last-refresh").textContent =
       `refreshed ${new Date().toLocaleTimeString()}`;
   } catch (exc) {
@@ -563,6 +959,44 @@ function wireToggles() {
       render();
     });
   }
+  for (const btn of document.querySelectorAll("#identity-scope button")) {
+    btn.addEventListener("click", () => {
+      state.identityScope = btn.dataset.identityScope;
+      for (const b of document.querySelectorAll("#identity-scope button"))
+        b.classList.toggle("on", b === btn);
+      render();
+    });
+  }
+  for (const btn of document.querySelectorAll("#identity-sort button")) {
+    btn.addEventListener("click", () => {
+      state.identitySort = btn.dataset.identitySort;
+      for (const b of document.querySelectorAll("#identity-sort button"))
+        b.classList.toggle("on", b === btn);
+      render();
+    });
+  }
+  for (const btn of document.querySelectorAll("#keys-source button")) {
+    btn.addEventListener("click", () => {
+      state.keysFilter = btn.dataset.keysFilter;
+      for (const b of document.querySelectorAll("#keys-source button"))
+        b.classList.toggle("on", b === btn);
+      render();
+    });
+  }
+  document.getElementById("identity-filter-clear").addEventListener("click", () => {
+    state.identityFilter = null;
+    render();
+  });
+  // Delegate user-link clicks from inside expanded team panels — they're
+  // rendered into innerHTML so we can't attach listeners at row-creation time
+  // for the team's expand-panel children.
+  document.addEventListener("click", (evt) => {
+    const userBtn = evt.target.closest("[data-filter-user]");
+    if (userBtn) {
+      evt.stopPropagation();
+      setIdentityFilter("user", userBtn.dataset.filterUser);
+    }
+  });
 }
 
 wireToggles();

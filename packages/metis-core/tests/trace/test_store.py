@@ -109,6 +109,26 @@ def _llm_completed_event(session_id: str, turn_id: str, parent_event_id: str):
     )
 
 
+# ---- Schema ------------------------------------------------------------
+
+
+def test_events_table_declares_session_id_foreign_key(db_path: Path):
+    """Per event-bus-and-trace-catalog.md §7.1 the events table declares
+    `FOREIGN KEY (session_id) REFERENCES sessions(id)`. The FK is declarative
+    in v1 (`PRAGMA foreign_keys=OFF` is SQLite's default) — assertion is on
+    the schema, not on enforcement.
+    """
+    store = TraceStore(db_path)
+    try:
+        cursor = store._conn.execute("PRAGMA foreign_key_list(events)")
+        rows = cursor.fetchall()
+    finally:
+        store.close()
+    # PRAGMA foreign_key_list returns rows of (id, seq, table, from, to, ...).
+    fks = [(row[2], row[3], row[4]) for row in rows]
+    assert ("sessions", "session_id", "id") in fks
+
+
 # ---- Direct write/read -------------------------------------------------
 
 
