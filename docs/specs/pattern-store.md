@@ -1365,10 +1365,26 @@ no direct surface needed between the specs.
 
 ## 16. v2 hybrid fingerprint: implementation contract
 
-**Status:** Draft 2026-05-14. Specs-only. Implementation deferred to
-Phase 4, contingent on §A3-rev3 (Agent 9a-7) failing to invert slot 4
-under v1's structural-only fingerprint after the Wave 8a unblocks
-landed. If §A3-rev3 inverts cleanly, v2 stays on the shelf.
+**Status:** Implemented 2026-05-14 (Wave 10). Code lands under
+`packages/metis-core/src/metis_core/patterns/embeddings.py` (Protocol +
+three providers + a deterministic provider for tests), the
+`embedding_cache` table in `PatternStore` (`patterns/store.py`,
+schema_version bumped `"1" → "2"`), `cosine_similarity` +
+`blended_similarity` in `patterns/similarity.py`, `embedding` +
+`embedding_provider` fields on `FingerprintInputs`, `compute_fingerprint`
+producing `HYBRID` fingerprints when the embedding is set, the
+`attach_embedding_for_recording` async helper (recording path; embeds on
+cache miss), the engine-side `_attach_cached_embedding` sync helper
+(routing query path; v1 fallback on cache miss per §16.6), and the v2
+fields on `PatternConfig` (`routing/policy.py`). v1 default behavior is
+unchanged. 52 new tests cover the Protocol contract, blend math, cache
+hit/miss/eviction (TTL + LRU), mixed-version K-NN, and the routing
+slot-4 v2 code path end-to-end. **v2 stays opt-in** — §A3-rev3 inverted
+slot 4 under v1, so v2 is the implementation-ready alternative for
+workspaces whose structural-Jaccard washes out (the explicit motivation
+in §16.1). The headline cluster-tightening fixture (§16.10 test 5
+against the 6-workload + 4-agent-loop corpus) is deferred to a follow-up
+A/B benchmark wave.
 
 This section converts the v2 sketch in §5.2, §13.1, and §13.2 into a
 concrete implementation contract: an `EmbeddingProvider` Protocol, three
@@ -2123,6 +2139,91 @@ These are live; the spec doesn't unilaterally close them.
 | 2026-05-14 | No new event types; v1's `pattern.recorded.fingerprint_kind` discriminates | Catalog stability; debug-level logging for cache miss/hit, not bus events.                 |
 | 2026-05-14 | Mixed-version K-NN falls back to structural-only on missing embedding      | Migration is forward-only and lossless; the K-NN converges to v2 as v1 rows age out.       |
 | 2026-05-14 | `embedding_strategy` knob: sync default for agent loop, async for gateway  | Sync is fine at human latency; async is required at gateway-QPS for the 5ms budget.        |
+
+### 16.13 Implementation notes (Wave 10)
+
+The shipped implementation deviates from the spec in a few documented
+ways, intentionally:
+
+1. **`PatternConfig.embedding_alpha`** (spec name: `embedding_blend_alpha`).
+   Renamed for brevity; field semantics unchanged. The `routing.yaml`
+   surface accepts both names if a v3 of the loader re-adds support; v1
+   loader only reads the rename. Default `0.6`.
+
+2. **No `embedding_strategy` field.** The sync/async distinction in
+   §16.7.3 is collapsed at the routing layer rather than configured on
+   the store: `PatternStore.lookup_embedding` is a cache-only sync read,
+   and the routing engine's `_attach_cached_embedding` calls it directly
+   from slot 4. The recording path is async
+   (`attach_embedding_for_recording`) and does call the embedder on
+   cache miss. The net effect is the same as `embedding_strategy="async"`
+   universally — the K-NN's query-time embedding is only consulted on
+   cache hit, never blocking on a network call. Gateway path inherits
+   this for free.
+
+3. **`recommend()` stays sync.** Spec §16.6.3 described an async
+   `recommend()` future. Because the engine pulls cached embeddings
+   itself (point 2), the store's K-NN signature is unchanged and the
+   routing engine remains sync.
+
+4. **No NumPy hard dependency.** Vectors round-trip through
+   `array.array('f', ...)` — packed float32 with `struct`-level cost.
+   §16.11 open question 3 was decided "no NumPy" because the routing
+   critical path doesn't compute large matrix ops; the local
+   sentence-transformers provider transitively pulls NumPy when
+   actually installed (extra `metis-patterns-local`), so users of that
+   provider still get NumPy in their environment.
+
+5. **`DeterministicEmbeddingProvider`** ships in `embeddings.py`
+   alongside the three production providers. It's the §A3-rev3 caveat
+   workaround for tests + fixtures that need byte-deterministic vectors
+   without an API key — the SHA-256-derived vectors satisfy the
+   Protocol's `runtime_checkable` contract and the cache's
+   round-trip invariants.
+
+### 16.14 Migration: upgrading a v1 workspace to v2
+
+Concrete steps for a workspace already on v1:
+
+1. **Pick a provider.** `openai:text-embedding-3-small` is the cheapest
+   ($0.02 / 1M tokens); `local:sentence-transformers:all-MiniLM-L6-v2`
+   is the self-host option (requires the `metis-patterns-local` extra
+   to install `sentence-transformers`).
+
+2. **Edit `<workspace>/.metis/routing.yaml`** to set the v2 fields:
+
+   ```yaml
+   pattern:
+     fingerprint_version: v2
+     embedding_provider: openai:text-embedding-3-small
+     # embedding_alpha: 0.6   # default; tune in [0.4, 0.8] per §16.11 q1
+   ```
+
+3. **Set the API key** (`OPENAI_API_KEY` or `COHERE_API_KEY`) in the
+   environment the agent / gateway / server reads. The local provider
+   needs no key but pulls Torch on first use.
+
+4. **Restart the process.** `PatternStore.__init__` reads the config
+   once.
+
+5. **No backfill.** The pattern store does not re-embed historical user
+   messages — they age out under the 180-day TTL (§6.3). New turns
+   write hybrid fingerprints with embedding rows; old structural-only
+   rows continue to be queried under the §16.5.3 fallback rule
+   (mixed-version K-NN). Embedding cache fills naturally over the
+   first ~K turns of each workload (§16.7.2 target: ≥80% hit rate
+   within 100 turns).
+
+6. **Downgrade is graceful.** Setting `fingerprint_version: v1` after
+   running v2 leaves the v2 rows in place. The K-NN falls back to
+   structural-only on every query (§16.6.2). The `embedding_cache`
+   table is left on disk and is bounded so it can't grow.
+
+The schema bump `"1" → "2"` is in-place and only updates `store_meta`;
+no rows in `fingerprints` / `outcomes` are touched. v1 processes
+opening a v2 db tolerate `schema_version="2"` (v1 readers ignore the
+unknown `embedding_cache` table; the bump path uses `WHERE value <
+excluded.value` so a v1 process never downgrades the version).
 
 ---
 

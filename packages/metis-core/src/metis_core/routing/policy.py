@@ -57,12 +57,29 @@ class PatternConfig:
     `pattern-store.md §15.4`: verdicts with `confidence < min_eval_confidence`
     are recorded but excluded from K-cluster success aggregation. Default
     `0.5` matches `evaluator.md §4.3`.
+
+    `fingerprint_version` toggles the v2 hybrid fingerprint (pattern-store.md
+    §16). v1 (default) is structural-only; v2 blends a cosine score over a
+    per-workspace embedding into the similarity function. When set to "v2",
+    `embedding_provider` must also be set (validated at PatternStore
+    construction). v1 workspaces are unaffected by the new fields.
     """
 
     cost_weight: float = 0.1
     min_confidence: float = 0.05
     min_sample_size: int = 5
     min_eval_confidence: float = 0.5
+    fingerprint_version: Literal["v1", "v2"] = "v1"
+    embedding_provider: str | None = None
+    embedding_alpha: float = 0.6
+
+    def __post_init__(self) -> None:
+        if self.fingerprint_version == "v2" and self.embedding_provider is None:
+            raise ValueError("PatternConfig: fingerprint_version='v2' requires embedding_provider")
+        if not (0.0 <= self.embedding_alpha <= 1.0):
+            raise ValueError(
+                f"PatternConfig: embedding_alpha must be in [0.0, 1.0] (got {self.embedding_alpha})"
+            )
 
 
 # ---- Predicates ------------------------------------------------------------

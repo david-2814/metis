@@ -210,9 +210,7 @@ def test_recommend_a3_rev2_unblock_min_confidence_default_05_fires_slot4(
         store.record(fp, "anthropic:sonnet", 0.900, Decimal("0.01"), 1000.0, "v1")
 
     # Sanity-check the cluster numerics match the §A3-rev2 published values.
-    rec_legacy = store.recommend(
-        fp, cost_weight=0.0, min_confidence=0.3, min_sample_size=5
-    )
+    rec_legacy = store.recommend(fp, cost_weight=0.0, min_confidence=0.3, min_sample_size=5)
     sonnet_alt = next(a for a in rec_legacy.alternatives if a.model == "anthropic:sonnet")
     haiku_alt = next(a for a in rec_legacy.alternatives if a.model == "anthropic:haiku")
     assert sonnet_alt.score == pytest.approx(0.900)
@@ -228,9 +226,7 @@ def test_recommend_a3_rev2_unblock_min_confidence_default_05_fires_slot4(
     # invert the ranking — sonnet wins, which is the cluster-level signal
     # the §A3-rev2 unblock chain (workload-tag + cost_weight=0.1 +
     # grounding-check) produced for the first time.
-    rec_new = store.recommend(
-        fp, cost_weight=0.0, min_confidence=0.05, min_sample_size=5
-    )
+    rec_new = store.recommend(fp, cost_weight=0.0, min_confidence=0.05, min_sample_size=5)
     assert rec_new.chosen_model == "anthropic:sonnet"
     assert rec_new.confidence == pytest.approx((0.900 - 0.842) / 0.900)
     assert rec_new.sample_size == 5

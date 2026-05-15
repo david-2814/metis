@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from metis_core.events.bus import EventBus
@@ -289,6 +289,8 @@ class RoutingEngine:
 
         config = self._resolve_pattern_config(workspace_scope)
         inputs = self._fingerprint_inputs_builder(ctx)
+        if config.fingerprint_version == "v2" and config.embedding_provider is not None:
+            inputs = self._attach_cached_embedding(inputs, store, config.embedding_provider)
         fingerprint = compute_fingerprint(inputs)
         try:
             recommendation = store.recommend(
@@ -343,6 +345,26 @@ class RoutingEngine:
         if workspace_scope is not None and workspace_scope.pattern is not None:
             return workspace_scope.pattern
         return self._policy.pattern
+
+    def _attach_cached_embedding(
+        self,
+        inputs: FingerprintInputs,
+        store: PatternStore,
+        provider_id: str,
+    ) -> FingerprintInputs:
+        """Cache-only lookup for the query fingerprint's embedding.
+
+        On hit the inputs are returned with `embedding` set; on miss they
+        are returned unchanged so the K-NN falls back to v1 jaccard
+        without blocking on a network call (pattern-store.md §16.6).
+        """
+        try:
+            vector = store.lookup_embedding(inputs.user_message_text, provider_id)
+        except Exception:  # pragma: no cover - cache read failure isolated
+            return inputs
+        if vector is None:
+            return inputs
+        return replace(inputs, embedding=vector, embedding_provider=provider_id)
 
     def _evaluate_rules(self, ctx: TurnContext) -> _Candidate:
         """Return a rule-slot candidate. Workspace rules evaluate before

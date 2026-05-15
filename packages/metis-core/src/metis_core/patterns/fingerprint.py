@@ -111,6 +111,10 @@ class FingerprintInputs:
     The session manager already computes most of these for the turn context.
     The pattern subscriber/extractor maps from the trace events into this
     shape; tests can construct it directly.
+
+    `embedding` and `embedding_provider` are populated on the v2 path
+    (pattern-store.md §16); v1 callers leave them None and the resulting
+    `Fingerprint.kind` stays `STRUCTURAL`.
     """
 
     user_message_text: str
@@ -123,6 +127,8 @@ class FingerprintInputs:
     tool_names: tuple[str, ...] = ()
     side_effect_classes: tuple[str, ...] = ()
     workload_id: str | None = None
+    embedding: tuple[float, ...] | None = None
+    embedding_provider: str | None = None
 
 
 def derive_fingerprint_inputs(
@@ -196,17 +202,67 @@ def compute_fingerprint(inputs: FingerprintInputs, *, now: datetime | None = Non
 
     Note: the id is fresh per call; dedup happens at the store layer via
     `structural_signature`.
+
+    When `inputs.embedding` is set the resulting fingerprint is `HYBRID`
+    (v2; pattern-store.md §16); otherwise it is `STRUCTURAL` (v1).
     """
     features = build_structural_features(inputs)
+    if inputs.embedding is not None:
+        kind = FingerprintKind.HYBRID
+        embedding = tuple(float(x) for x in inputs.embedding)
+        embedding_dim: int | None = len(embedding)
+    else:
+        kind = FingerprintKind.STRUCTURAL
+        embedding = None
+        embedding_dim = None
     return Fingerprint(
         id=str(next_monotonic_ulid()),
-        kind=FingerprintKind.STRUCTURAL,
+        kind=kind,
         structural=features,
-        embedding=None,
-        embedding_provider=None,
-        embedding_dim=None,
+        embedding=embedding,
+        embedding_provider=inputs.embedding_provider if embedding is not None else None,
+        embedding_dim=embedding_dim,
         created_at=now or datetime.now(UTC),
     )
+
+
+def text_sha256(text: str) -> str:
+    """SHA-256 of the user message text. The v2 embedding cache key.
+
+    Same pre-image as the v1 structural dedup basis (pattern-store.md
+    §16.4.1), so re-running an identical user message in the same
+    workspace under v2 hits both caches without recomputation.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+async def attach_embedding_for_recording(
+    inputs: FingerprintInputs,
+    *,
+    store: object,
+    embedder: object,
+) -> FingerprintInputs:
+    """Recording-path embed lookup: cache-first, API call on miss.
+
+    On miss the embedder is awaited and the result is written to the
+    cache (`pattern-store.md §16.4.4`). Returns inputs with `embedding`
+    + `embedding_provider` set so `compute_fingerprint` produces a
+    HYBRID fingerprint. The function is async because the embedder may
+    perform network I/O; the cache path is sync SQLite.
+
+    Used by the pattern subscriber (`subscriber.py`); the routing engine
+    uses the sync cache-only path instead (`engine._attach_cached_embedding`).
+    """
+    from dataclasses import replace
+
+    provider_id = embedder.provider_id  # type: ignore[attr-defined]
+    cached = store.lookup_embedding(inputs.user_message_text, provider_id)  # type: ignore[attr-defined]
+    if cached is None:
+        vector = await embedder.embed(inputs.user_message_text)  # type: ignore[attr-defined]
+        store.store_embedding(inputs.user_message_text, provider_id, vector)  # type: ignore[attr-defined]
+    else:
+        vector = cached
+    return replace(inputs, embedding=vector, embedding_provider=provider_id)
 
 
 def structural_signature(features: StructuralFeatures) -> str:

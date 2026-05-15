@@ -11,6 +11,7 @@ exact under repeated updates without retaining raw per-session rows.
 
 from __future__ import annotations
 
+import array
 import logging
 import sqlite3
 from dataclasses import dataclass
@@ -32,13 +33,16 @@ from metis_core.patterns.fingerprint import (
     FingerprintKind,
     StructuralFeatures,
     structural_signature,
+    text_sha256,
 )
 from metis_core.patterns.retention import PatternCaps
-from metis_core.patterns.similarity import weighted_jaccard
+from metis_core.patterns.similarity import blended_similarity, weighted_jaccard
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "2"
+_EMBEDDING_CACHE_MAX_ROWS = 10_000
+_EMBEDDING_CACHE_MAX_AGE_DAYS = 180
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS fingerprints (
@@ -90,6 +94,20 @@ CREATE TABLE IF NOT EXISTS store_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS embedding_cache (
+  text_sha256       TEXT NOT NULL,
+  provider_id       TEXT NOT NULL,
+  embedding_blob    BLOB NOT NULL,
+  embedding_dim     INTEGER NOT NULL,
+  created_at_us     INTEGER NOT NULL,
+  last_used_at_us   INTEGER NOT NULL,
+  use_count         INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (text_sha256, provider_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_embcache_last_used ON embedding_cache(last_used_at_us);
+CREATE INDEX IF NOT EXISTS idx_embcache_created   ON embedding_cache(created_at_us);
 """
 
 
@@ -105,6 +123,18 @@ def _decimal_to_micros(value: Decimal) -> int:
 
 def _micros_to_decimal(micros: int) -> Decimal:
     return Decimal(micros) / Decimal(1_000_000)
+
+
+def _encode_embedding_blob(vector: tuple[float, ...]) -> bytes:
+    return array.array("f", vector).tobytes()
+
+
+def _decode_embedding_blob(blob: bytes, dim: int) -> tuple[float, ...]:
+    arr = array.array("f")
+    arr.frombytes(blob)
+    if len(arr) != dim:
+        raise ValueError(f"embedding blob length {len(arr)} does not match recorded dim {dim}")
+    return tuple(arr)
 
 
 @dataclass(frozen=True)
@@ -187,6 +217,15 @@ class StoreSize:
 
 
 @dataclass(frozen=True)
+class EmbeddingCacheSize:
+    """v2 embedding cache stats per `pattern-store.md §16.6.3`."""
+
+    rows: int
+    oldest_row_age_days: float | None
+    total_bytes: int
+
+
+@dataclass(frozen=True)
 class _EvictionStats:
     fingerprints_before: int
     fingerprints_after: int
@@ -205,11 +244,23 @@ class PatternStore:
         *,
         caps: PatternCaps | None = None,
         now: callable | None = None,
+        fingerprint_version: str = "v1",
+        embedding_alpha: float = 0.6,
+        embedding_cache_max_rows: int = _EMBEDDING_CACHE_MAX_ROWS,
+        embedding_cache_max_age_days: int = _EMBEDDING_CACHE_MAX_AGE_DAYS,
     ) -> None:
         self._workspace = Path(workspace_path).expanduser().resolve()
         self._db_path = self._workspace / ".metis" / "patterns.db"
         self._caps = caps or PatternCaps()
         self._now = now or (lambda: datetime.now(UTC))
+        if fingerprint_version not in ("v1", "v2"):
+            raise ValueError(f"unknown fingerprint_version: {fingerprint_version!r}")
+        if not (0.0 <= embedding_alpha <= 1.0):
+            raise ValueError(f"embedding_alpha must be in [0.0, 1.0] (got {embedding_alpha})")
+        self._fingerprint_version = fingerprint_version
+        self._embedding_alpha = float(embedding_alpha)
+        self._embedding_cache_max_rows = int(embedding_cache_max_rows)
+        self._embedding_cache_max_age_days = int(embedding_cache_max_age_days)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(
             str(self._db_path), isolation_level=None, check_same_thread=False
@@ -217,7 +268,9 @@ class PatternStore:
         self._configure()
         self._conn.executescript(_SCHEMA)
         self._conn.execute(
-            "INSERT OR IGNORE INTO store_meta(key, value) VALUES ('schema_version', ?)",
+            "INSERT INTO store_meta(key, value) VALUES ('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value "
+            "WHERE store_meta.value < excluded.value",
             (_SCHEMA_VERSION,),
         )
 
@@ -232,6 +285,14 @@ class PatternStore:
     @property
     def caps(self) -> PatternCaps:
         return self._caps
+
+    @property
+    def fingerprint_version(self) -> str:
+        return self._fingerprint_version
+
+    @property
+    def embedding_alpha(self) -> float:
+        return self._embedding_alpha
 
     def _configure(self) -> None:
         self._conn.execute("PRAGMA journal_mode = WAL")
@@ -618,6 +679,14 @@ class PatternStore:
 
         Returns outcomes (not fingerprints) — a single fingerprint with three
         primary_models contributes three neighbors.
+
+        Under `fingerprint_version="v2"` and when the query fingerprint
+        carries an embedding, the score is the blended similarity from
+        `pattern-store.md §16.5`; otherwise (and on a v1 store, or on a v2
+        store with a query fingerprint missing its embedding), it is the
+        v1 weighted-Jaccard. Mixed-version stores fall back to the v1
+        score on any (query, neighbor) pair where either side lacks an
+        embedding — see §16.5.3.
         """
         if k <= 0:
             return ()
@@ -627,7 +696,7 @@ class PatternStore:
               o.fingerprint_id, o.primary_model, o.sample_size,
               o.success_score_mean, o.success_score_count,
               o.sum_cost_usd_micros, o.sum_latency_ms,
-              f.structural_json
+              f.structural_json, f.embedding_blob, f.embedding_dim
             FROM outcomes o
             JOIN fingerprints f ON f.id = o.fingerprint_id
             """
@@ -635,10 +704,28 @@ class PatternStore:
         if not rows:
             return ()
 
+        query_embedding = (
+            fingerprint.embedding
+            if self._fingerprint_version == "v2" and fingerprint.embedding is not None
+            else None
+        )
+
         scored: list[tuple[float, NeighborMatch]] = []
         for row in rows:
             features = msgspec.json.decode(row[7], type=StructuralFeatures)
-            similarity = weighted_jaccard(fingerprint.structural, features)
+            neighbor_embedding: tuple[float, ...] | None = None
+            if query_embedding is not None and row[8] is not None and row[9] is not None:
+                neighbor_embedding = _decode_embedding_blob(row[8], int(row[9]))
+            if query_embedding is not None and neighbor_embedding is not None:
+                similarity = blended_similarity(
+                    fingerprint.structural,
+                    features,
+                    a_embedding=query_embedding,
+                    b_embedding=neighbor_embedding,
+                    alpha=self._embedding_alpha,
+                )
+            else:
+                similarity = weighted_jaccard(fingerprint.structural, features)
             sample_size = int(row[2])
             avg_cost = (
                 _micros_to_decimal(int(row[5])) / Decimal(sample_size)
@@ -664,6 +751,94 @@ class PatternStore:
         # Stable sort: similarity desc, then fingerprint_id+model for ties.
         scored.sort(key=lambda pair: (-pair[0], pair[1].fingerprint_id, pair[1].primary_model))
         return tuple(match for _, match in scored[:k])
+
+    # ---- Embedding cache (v2; pattern-store.md §16.4) ------------------
+
+    def lookup_embedding(self, text: str, provider_id: str) -> tuple[float, ...] | None:
+        """Cache-only read for a `(text, provider_id)` pair.
+
+        Bumps `last_used_at_us` + `use_count` on a hit. Returns `None` on
+        miss; callers must decide whether to embed-and-cache (recording
+        path) or fall back to v1 jaccard (routing query path; §16.6).
+        """
+        sha = text_sha256(text)
+        row = self._conn.execute(
+            "SELECT embedding_blob, embedding_dim FROM embedding_cache "
+            "WHERE text_sha256 = ? AND provider_id = ?",
+            (sha, provider_id),
+        ).fetchone()
+        if row is None:
+            return None
+        now_us = _to_micros(self._now())
+        self._conn.execute(
+            "UPDATE embedding_cache SET last_used_at_us = ?, use_count = use_count + 1 "
+            "WHERE text_sha256 = ? AND provider_id = ?",
+            (now_us, sha, provider_id),
+        )
+        return _decode_embedding_blob(row[0], int(row[1]))
+
+    def store_embedding(self, text: str, provider_id: str, vector: tuple[float, ...]) -> None:
+        """Write a vector to the cache, then trim if past caps.
+
+        Idempotent: `INSERT OR REPLACE` is used so re-embedding the same
+        `(text, provider_id)` pair (e.g., provider drift) does not
+        accumulate rows.
+        """
+        if not vector:
+            raise ValueError("store_embedding: empty vector")
+        sha = text_sha256(text)
+        now_us = _to_micros(self._now())
+        blob = _encode_embedding_blob(vector)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO embedding_cache(text_sha256, provider_id, "
+            "embedding_blob, embedding_dim, created_at_us, last_used_at_us, use_count) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1)",
+            (sha, provider_id, blob, len(vector), now_us, now_us),
+        )
+        self._trim_embedding_cache(now_us)
+
+    def cache_size(self) -> EmbeddingCacheSize:
+        rows = int(self._conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0])
+        oldest = self._conn.execute("SELECT MIN(created_at_us) FROM embedding_cache").fetchone()[0]
+        total = int(
+            self._conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(embedding_blob)), 0) FROM embedding_cache"
+            ).fetchone()[0]
+        )
+        oldest_age: float | None = None
+        if oldest is not None:
+            now_us = _to_micros(self._now())
+            oldest_age = max(0.0, (now_us - int(oldest)) / 1_000_000 / 86_400)
+        return EmbeddingCacheSize(rows=rows, oldest_row_age_days=oldest_age, total_bytes=total)
+
+    def cache_clear(self) -> int:
+        before = int(self._conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0])
+        self._conn.execute("DELETE FROM embedding_cache")
+        return before
+
+    def _trim_embedding_cache(self, now_us: int) -> int:
+        """Age-first + LRU + use-count tie-break trim, per §16.4.3."""
+        removed = 0
+        cutoff_us = now_us - self._embedding_cache_max_age_days * 86_400 * 1_000_000
+        cursor = self._conn.execute(
+            "DELETE FROM embedding_cache WHERE created_at_us < ?", (cutoff_us,)
+        )
+        removed += cursor.rowcount or 0
+        current = int(self._conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0])
+        excess = current - self._embedding_cache_max_rows
+        if excess > 0:
+            cursor = self._conn.execute(
+                """
+                DELETE FROM embedding_cache WHERE rowid IN (
+                  SELECT rowid FROM embedding_cache
+                  ORDER BY last_used_at_us ASC, use_count ASC, created_at_us ASC
+                  LIMIT ?
+                )
+                """,
+                (excess,),
+            )
+            removed += cursor.rowcount or 0
+        return removed
 
     # ---- Maintenance ---------------------------------------------------
 
@@ -744,7 +919,7 @@ class PatternStore:
         structural_json = msgspec.json.encode(fingerprint.structural).decode("utf-8")
         embedding_blob = None
         if fingerprint.embedding is not None:
-            embedding_blob = msgspec.json.encode(list(fingerprint.embedding))
+            embedding_blob = _encode_embedding_blob(fingerprint.embedding)
         self._conn.execute(
             """
             INSERT INTO fingerprints(
