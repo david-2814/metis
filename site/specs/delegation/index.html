@@ -1,0 +1,5326 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Local-first AI dev agent — provider-agnostic, self-improving, cost-aware. Canonical message format, layered routing, bounded memory, transparent cost attribution.">
+      
+      
+        <meta name="author" content="Metis maintainers">
+      
+      
+        <link rel="canonical" href="https://docs.metis.dev/specs/delegation/">
+      
+      
+        <link rel="prev" href="../tool-dispatcher/">
+      
+      
+        <link rel="next" href="../pricing/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Delegation - Metis</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#delegation-specification" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Metis" class="md-header__button md-logo" aria-label="Metis" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Metis
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Delegation
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/2sumAI/metis" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    2sumAI/metis
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../project-overview/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../canonical-message-format/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Specs
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../operations/quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../STRATEGY/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Strategy
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Metis" class="md-nav__button md-logo" aria-label="Metis" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Metis
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/2sumAI/metis" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    2sumAI/metis
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project-overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    First savings number
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../customer-trial-recipe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customer trial recipe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gateway-client-quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway client quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../savings-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Savings demo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../standard-model-profiles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Standard model profiles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Specs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_1" id="__nav_3_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Foundation
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Foundation
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../canonical-message-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Canonical message format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../event-bus-and-trace-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Event bus & trace catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project-overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project overview (spec)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3_2" id="__nav_3_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing & adapters
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Routing & adapters
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../routing-engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../provider-adapter-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Provider adapter contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-dispatcher/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool dispatcher
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Delegation
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Delegation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Purpose
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-goals-and-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Goals and non-goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Goals and non-goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Non-goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-optionality-and-adoption" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Optionality and adoption
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Optionality and adoption">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#36-explicit-v1-mvp-deferrals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.6 Explicit v1 MVP deferrals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-the-delegate-tool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. The delegate() tool
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. The delegate() tool">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-signature" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Signature
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-tool-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Tool registration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-return-value" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Return value
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-failure-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Failure modes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-the-worker-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. The worker session
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. The worker session">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-definition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Definition
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-routing-inheritance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Routing inheritance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-workspace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Workspace
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-memory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Memory
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-skills" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Skills
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#56-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.6 Tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#57-system-prompt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.7 System prompt
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-creation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 Creation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62-inside-the-worker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 Inside the worker
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#63-completion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.3 Completion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#64-cancellation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.4 Cancellation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#65-worker-timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.5 Worker timeout
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-the-slot-5-contract-cross-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. The slot 5 contract (cross-reference)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-cost-attribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Cost attribution
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Cost attribution">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-where-worker-tokens-land" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 Where worker tokens land
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#82-rollup-via-the-analytics-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.2 Rollup via the analytics surface
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#83-delegatecompletedworker_total_cost_usd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.3 delegate.completed.worker_total_cost_usd
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-trace-events-cross-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Trace events (cross-reference)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-isolation-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Isolation summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-pattern-store-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Pattern store integration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="11. Pattern store integration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#111-validation-workload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.1 Validation workload
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-evaluator-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Evaluator integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13-confirmation-handler-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. Confirmation handler scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14-open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. Open questions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="14. Open questions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#141-cost-of-delegation-overhead" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.1 Cost-of-delegation overhead
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#142-cancellation-cascade-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.2 Cancellation cascade scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#143-concurrent-delegation-one-planner-many-workers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.3 Concurrent delegation (one planner, many workers)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#144-streaming-worker-output-to-the-planner" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.4 Streaming worker output to the planner
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#145-worker-wall-clock-timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.5 Worker wall-clock timeout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#146-router-decided-delegation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.6 Router-decided delegation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#147-worker-prompt-always-answers-persisting-to-trustyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.7 Worker-prompt "always" answers persisting to trust.yaml
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#148-tier-name-configurability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.8 Tier name configurability
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#149-worker-history-visibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.9 Worker history visibility
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#15-decision-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        15. Decision log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#16-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        16. References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pricing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pricing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_3" id="__nav_3_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sessions & memory
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sessions & memory
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../memory-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../context-assembler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context assembler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pattern-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pattern store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skill-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skill-curator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill curator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server & gateway
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Server & gateway
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../server-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../streaming-protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gateway-hardening/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway hardening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multi-user/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-user
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment-shape/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment shape
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_5" id="__nav_3_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quality & evidence
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Quality & evidence
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../evaluator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmark
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../analytics-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Analytics API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_6" id="__nav_3_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compliance & retention
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Compliance & retention
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../audit-log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Audit log
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../trace-retention/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trace retention
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../redaction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Redaction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CHANGES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Change log
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    First savings number
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gateway-deployment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/upgrade-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrade guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/incident-response/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Incident response
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/observability-runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/status-page/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status page
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/sla-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLA template
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/trace-performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trace performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/concierge-onboarding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concierge onboarding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/ga-readiness-audit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GA readiness audit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/compliance-overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compliance overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/soc2-readiness/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SOC2 readiness
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/phase-claim-proposal/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Phase claim proposal
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Strategy
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Strategy
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../KNOWN_ISSUES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Known issues
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_3" id="__nav_5_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sales
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sales
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/one-pager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    One-pager
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Buyer FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/competitive-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Competitive comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/objection-handling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Objection handling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/case-study-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Case study template
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_4" id="__nav_5_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Market research
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Market research
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/synthesis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Synthesis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/01-coding-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coding agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/02-local-first-platforms/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local-first platforms
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/03-routing-layers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing layers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/04-skills-and-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills & memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Purpose
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-goals-and-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Goals and non-goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Goals and non-goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Non-goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-optionality-and-adoption" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Optionality and adoption
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Optionality and adoption">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#36-explicit-v1-mvp-deferrals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.6 Explicit v1 MVP deferrals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-the-delegate-tool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. The delegate() tool
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. The delegate() tool">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-signature" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Signature
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-tool-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Tool registration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-return-value" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Return value
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-failure-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Failure modes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-the-worker-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. The worker session
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. The worker session">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-definition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Definition
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-routing-inheritance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Routing inheritance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-workspace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Workspace
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-memory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Memory
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-skills" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Skills
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#56-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.6 Tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#57-system-prompt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.7 System prompt
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-creation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 Creation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62-inside-the-worker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 Inside the worker
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#63-completion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.3 Completion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#64-cancellation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.4 Cancellation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#65-worker-timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.5 Worker timeout
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-the-slot-5-contract-cross-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. The slot 5 contract (cross-reference)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-cost-attribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Cost attribution
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Cost attribution">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-where-worker-tokens-land" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 Where worker tokens land
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#82-rollup-via-the-analytics-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.2 Rollup via the analytics surface
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#83-delegatecompletedworker_total_cost_usd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.3 delegate.completed.worker_total_cost_usd
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-trace-events-cross-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Trace events (cross-reference)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-isolation-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Isolation summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-pattern-store-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Pattern store integration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="11. Pattern store integration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#111-validation-workload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.1 Validation workload
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-evaluator-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Evaluator integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13-confirmation-handler-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. Confirmation handler scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14-open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. Open questions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="14. Open questions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#141-cost-of-delegation-overhead" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.1 Cost-of-delegation overhead
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#142-cancellation-cascade-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.2 Cancellation cascade scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#143-concurrent-delegation-one-planner-many-workers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.3 Concurrent delegation (one planner, many workers)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#144-streaming-worker-output-to-the-planner" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.4 Streaming worker output to the planner
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#145-worker-wall-clock-timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.5 Worker wall-clock timeout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#146-router-decided-delegation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.6 Router-decided delegation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#147-worker-prompt-always-answers-persisting-to-trustyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.7 Worker-prompt "always" answers persisting to trust.yaml
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#148-tier-name-configurability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.8 Tier name configurability
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#149-worker-history-visibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.9 Worker history visibility
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#15-decision-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        15. Decision log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#16-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        16. References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/2sumAI/metis/edit/main/docs/specs/delegation.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20.71 7.04c.39-.39.39-1.04 0-1.41l-2.34-2.34c-.37-.39-1.02-.39-1.41 0l-1.84 1.83 3.75 3.75M3 17.25V21h3.75L17.81 9.93l-3.75-3.75z"/></svg>
+    </a>
+  
+  
+    
+      
+    
+    <a href="https://github.com/2sumAI/metis/raw/main/docs/specs/delegation.md" title="View source of this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0 8a5 5 0 0 1-5-5 5 5 0 0 1 5-5 5 5 0 0 1 5 5 5 5 0 0 1-5 5m0-12.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5"/></svg>
+    </a>
+  
+
+
+<h1 id="delegation-specification">Delegation Specification<a class="headerlink" href="#delegation-specification" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> v1 MVP shipped (Wave 10). Streaming worker output to the planner,
+cancellation cascade across parent + workers, recursive (worker-spawns-worker)
+delegation, structured-output schema validation, and per-tier worker timeout
+are deferred to later waves.
+<strong>Last updated:</strong> 2026-05-15</p>
+<blockquote>
+<p><strong>What landed (Wave 10):</strong> The <code>delegate()</code> built-in tool is registered for
+planner sessions whose active model has <code>can_delegate: true</code> in the registry.
+The tool body hands a <code>DelegateRequest</code> to <code>SessionManager.spawn_worker</code>,
+which resolves the tier → model, creates a worker <code>Session</code>
+(<code>is_worker=True</code>, <code>parent_session_id</code> / <code>parent_tool_use_id</code> set), runs the
+worker's turn loop synchronously, and returns a <code>DelegateOutcome</code>. Routing
+slot 5 fires <code>chose: &lt;tier model&gt;</code> inside worker re-entry (§7);
+top-level sessions still see <code>not_applicable</code> per the original chain shape.
+Worker LLM events stamp <code>parent_session_id</code>; analytics rolls worker spend
+under the planner via <code>group_by=parent_session</code> or partitions via
+<code>group_by=is_worker</code> (§8). The three <code>delegate.*</code> events are live in the
+catalog (<a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §6.8</code></a>).</p>
+<p><strong>v1 scope.</strong> The Phase-4 worker-session design behind the <code>delegate()</code>
+tool and the routing chain's slot 5 (<code>DELEGATE_REQUEST</code>). Slot 5 had
+existed in the chain enumeration since Phase 1 with
+<code>verdict: "not_applicable"</code>; this spec defines the contract that fills
+in the stub.</p>
+<p><strong>Optional wedge.</strong> Delegation is an opt-in capability — neither the
+gateway nor the agent path requires it. Buyers with multi-step workloads
+(planning + many small mechanical sub-tasks) adopt it for the
+planner-on-deep / workers-on-fast cost shape; the routing chain, the
+gateway, the canonical IR, and the savings story all work fine without it.</p>
+</blockquote>
+<hr />
+<h2 id="1-purpose">1. Purpose<a class="headerlink" href="#1-purpose" title="Permanent link">&para;</a></h2>
+<p>A capable planner model is expensive. Most of the sub-tasks it dispatches
+while solving a problem (rename a symbol; format JSON; run a small grep;
+re-derive a regex; summarise a file) are mechanical and would run fine on a
+cheap model. Today the planner does them itself, paying its own per-token
+rate for every mechanical step.</p>
+<p>Delegation lets the planner emit a <code>delegate(tier, task, context)</code> tool
+call. The system spawns a <strong>worker session</strong> — a child session with its own
+routing decision, its own (cheaper) model, its own tool dispatch — runs it
+to completion, and returns a structured result to the planner. The planner
+turn resumes on the planner's model with the worker's output integrated as
+the tool result.</p>
+<p>This is the third lever in the cost-optimisation thesis
+(<a href="../../STRATEGY/"><code>STRATEGY.md §4</code></a>): bounded memory + lossless canonical
+IR + <strong>planner→worker delegation</strong>. Without delegation the cost shape is
+"one model handles the whole turn." With it, the planner is free to spend
+its tokens on judgement and farm out execution.</p>
+<p>This spec depends on:</p>
+<ul>
+<li><a href="../canonical-message-format/"><code>canonical-message-format.md</code></a> for
+  <code>Message</code>, content blocks, <code>ToolDefinition</code>, <code>Usage</code>, and the
+  <code>next_monotonic_ulid()</code> id convention.</li>
+<li><a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §6.8</code></a>
+  for <code>delegate.started</code> / <code>delegate.completed</code> / <code>delegate.failed</code>
+  payloads (Phase 4) and the <code>Actor.WORKER</code> enum (Phase 1).</li>
+<li><a href="../routing-engine/"><code>routing-engine.md §6</code></a> for the <code>delegate()</code> tool
+  signature, tier resolution, and slot 5 re-entry semantics. This spec
+  consolidates that material and treats §6 as the canonical slot 5
+  reference; the engine itself is unchanged.</li>
+<li><a href="../streaming-protocol/"><code>streaming-protocol.md §6.4 + §7</code></a> for the
+  cancellation-during-delegation seam and the
+  <code>include_worker_sessions</code> subscribe filter.</li>
+<li><a href="../server-api/"><code>server-api.md §sessions</code></a> for the <code>include_workers</code>
+  query parameter on <code>GET /sessions</code> and the <code>is_worker</code> /
+  <code>parent_session_id</code> fields on session records.</li>
+<li><a href="../pattern-store/"><code>pattern-store.md</code></a> for the workspace-scoped store
+  the worker writes its own fingerprint into (§11).</li>
+<li><a href="../evaluator/"><code>evaluator.md</code></a> for the turn-subject judge that scores
+  the worker's terminal turn and rolls up into the parent's session
+  rubric (§12).</li>
+<li><a href="../tool-dispatcher/"><code>tool-dispatcher.md</code></a> for the confirmation policy
+  workers inherit from the planner's session (§13).</li>
+</ul>
+<hr />
+<h2 id="2-goals-and-non-goals">2. Goals and non-goals<a class="headerlink" href="#2-goals-and-non-goals" title="Permanent link">&para;</a></h2>
+<h3 id="21-goals">2.1 Goals<a class="headerlink" href="#21-goals" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Cost shape: planner-on-deep, workers-on-fast.</strong> The default tier map
+   puts <code>delegate(tier="fast")</code> on a cheap model so mechanical sub-tasks
+   stop paying the planner's per-token rate. Cost predictability is what
+   makes the feature defensible.</li>
+<li><strong>Worker = full session, not a special call.</strong> A worker is a fresh
+   session — same canonical IR, same context assembler, same tool
+   dispatcher, same trace events. New code paths in v1 are limited to
+   spawn / context handoff / result integration. The implementation
+   surface is small because the abstractions are shared.</li>
+<li><strong>Explainable cost attribution.</strong> Worker tokens land on the worker
+   session's <code>usage.cost_usd</code>. The parent's session rollup includes
+   worker totals broken out by <code>(worker_session_id, model)</code>. A user
+   asking "where did my dollars go?" gets one record per delegation, not
+   a single planner number that hides the breakdown.</li>
+<li><strong>Read-only against durable state.</strong> Workers cannot mutate the
+   planner's memory, skills, or routing config (§10). The planner has
+   the broader context; sub-tasks shouldn't change the planner's
+   durable view of the world.</li>
+<li><strong>Honest failure modes.</strong> <code>insufficient_context</code> is a structured
+   request shape, not free text. The planner can programmatically retry
+   with the missing references rather than re-prompting itself
+   (<a href="../routing-engine/"><code>routing-engine.md §6.6.1</code></a>).</li>
+<li><strong>Cancellation is atomic across parent + workers.</strong> Parent cancel
+   cascades into in-flight workers; worker output is discarded; the
+   parent's <code>turn.cancelled</code> is the user-visible terminator
+   (<a href="../streaming-protocol/"><code>streaming-protocol.md §6.4</code></a>).</li>
+<li><strong>Optional.</strong> A buyer that doesn't want delegation never sees it —
+   <code>can_delegate: false</code> on every model in the registry, no tool
+   registration, slot 5 stays <code>not_applicable</code>. The savings story
+   (<a href="../benchmark/"><code>benchmark.md</code></a> Run 3) holds without delegation; the
+   benefit of turning it on is workload-shaped.</li>
+</ol>
+<h3 id="22-non-goals">2.2 Non-goals<a class="headerlink" href="#22-non-goals" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Worker-as-planner (recursive delegation).</strong> v1 disallows. Workers
+   do not have the <code>delegate</code> tool registered (§5.5). A future phase may
+   allow bounded recursion behind a config flag; v1 ships the simpler
+   contract.</li>
+<li><strong>Streaming worker output to the planner mid-execution.</strong> v1 is
+   request/response: the planner's <code>delegate()</code> tool call blocks until
+   the worker's <code>delegate.completed</code> fires. Streaming partial worker
+   output is an open question (§14.4) and is deferred.</li>
+<li><strong>Multi-worker fan-out from a single <code>delegate()</code> call.</strong> One tool
+   call = one worker. A planner that wants to fan out four sub-tasks
+   emits four <code>delegate()</code> calls, which the tool dispatcher may run in
+   parallel per its existing concurrency contract
+   (<a href="../tool-dispatcher/"><code>tool-dispatcher.md</code></a>).</li>
+<li><strong>Cross-workspace delegation.</strong> Worker workspace = planner workspace.
+   v1 does not support delegating into a sibling workspace.</li>
+<li><strong>Router-decided delegation.</strong> The routing engine does not look at a
+   <code>TurnContext</code> and decide "this turn should be a worker" on its own.
+   The planner LLM decides via the <code>delegate()</code> tool. See §14.6 for the
+   open question on whether a router-decided lane would ever earn its
+   complexity budget.</li>
+<li><strong>Worker UI as a first-class history entry.</strong> Worker sessions are
+   reachable for analytics and debugging but hidden from <code>/history</code> by
+   default (<a href="../routing-engine/"><code>routing-engine.md §6.2.2</code></a>).</li>
+</ol>
+<hr />
+<h2 id="3-optionality-and-adoption">3. Optionality and adoption<a class="headerlink" href="#3-optionality-and-adoption" title="Permanent link">&para;</a></h2>
+<p>Delegation is gated three ways, in series:</p>
+<ol>
+<li><strong>Registry config.</strong> A model has <code>can_delegate: true</code> (§4.2). Default
+   for <code>balanced</code> and <code>deep</code>; <code>fast</code>-tier models default to <code>false</code>.</li>
+<li><strong>Active planner model.</strong> The session's currently-active model is one
+   of those <code>can_delegate: true</code> models. If the user runs <code>/model haiku</code>
+   on a <code>can_delegate: false</code> model, the <code>delegate</code> tool is silently
+   de-registered for that session until they swap back.</li>
+<li><strong>Planner LLM choice.</strong> The planner emits a <code>delegate()</code> tool call.
+   No automatic delegation — the planner has to ask for it.</li>
+</ol>
+<p>A buyer that wants the gateway-only / agent-only experience never trips
+any of these. The Phase-4 implementation wave can ship with
+<code>can_delegate: false</code> on every shipped registry entry and the only
+user-visible change is that slot 5 starts producing real verdicts when
+the user opts in via the registry config.</p>
+<p>The dashboard's per-session cost breakdown shows <code>Workers: $0.00</code> when
+delegation isn't in use — no separate "delegation-enabled" UI mode.</p>
+<h3 id="36-explicit-v1-mvp-deferrals">3.6 Explicit v1 MVP deferrals<a class="headerlink" href="#36-explicit-v1-mvp-deferrals" title="Permanent link">&para;</a></h3>
+<p>The Wave-10 implementation lands the spec end-to-end with these features
+<strong>not</strong> wired (intentionally; named here so reviewers don't search for them
+in the code):</p>
+<ul>
+<li><strong>Async / concurrent workers.</strong> v1 is synchronous: the planner's tool
+  dispatcher blocks on each <code>delegate()</code> call until the worker session ends.
+  Fan-out via parallel tool calls in a single assistant message is permitted
+  by the tool dispatcher's existing contract but not exercised in the v1
+  test surface; a per-turn concurrent-workers cap is deferred (§14.3).</li>
+<li><strong>Cancellation cascade.</strong> A planner cancel does not propagate into an
+  in-flight worker in v1. The worker runs to completion and the planner's
+  next assistant turn integrates the result. Top-down atomic cancel
+  (§6.4 / streaming-protocol.md §6.4) is a later wave.</li>
+<li><strong>Streaming worker output back to the planner.</strong> v1 blocks until the
+  worker emits <code>stop_reason: end_turn</code>. Streaming partial worker output
+  through the planner's WebSocket subscription (the
+  <code>include_worker_sessions</code> filter on the streaming protocol) stays
+  accepted-but-unused; see §14.4.</li>
+<li><strong>Worker-spawns-worker (recursive delegation).</strong> The <code>delegate</code> tool is
+  never registered for worker sessions (<code>SessionManager._effective_tool_definitions</code>
+  filters it out for any session with <code>is_worker=True</code>), and the tool's
+  body refuses defensively (<code>ToolExecutionError</code>) if a misconfigured
+  dispatcher kept it visible. Bounded recursion is a future-phase opt-in
+  (§2.2.1).</li>
+<li><strong><code>output_schema</code> validation.</strong> v1 accepts the optional <code>output_schema</code>
+  parameter but does <strong>not</strong> validate the worker's output against it; the
+  worker's terminal text is returned to the planner unchanged. The
+  <code>output_schema_validation_failed</code> failure mode is reserved in the
+  catalog for the follow-up implementation.</li>
+<li><strong>Worker wall-clock timeout.</strong> No <code>timeout_seconds</code> parameter is exposed;
+  <code>max_tokens</code> caps spend but not wall time (§14.5).</li>
+<li><strong>Router-decided delegation.</strong> Slot 5 still only fires inside a worker
+  re-entry. The router does <strong>not</strong> wrap a top-level turn in a worker on
+  its own (§14.6).</li>
+<li><strong>Pattern-store integration for workers.</strong> Worker sessions do <strong>not</strong>
+  write or read pattern fingerprints in v1 — their structural fingerprint
+  would mix with planner fingerprints in a way the K-NN can't usefully
+  disambiguate. Cross-link of worker outcomes is §11 future work.</li>
+</ul>
+<p>What <strong>does</strong> land in v1: the full §4 / §5 / §6 / §7 / §8 / §9 / §10 / §13
+surface — <code>delegate()</code> tool, worker <code>Session</code> record, routing slot 5
+re-entry, full cost attribution, <code>delegate.*</code> events, isolation (memory /
+skills / <code>delegate</code> tool / trust-persistence-suppression for worker
+prompts).</p>
+<hr />
+<h2 id="4-the-delegate-tool">4. The <code>delegate()</code> tool<a class="headerlink" href="#4-the-delegate-tool" title="Permanent link">&para;</a></h2>
+<h3 id="41-signature">4.1 Signature<a class="headerlink" href="#41-signature" title="Permanent link">&para;</a></h3>
+<p>This re-articulates <a href="../routing-engine/"><code>routing-engine.md §6.1</code></a>; the
+canonical source for tool-signature changes remains the routing-engine
+spec.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">delegate</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">tier</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span> <span class="s2">&quot;balanced&quot;</span><span class="p">,</span> <span class="s2">&quot;deep&quot;</span><span class="p">],</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">task</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>                              <span class="c1"># focused instruction for the worker</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">context</span><span class="p">:</span> <span class="n">ContextSpec</span><span class="p">,</span>                   <span class="c1"># see §6</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">output_schema</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>      <span class="c1"># optional JSON schema for return</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">allowed_tools</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="c1"># default: same as planner&#39;s</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">max_tokens</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>          <span class="c1"># cap on worker output</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">DelegateResult</span>
+</span></code></pre></div>
+<p><code>ContextSpec</code> is the union of <code>{"mode": "minimal"}</code> and
+<code>{"mode": "explicit", "include": [...]}</code> per
+<a href="../routing-engine/"><code>routing-engine.md §6.3</code></a>.</p>
+<h3 id="42-tool-registration">4.2 Tool registration<a class="headerlink" href="#42-tool-registration" title="Permanent link">&para;</a></h3>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># part of the model registry (registry.yaml or equivalent)</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nt">models</span><span class="p">:</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">anthropic:claude-opus-4-7</span><span class="p">:</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">tier</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">deep</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">can_delegate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">anthropic:claude-sonnet-4-6</span><span class="p">:</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">tier</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">balanced</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">can_delegate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="nt">anthropic:claude-haiku-4-5</span><span class="p">:</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">tier</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fast</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">can_delegate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</span></code></pre></div>
+<p><code>can_delegate: false</code> means the <code>delegate</code> tool is not registered when
+this model is the active session model. Enforced at session start and
+when the active model changes mid-session (after a <code>/model</code> swap or a
+queued swap landing at a turn boundary).</p>
+<p>The tool is <strong>never</strong> registered for a worker session, regardless of
+<code>can_delegate</code> on the worker's model (v1 non-goal §2.2.1).</p>
+<h3 id="43-return-value">4.3 Return value<a class="headerlink" href="#43-return-value" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">DelegateResult</span><span class="p">(</span><span class="n">msgspec</span><span class="o">.</span><span class="n">Struct</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">kw_only</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">success</span><span class="p">:</span> <span class="nb">bool</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">output</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="nb">dict</span>                  <span class="c1"># text by default; dict if output_schema set</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">error</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">usage_summary</span><span class="p">:</span> <span class="n">DelegateUsageSummary</span> <span class="c1"># tokens, cost, turns, tool calls</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="n">worker_session_id</span><span class="p">:</span> <span class="nb">str</span>              <span class="c1"># for trace lookup</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="k">class</span><span class="w"> </span><span class="nc">DelegateUsageSummary</span><span class="p">(</span><span class="n">msgspec</span><span class="o">.</span><span class="n">Struct</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">kw_only</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="n">model</span><span class="p">:</span> <span class="nb">str</span>                          <span class="c1"># the resolved worker model</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    <span class="n">turn_count</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="n">input_tokens</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>    <span class="n">output_tokens</span><span class="p">:</span> <span class="nb">int</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>    <span class="n">cost_usd</span><span class="p">:</span> <span class="n">Decimal</span>                   <span class="c1"># workforce of /analytics/cost rollup</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>    <span class="n">wall_time_seconds</span><span class="p">:</span> <span class="nb">float</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>    <span class="n">tool_call_count</span><span class="p">:</span> <span class="nb">int</span>
+</span></code></pre></div>
+<p>The planner sees <code>output</code> as the tool result content; the rest is
+recorded on <code>delegate.completed</code> (<a href="../event-bus-and-trace-catalog/"><code>event-bus §6.8</code></a>)
+and surfaced in analytics rather than passed back to the LLM. Keeping
+the planner-visible portion narrow prevents the planner from being
+flooded with metadata.</p>
+<h3 id="44-failure-modes">4.4 Failure modes<a class="headerlink" href="#44-failure-modes" title="Permanent link">&para;</a></h3>
+<p>Identical to <a href="../routing-engine/"><code>routing-engine.md §6.6</code></a>; reproduced
+here for completeness:</p>
+<table>
+<thead>
+<tr>
+<th>Failure</th>
+<th>success</th>
+<th>error</th>
+<th>output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Worker raised an unhandled error</td>
+<td>false</td>
+<td><code>"worker_error: {message}"</code></td>
+<td>partial output if any</td>
+</tr>
+<tr>
+<td>Worker hit <code>max_tokens</code></td>
+<td>false</td>
+<td><code>"max_tokens_exceeded"</code></td>
+<td>truncated output</td>
+</tr>
+<tr>
+<td>Worker requested missing context</td>
+<td>false</td>
+<td><code>"insufficient_context"</code></td>
+<td><code>InsufficientContextRequest</code></td>
+</tr>
+<tr>
+<td>Worker output didn't match <code>output_schema</code></td>
+<td>false</td>
+<td><code>"output_schema_validation_failed"</code></td>
+<td>raw output</td>
+</tr>
+<tr>
+<td>No model available for <code>tier</code></td>
+<td>false</td>
+<td><code>"no_model_available_for_tier"</code></td>
+<td>empty</td>
+</tr>
+<tr>
+<td>User cancelled the planner mid-delegation</td>
+<td>false</td>
+<td><code>"cancelled_by_user"</code></td>
+<td>partial if any</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>insufficient_context</code> shape lives in
+<a href="../routing-engine/"><code>routing-engine.md §6.6.1</code></a> and is referenced by the
+typed <code>delegate.failed.insufficient_context_request</code> field on the bus
+event.</p>
+<hr />
+<h2 id="5-the-worker-session">5. The worker session<a class="headerlink" href="#5-the-worker-session" title="Permanent link">&para;</a></h2>
+<h3 id="51-definition">5.1 Definition<a class="headerlink" href="#51-definition" title="Permanent link">&para;</a></h3>
+<p>A <strong>worker session</strong> is a regular <code>Session</code> record (per
+<a href="../canonical-message-format/"><code>canonical-message-format.md §9.1</code></a>) with
+two additional fields populated:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># additive fields on the existing Session record</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">parent_session_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>     <span class="c1"># the planner&#39;s session_id; None for top-level sessions</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">parent_tool_use_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>    <span class="c1"># the planner&#39;s delegate() tool_use_id; uniquely</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>                                  <span class="c1"># identifies which delegate() call this worker</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>                                  <span class="c1"># belongs to</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">is_worker</span><span class="p">:</span> <span class="nb">bool</span>                   <span class="c1"># parent_session_id is not None, materialised for</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>                                  <span class="c1"># quick filtering on /sessions</span>
+</span></code></pre></div>
+<p>The fields are nullable for backward-compatibility with sessions written
+before Phase 4. No schema migration is required beyond adding the columns
+with <code>DEFAULT NULL</code>.</p>
+<h3 id="52-routing-inheritance">5.2 Routing inheritance<a class="headerlink" href="#52-routing-inheritance" title="Permanent link">&para;</a></h3>
+<p>A worker session has its own routing decision, made fresh at worker
+session start via the full 7-slot chain in
+<a href="../routing-engine/"><code>routing-engine.md §4.1</code></a>. The planner's
+<code>active_model</code> does <strong>not</strong> propagate. The chain enters slot 5
+(<code>DELEGATE_REQUEST</code>) with the resolved-tier model as the candidate; all
+earlier slots typically return <code>not_applicable</code> for workers (no <code>@model</code>
+prefix, no user <code>/model</code> command, no rule matches against the task brief
+by default). See <a href="../routing-engine/"><code>routing-engine.md §6.9 + §6.9.1</code></a>
+for why the full chain runs and what the worker's <code>route.decided</code> looks
+like.</p>
+<h3 id="53-workspace">5.3 Workspace<a class="headerlink" href="#53-workspace" title="Permanent link">&para;</a></h3>
+<p><code>workspace_path</code> = parent's <code>workspace_path</code>. Same directory, same
+<code>.metis/</code> config, same MEMORY.md / USER.md / <code>routing.yaml</code> /
+<code>patterns.db</code> / <code>trust.yaml</code>. Workers are not run in a sandbox
+subdirectory; the workspace is the unit of trust.</p>
+<p>This means worker file-tool reads see the same workspace state the
+planner saw at delegation time, including any files the planner created
+or modified earlier in the session. There is no copy-on-write semantics
+for the filesystem.</p>
+<h3 id="54-memory">5.4 Memory<a class="headerlink" href="#54-memory" title="Permanent link">&para;</a></h3>
+<p>The worker's system prompt is assembled by the same context-assembler
+path as the planner's (per
+<a href="../context-assembler/"><code>context-assembler.md §5</code></a>) and includes the
+workspace's MEMORY.md + USER.md. The worker reads them but <strong>cannot
+modify them</strong>: the <code>memory_add</code> / <code>memory_replace</code> / <code>memory_consolidate</code>
+tools are not registered for worker sessions, even if listed in
+<code>allowed_tools</code>.</p>
+<p>Rationale: the planner has the broader context to judge what's worth
+remembering. A worker shouldn't change the planner's durable view of the
+world from inside a sub-task — and a planner that wants a fact recorded
+in MEMORY.md after a worker returns is free to call <code>memory_add</code> itself
+with the worker's output as input.</p>
+<h3 id="55-skills">5.5 Skills<a class="headerlink" href="#55-skills" title="Permanent link">&para;</a></h3>
+<p>The worker can read and load skills (<code>skill_load</code> is available; the
+worker's session-start skill index is built the same way the planner's
+is). The worker <strong>cannot</strong> create, modify, or delete skill files. Skill
+auto-generation (Phase 2.5; not yet shipped) is not invoked from worker
+sessions, regardless of policy.</p>
+<h3 id="56-tools">5.6 Tools<a class="headerlink" href="#56-tools" title="Permanent link">&para;</a></h3>
+<p>Default <code>allowed_tools</code> = the set the planner had. Workers retain access
+to the same file / shell / search / network surface unless the planner
+narrowed <code>allowed_tools</code> in the <code>delegate()</code> call.</p>
+<p>Three tools are <strong>always</strong> absent from worker dispatch, regardless of
+<code>allowed_tools</code>:</p>
+<ul>
+<li><code>delegate</code> — v1 forbids recursive delegation (§2.2.1).</li>
+<li><code>memory_add</code> / <code>memory_replace</code> / <code>memory_consolidate</code> — read-only
+  memory invariant (§5.4).</li>
+<li>Skill-mutation tools, if any exist in a future phase (§5.5).</li>
+</ul>
+<p>If the planner names one of these in <code>allowed_tools</code>, the worker session
+silently drops it from its registry. No error — the planner's request is
+honoured to the extent the contract allows. The list of dropped tools is
+recorded on <code>delegate.started</code> (additive payload field <code>dropped_tools</code>
+proposed below; see §9).</p>
+<h3 id="57-system-prompt">5.7 System prompt<a class="headerlink" href="#57-system-prompt" title="Permanent link">&para;</a></h3>
+<p>The worker's system prompt is composed from:</p>
+<ol>
+<li>The standard context-assembler stable prefix (operating context, MEMORY.md,
+   USER.md, allowed-tools description) — same as a planner.</li>
+<li>A worker-specific instruction block teaching it to be terse, focused, and
+   to return rather than ask for clarification. The exact wording lives in
+   <a href="../routing-engine/"><code>routing-engine.md §6.5</code></a> and is unchanged here.</li>
+<li>The <code>task</code> brief from the <code>delegate()</code> call.</li>
+<li>The assembled <code>context</code> references (inline notes, message snippets, tool
+   results; files appear as references the worker re-reads through the file
+   tool — see <a href="../routing-engine/"><code>routing-engine.md §6.3</code></a>).</li>
+</ol>
+<p>The worker has no prior message history. Its first turn is the system prompt
++ a synthetic user message that contains the task brief and any inline
+context. The planner is not a participant in the worker's transcript.</p>
+<hr />
+<h2 id="6-lifecycle">6. Lifecycle<a class="headerlink" href="#6-lifecycle" title="Permanent link">&para;</a></h2>
+<h3 id="61-creation">6.1 Creation<a class="headerlink" href="#61-creation" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>[planner turn in flight on session sess_A, model = anthropic:claude-opus-4-7]
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>planner emits tool_use(delegate, {tier: &quot;fast&quot;, task: &quot;...&quot;, context: {...}})
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>  ↓
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>tool dispatcher dispatches delegate as a builtin tool with elevated kernel
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>  privileges (it can spawn a session — no other builtin can).
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>  ↓
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>delegate-tool body:
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>  1. Resolve tier → model via tier-config (per workspace, falling back to
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>     global). If no model is configured for the tier, return DelegateResult
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>     with error=no_model_available_for_tier and emit delegate.failed.
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>  2. Create a fresh Session record with parent_session_id=sess_A,
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>     parent_tool_use_id=tu_xxx, is_worker=true, workspace_path=parent&#39;s.
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>     Emit session.created (existing event; the worker fields are populated).
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>  3. Emit delegate.started with worker_session_id, tier, resolved_model,
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>     context_mode, context_reference_count, task_size_tokens
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>     (per event-bus §6.8).
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>  4. Build the worker&#39;s system prompt (§5.7) and synthetic user message.
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>  5. Invoke the session manager&#39;s turn loop on the worker. The session
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>     manager runs routing (entering slot 5 with the resolved model as the
+</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>     candidate; capability validation per routing-engine §4.4), then the
+</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a>     LLM call cycle, exactly like any other session.
+</span><span id="__span-4-23"><a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>  6. Block on the worker&#39;s session manager future until session.ended or
+</span><span id="__span-4-24"><a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a>     a terminal delegate.failed condition is observed.
+</span><span id="__span-4-25"><a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a>  7. Compose DelegateResult from the worker&#39;s session outcome and return
+</span><span id="__span-4-26"><a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>     it to the planner&#39;s tool dispatcher.
+</span></code></pre></div>
+<h3 id="62-inside-the-worker">6.2 Inside the worker<a class="headerlink" href="#62-inside-the-worker" title="Permanent link">&para;</a></h3>
+<p>A worker session runs the same turn-locked loop as any other session
+(<a href="../routing-engine/"><code>routing-engine.md §3.2</code></a>). The worker's model is
+fixed at the worker's turn start and owns all of the worker's LLM
+calls, including any tool cycles.</p>
+<p>A worker can have multiple turns internally. The default contract is
+"one synthetic user turn → completion," but if the worker's first turn
+emits a non-<code>end_turn</code> stop_reason (e.g., a tool cycle that requires
+multiple LLM calls), the worker continues until it produces an assistant
+message with <code>stop_reason: end_turn</code>. The full transcript is persisted
+under the worker's session record.</p>
+<p>The worker's terminal LLM output is the candidate for <code>DelegateResult.output</code>.
+If <code>output_schema</code> is set, the worker is expected to produce JSON
+matching the schema; the delegate tool body validates the parsed output
+before returning. Schema-validation failure is <code>output_schema_validation_failed</code>.</p>
+<h3 id="63-completion">6.3 Completion<a class="headerlink" href="#63-completion" title="Permanent link">&para;</a></h3>
+<p>When the worker reaches <code>stop_reason: end_turn</code> (or terminates via one of
+the failure modes in §4.4):</p>
+<ol>
+<li>Worker emits <code>session.ended</code> with <code>disposition: completed</code> (or
+   <code>failed</code>/<code>cancelled</code> as appropriate).</li>
+<li>The delegate-tool body collects the worker's <code>Usage</code> totals from the
+   session-manager future result.</li>
+<li>Delegate-tool body emits <code>delegate.completed</code> (or <code>delegate.failed</code>)
+   with the usage rollup
+   (<a href="../event-bus-and-trace-catalog/"><code>event-bus §6.8</code></a>).</li>
+<li>Delegate-tool body returns <code>DelegateResult</code> to the planner's tool
+   dispatcher, which packages it as a <code>TOOL</code> content block on the
+   planner's next message (standard tool-cycle wiring per
+   <a href="../tool-dispatcher/"><code>tool-dispatcher.md</code></a>).</li>
+<li>The planner's turn resumes on the planner's model with the worker
+   output as the tool result. The planner's <code>turn.completed</code> is unchanged
+   in shape; <code>usage.cost_usd</code> on that event still measures the
+   <em>planner's</em> token cost only. Worker cost lives on <code>delegate.completed</code>
+   and rolls up via the analytics projection (§8).</li>
+</ol>
+<h3 id="64-cancellation">6.4 Cancellation<a class="headerlink" href="#64-cancellation" title="Permanent link">&para;</a></h3>
+<p>Cross-references <a href="../streaming-protocol/"><code>streaming-protocol.md §6.4</code></a>;
+not redefined here. Summary:</p>
+<ul>
+<li>Cancel originating on the planner → planner's delegate-tool body
+  signals the worker's session manager → worker's in-flight LLM call /
+  tool dispatch cancels per the standard three-case model
+  (<a href="../streaming-protocol/"><code>streaming-protocol.md §6.2</code></a>) → worker
+  emits <code>session.ended</code> with <code>disposition: cancelled</code> → delegate-tool
+  body emits <code>delegate.failed</code> with <code>failure_mode: cancelled_by_user</code>
+  → planner's <code>turn.cancelled</code> follows.</li>
+<li>Cancel originating <em>directly on a worker</em> (a client attached only to
+  the worker session via §11): same worker-side cancellation, but the
+  planner is <strong>not</strong> notified. The planner's delegate-tool call sees a
+  <code>delegate.failed</code> result and decides what to do
+  (retry / take over / surface). v1: the planner sees this as
+  <code>cancelled_by_user</code> with the qualification that the user cancelled
+  <em>the worker</em>, not the planner. The planner's turn continues.</li>
+</ul>
+<p>The atomic cascade only fires for top-down cancellation. Worker-only
+cancel is treated as the worker failing — a normal failure mode the
+planner already needs to handle.</p>
+<h3 id="65-worker-timeout">6.5 Worker timeout<a class="headerlink" href="#65-worker-timeout" title="Permanent link">&para;</a></h3>
+<p>v1 does not impose a wall-clock timeout on workers beyond <code>max_tokens</code>
+(per <code>delegate()</code> arg) and the planner's user being able to Ctrl-C.
+Adding a per-tier worker timeout is an open question (§14.5).</p>
+<hr />
+<h2 id="7-the-slot-5-contract-cross-reference">7. The slot 5 contract (cross-reference)<a class="headerlink" href="#7-the-slot-5-contract-cross-reference" title="Permanent link">&para;</a></h2>
+<p>This section is non-normative; slot 5's canonical definition lives in
+<a href="../routing-engine/"><code>routing-engine.md §6.9</code></a>.</p>
+<p>When the delegate-tool body spawns a worker session, the worker's
+session-manager runs the standard policy chain. The chain shape is the
+same as for any other session:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>1. PER_MESSAGE_OVERRIDE   → not_applicable (no user @-prefix on the synthetic task)
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>2. MANUAL_STICKY          → not_applicable (workers have no /model state)
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>3. CONFIGURED_RULES       → typically not_applicable; will fire if a user
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>                            wrote a workspace rule whose predicate matches
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>                            the worker&#39;s task brief — rare
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>4. PATTERN_RECOMMENDATION → not_applicable in v1 unless the worker&#39;s
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>                            structural fingerprint resolves a high-confidence
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>                            recommendation in the per-workspace store
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>5. DELEGATE_REQUEST       → chose: &lt;resolved tier model&gt;  (typical)
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>6. WORKSPACE_DEFAULT      → would chose if 5 was rejected on capability
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>7. GLOBAL_DEFAULT         → final floor
+</span></code></pre></div>
+<p>Slot 5 fires only inside a worker session. The chain always includes the
+slot for shape uniformity; outside a worker session slot 5 reports
+<code>verdict: not_applicable, reason: "not in delegation re-entry"</code>.</p>
+<p>Capability validation runs on slot 5's candidate exactly like any other
+slot. If the worker's task has images and the resolved <code>fast</code> model is
+text-only, slot 5 rejects with <code>no_vision_support</code> and the chain falls
+through — <code>WORKSPACE_DEFAULT</code> or a tier-upgrade rule typically catches
+the case (<a href="../routing-engine/"><code>routing-engine.md §6.9</code></a>).</p>
+<hr />
+<h2 id="8-cost-attribution">8. Cost attribution<a class="headerlink" href="#8-cost-attribution" title="Permanent link">&para;</a></h2>
+<h3 id="81-where-worker-tokens-land">8.1 Where worker tokens land<a class="headerlink" href="#81-where-worker-tokens-land" title="Permanent link">&para;</a></h3>
+<p>Every <code>llm.call_completed</code> emitted from inside a worker session has:</p>
+<ul>
+<li><code>session_id</code> = the worker's session id.</li>
+<li><code>is_worker: true</code> (already in the catalog —
+  <a href="../event-bus-and-trace-catalog/"><code>event-bus §6.3</code></a>).</li>
+<li><code>usage.cost_usd</code> = the worker's call cost, in Decimal, against the
+  worker's model and the active pricing overlay
+  (<code>pricing_version</code> is recorded as today).</li>
+</ul>
+<p>The planner's <code>llm.call_completed</code> events are unchanged — their
+<code>usage.cost_usd</code> is the planner's own cost, regardless of what workers
+spent inside the same turn.</p>
+<h3 id="82-rollup-via-the-analytics-surface">8.2 Rollup via the analytics surface<a class="headerlink" href="#82-rollup-via-the-analytics-surface" title="Permanent link">&para;</a></h3>
+<p>The <code>/analytics/cost</code> projection (per
+<a href="../analytics-api/"><code>analytics-api.md §4.1</code></a>) already groups by
+<code>session_id</code>. For Phase 4 it gains an additive behaviour: when an
+<code>include_workers=true</code> query parameter is passed, the projection rolls
+worker cost into the parent's session row via the
+<code>parent_session_id</code> field on the worker's session record. Two new
+optional dimensions are added to <code>_COST_GROUP_BY_ALLOWED</code>:</p>
+<ul>
+<li><code>group_by=parent_session</code> — rolls every event under its session's
+  <code>parent_session_id</code> if set, else the session's own id. Worker cost
+  collapses into the planner's row.</li>
+<li><code>group_by=is_worker</code> — partitions the response into "planner" vs.
+  "worker" buckets without identifying which planner each worker
+  belonged to.</li>
+</ul>
+<p>The dashboard rendering described in
+<a href="../routing-engine/"><code>routing-engine.md §6.7</code></a> uses <code>group_by=session,
+include_workers=true</code> to render the per-session breakdown.</p>
+<h3 id="83-delegatecompletedworker_total_cost_usd">8.3 <code>delegate.completed.worker_total_cost_usd</code><a class="headerlink" href="#83-delegatecompletedworker_total_cost_usd" title="Permanent link">&para;</a></h3>
+<p>The summary cost on the <code>delegate.completed</code> event is <strong>derived</strong> — a
+sum of the worker's <code>llm.call_completed.usage.cost_usd</code> values. The
+analytics projection does not read this field for the user-facing
+rollup; it reads <code>llm.call_completed</code> rows directly via the worker's
+<code>session_id</code>. The summary on the event exists for at-a-glance debug
+("how expensive was this one delegation?") and for the dashboard's
+delegate-tooltip render.</p>
+<p>Rationale: a single source of truth (<code>llm.call_completed</code>) avoids
+double-counting if the rollup and the summary ever drift. Re-pricing a
+historical trace under a new <code>pricing_version</code> reaches every
+<code>llm.call_completed</code> whether or not the <code>delegate.completed</code> summary
+matches.</p>
+<hr />
+<h2 id="9-trace-events-cross-reference">9. Trace events (cross-reference)<a class="headerlink" href="#9-trace-events-cross-reference" title="Permanent link">&para;</a></h2>
+<p>The three Phase-4 events live in
+<a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §6.8</code></a>:
+<code>delegate.started</code>, <code>delegate.completed</code>, <code>delegate.failed</code>.</p>
+<p>This spec proposes two additive payload fields on <code>delegate.started</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># delegate.started payload, additions in italics:</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="p">{</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="s2">&quot;tool_use_id&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="s2">&quot;worker_session_id&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="s2">&quot;tier&quot;</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span> <span class="s2">&quot;balanced&quot;</span><span class="p">,</span> <span class="s2">&quot;deep&quot;</span><span class="p">],</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="s2">&quot;resolved_model&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="s2">&quot;context_mode&quot;</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;minimal&quot;</span><span class="p">,</span> <span class="s2">&quot;explicit&quot;</span><span class="p">],</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    <span class="s2">&quot;context_reference_count&quot;</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>    <span class="s2">&quot;task_size_tokens&quot;</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>    <span class="c1"># additive (v1):</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    <span class="c1"># *&quot;allowed_tool_count&quot;: int,*       # tools the planner asked for</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>    <span class="c1"># *&quot;dropped_tools&quot;: list[str],*       # tools removed per §5.6 invariants</span>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Sensitivity stays <code>pseudonymous</code> — tool names are structural. The new
+fields are populated whenever a worker is spawned; rows written before
+Phase 4 (none — the event type doesn't exist yet) need no migration.</p>
+<p><code>Actor.WORKER</code> (event-bus §4.1, already in the catalog) is the actor on
+every event emitted inside a worker session.</p>
+<hr />
+<h2 id="10-isolation-summary">10. Isolation summary<a class="headerlink" href="#10-isolation-summary" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Worker read</th>
+<th>Worker write</th>
+<th>Enforcement</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MEMORY.md</td>
+<td>✓ (composed into system prompt)</td>
+<td>✗</td>
+<td>Memory tools de-registered (§5.4).</td>
+</tr>
+<tr>
+<td>USER.md</td>
+<td>✓</td>
+<td>✗</td>
+<td>Same.</td>
+</tr>
+<tr>
+<td>Skills</td>
+<td>✓ (load + read)</td>
+<td>✗</td>
+<td>Skill-mutation tools de-registered (§5.5).</td>
+</tr>
+<tr>
+<td><code>routing.yaml</code></td>
+<td>✓ (loaded by routing engine)</td>
+<td>✗</td>
+<td>No mutation tool exists in v1; absent if added.</td>
+</tr>
+<tr>
+<td><code>patterns.db</code></td>
+<td>✓ (slot 4 query)</td>
+<td>✓ (worker's own outcomes — §11)</td>
+<td>Worker writes its own session's fingerprint.</td>
+</tr>
+<tr>
+<td><code>trust.yaml</code></td>
+<td>✓ (confirmation policy)</td>
+<td>✗ in v1 — see §13</td>
+<td>Workers inherit; "always" answers do not persist from worker prompts.</td>
+</tr>
+<tr>
+<td>Workspace files</td>
+<td>✓</td>
+<td>✓ (via file tools, same as planner)</td>
+<td>Standard tool dispatch / confirmation.</td>
+</tr>
+<tr>
+<td><code>metis.db</code> (trace)</td>
+<td>✓ (own events)</td>
+<td>✓ (own events)</td>
+<td>Worker emits via the same bus as planner.</td>
+</tr>
+<tr>
+<td>Sessions / <code>delegate</code> tool</td>
+<td>✓ (worker can't see other sessions)</td>
+<td>✗ (no <code>delegate</code> tool registered)</td>
+<td>Dispatch-registration invariant (§5.6).</td>
+</tr>
+</tbody>
+</table>
+<p>The principle: workers are read-only against <strong>durable system state the
+planner is reasoning about</strong>, and read/write against task-shaped state
+(workspace files, the worker's own trace, the worker's own pattern row).</p>
+<hr />
+<h2 id="11-pattern-store-integration">11. Pattern store integration<a class="headerlink" href="#11-pattern-store-integration" title="Permanent link">&para;</a></h2>
+<p>A worker session writes a pattern row exactly like a top-level session.
+At <code>session.ended</code> the pattern-store subscriber projects the worker's
+turn(s) into a structural fingerprint and stores it with
+<code>primary_model</code> = the worker's model
+(<a href="../pattern-store/"><code>pattern-store.md §5</code></a>). The <code>parent_session_id</code> on
+the worker's session record is <em>not</em> projected into the fingerprint —
+the pattern store treats workers as first-class fingerprintable units.</p>
+<p>This is deliberate: routing slot 4 for <em>future</em> worker sessions will
+read these rows. If sonnet-on-tier=balanced consistently beats
+haiku-on-tier=fast for <code>regex_with_edge_cases</code>-shaped sub-tasks, the
+pattern store accumulates that signal and a future worker turn will
+match into slot 4 <em>before</em> slot 5 fires — at which point the engine
+either keeps the slot-5 tier (if validation passes for slot 4's higher
+score) or follows the pattern's recommendation.</p>
+<p>A naive read of the chain would have slot 4 (pattern) outrank slot 5
+(delegate) by virtue of its position. That would let learned patterns
+silently override the planner's explicit <code>tier=</code> choice — exactly the
+failure mode the chain ordering (<a href="../routing-engine/"><code>routing-engine.md §4.2</code></a>)
+defends against for user-set policy.</p>
+<p><strong>Resolution.</strong> v1 forces slot 4 to defer to slot 5 inside worker
+re-entry: if a <code>DELEGATE_REQUEST</code> is in flight, the pattern slot still
+runs its evaluation for trace purposes (so the disagreement is observable
+in <code>route.decided.chain</code>) but always returns <code>verdict: deferred</code> with
+<code>reason: "delegate_request_in_flight"</code>. The planner's explicit <code>tier=</code>
+is treated as an intentional cost/quality choice that learned patterns
+should not silently override. The planner can adjust by choosing a
+different tier on the next <code>delegate()</code> call; the dashboard surfaces
+the disagreement.</p>
+<p>This is the worker-mode analogue of
+<a href="../routing-engine/"><code>routing-engine.md §5.6</code></a> (rule beats pattern
+recommendation by default). The decision log records the rationale
+(§15).</p>
+<h3 id="111-validation-workload">11.1 Validation workload<a class="headerlink" href="#111-validation-workload" title="Permanent link">&para;</a></h3>
+<p>A dedicated benchmark workload exercises the planner-driven delegation
+path end-to-end: <a href="../../benchmarks/workloads/multi-step-with-delegation/"><code>benchmarks/workloads/multi-step-with-delegation/</code></a>.
+The workspace is a small auth module with three providers that share
+duplicated boilerplate; the prompt walks the planner through a
+plan-then-delegate refactor and the workload's <code>expect.min_delegate_calls</code>
+assertion gates on <code>delegate.started count ≥ 3</code>. The validation run
+(Wave 11; <a href="../../benchmarks/RESULTS.md"><code>benchmarks/RESULTS.md §multi-step-with-delegation</code></a>)
+confirmed the full surface fires end-to-end: 3 worker sessions
+spawned, <code>parent_session_id</code> stamped correctly, slot 5 wins inside
+worker re-entry, slot 4 defers with <code>reason="delegate_request_in_flight"</code>
+on every worker, <code>delegate.completed</code> returns <code>success=True</code>, and the
+planner-deep / workers-fast cost shape lands ~23% savings against a
+sonnet-only baseline. The validation also surfaced the §5.6 active-model
+filter gotcha (see RESULTS.md): <code>--no-active-model</code> silently hides the
+<code>delegate</code> tool because <code>session.active_model is None</code> short-circuits
+the <code>can_delegate</code> check, so this workload must be invoked with
+<code>--model sonnet --delegation-policy sonnet-planner-haiku-worker</code>.</p>
+<hr />
+<h2 id="12-evaluator-integration">12. Evaluator integration<a class="headerlink" href="#12-evaluator-integration" title="Permanent link">&para;</a></h2>
+<p>The evaluator subscribes to <code>turn.completed</code> and <code>session.ended</code>
+(<a href="../evaluator/"><code>evaluator.md §6.1</code></a>). Worker sessions emit those events
+exactly like any other session — they are scored independently.</p>
+<p>Two downstream behaviours:</p>
+<ol>
+<li><strong>Worker's terminal turn is scored by the turn rubric.</strong> The
+   evaluator's heuristic/hybrid/LLM tiers run against the worker's last
+   assistant turn. The <code>eval.completed</code> event records the worker's
+   <code>session_id</code>. Score lands in the pattern store via the
+   pattern-store's late-arriving-score flow
+   (<a href="../pattern-store/"><code>pattern-store.md §10.4</code></a>).</li>
+<li><strong>Parent's session rubric folds in delegation outcomes.</strong> When the
+   evaluator scores the parent session
+   (<a href="../evaluator/"><code>evaluator.md §5.6</code></a>, heuristic-only in v1), it
+   incorporates each child worker's success signal via the
+   <code>delegate.completed.success</code> boolean. A planner whose three of four
+   delegations failed gets a lower session score than one whose
+   delegations succeeded. The exact weighting is heuristic and lives
+   in the evaluator's rubric; this spec does not pin it.</li>
+</ol>
+<p>The evaluator does <strong>not</strong> re-score the parent's <em>turn</em> using the
+worker's evaluator verdict. The parent's turn is evaluated on the
+planner's own output (text + tool-use behaviour), and the workers are
+evaluated independently. Otherwise the parent's score double-counts the
+workers' scores transitively, which inflates the apparent gain from
+delegation and distorts the savings story.</p>
+<hr />
+<h2 id="13-confirmation-handler-scope">13. Confirmation handler scope<a class="headerlink" href="#13-confirmation-handler-scope" title="Permanent link">&para;</a></h2>
+<p>Worker tool calls go through the same <code>ToolDispatcher</code> and same
+<code>ToolConfirmationHandler</code> instance as the planner's
+(<a href="../tool-dispatcher/"><code>tool-dispatcher.md</code></a>). The session-manager
+constructs the dispatcher with the active handler (CLI / remote /
+auto-allow per the CLI runtime), and the worker reuses it.</p>
+<p>Consequence: a worker's WRITE/EXECUTE/NETWORK tool calls produce the
+same prompts the planner's would. If the user said "always allow shell"
+in the planner session, the worker inherits that (the <code>trust.yaml</code>
+entry is workspace-scoped, not session-scoped).</p>
+<p>What v1 does <strong>not</strong> allow:</p>
+<ul>
+<li><strong>"Always" answers from worker prompts persisting to <code>trust.yaml</code>.</strong>
+  A worker dispatching <code>shell</code> for the first time and the user
+  answering "always" should be treated as a one-time approval for this
+  worker only — v1 conservatively suppresses the persistence. Rationale:
+  the user is approving the worker's specific sub-task; promoting that
+  to a workspace-wide policy is too implicit when the user didn't
+  initiate the action. The planner remains free to call shell directly
+  with a normal prompt whose "always" answer does persist.</li>
+</ul>
+<p>This persistence-suppression rule is a v1 conservative default. Whether
+worker prompts should be allowed to persist trust answers is an open
+question (§14.7).</p>
+<hr />
+<h2 id="14-open-questions">14. Open questions<a class="headerlink" href="#14-open-questions" title="Permanent link">&para;</a></h2>
+<p>Tracked here; v1 does not resolve.</p>
+<h3 id="141-cost-of-delegation-overhead">14.1 Cost-of-delegation overhead<a class="headerlink" href="#141-cost-of-delegation-overhead" title="Permanent link">&para;</a></h3>
+<p>Worker spawn isn't free: a fresh session, system-prompt assembly, an
+LLM call with no warm cache, and a structured return. The per-call
+fixed cost is on the order of input-token assembly for the worker's
+system prompt — bounded but not zero.</p>
+<p>For a small sub-task (e.g. "format this 200-token JSON blob"), the
+worker's fixed cost may exceed the planner's cost of doing it inline.
+The threshold below which delegation is net-negative depends on:</p>
+<ul>
+<li>Tier ratio (planner $/Mtok vs. worker $/Mtok).</li>
+<li>Sub-task token budget (input + output).</li>
+<li>Prompt-cache warm-rate (<a href="../context-assembler/"><code>context-assembler.md §5.1</code></a>)
+  — the planner's cache warms across the session; each worker session
+  starts cold.</li>
+</ul>
+<p><a href="../benchmark/"><code>benchmark.md</code></a> Phase 4 should add a <code>delegation-vs-inline</code>
+workload pair that runs the same task both ways and measures the cost
+difference. The planner's system prompt should be tuned (via the
+worker-decision guidance described in
+<a href="../routing-engine/"><code>routing-engine.md §6.4</code></a>) to delegate only when
+the sub-task is large enough for the ratio to win.</p>
+<h3 id="142-cancellation-cascade-scope">14.2 Cancellation cascade scope<a class="headerlink" href="#142-cancellation-cascade-scope" title="Permanent link">&para;</a></h3>
+<p>§6.4 specifies the top-down cascade. Open: should a worker that is
+<strong>not</strong> in-flight at cancel time (e.g., the worker already
+<code>session.ended</code> but the planner hasn't yet integrated the result) be
+"un-completed"? v1: no — once <code>delegate.completed</code> fires, the
+worker's record is durable; cancelling the planner just suppresses the
+planner's further LLM calls. This may surprise a user who expects "cancel
+= rollback"; deferring to Phase 4 ergonomics.</p>
+<h3 id="143-concurrent-delegation-one-planner-many-workers">14.3 Concurrent delegation (one planner, many workers)<a class="headerlink" href="#143-concurrent-delegation-one-planner-many-workers" title="Permanent link">&para;</a></h3>
+<p>The tool dispatcher's existing concurrency contract
+(<a href="../tool-dispatcher/"><code>tool-dispatcher.md</code></a>) allows multiple tool calls
+to run in parallel within a single turn. A planner emitting four
+<code>delegate()</code> calls in one assistant message could spawn four worker
+sessions concurrently.</p>
+<p>v1: allowed, no explicit cap. The cap that exists in practice is the
+tool dispatcher's per-turn concurrent-tool limit. Worker sessions
+contribute to that limit equally with other tools. Whether to add a
+per-turn <code>max_concurrent_workers</code> knob is a Phase-4 polish question.</p>
+<h3 id="144-streaming-worker-output-to-the-planner">14.4 Streaming worker output to the planner<a class="headerlink" href="#144-streaming-worker-output-to-the-planner" title="Permanent link">&para;</a></h3>
+<p>The planner currently waits for the worker to fully complete. A
+streaming worker that emits partial output to the planner mid-execution
+would change the loop in ways the canonical message format doesn't yet
+model (a tool result that's a partial state). This is
+<a href="../streaming-protocol/"><code>streaming-protocol.md §12.2</code></a>'s open question
+and is mirrored here. v1: blocking.</p>
+<h3 id="145-worker-wall-clock-timeout">14.5 Worker wall-clock timeout<a class="headerlink" href="#145-worker-wall-clock-timeout" title="Permanent link">&para;</a></h3>
+<p>Should <code>delegate()</code> accept a <code>timeout_seconds</code> argument that cancels the
+worker if exceeded? The cost cap (<code>max_tokens</code>) bounds spend but not
+wall time. v1: no, deferred. Add only if real workloads hit
+wall-time-runaway scenarios.</p>
+<h3 id="146-router-decided-delegation">14.6 Router-decided delegation<a class="headerlink" href="#146-router-decided-delegation" title="Permanent link">&para;</a></h3>
+<p>Should the routing engine, observing a <code>TurnContext</code> with
+<code>tool_call_count_projected &gt; N</code> or
+<code>estimated_input_tokens &gt; M</code>, decide on its own that the <em>whole turn</em>
+should be a worker session? This would be a new slot 5 mode where slot
+5 fires <em>outside</em> a delegate-tool call — i.e., the engine wraps the
+turn in delegation without the LLM asking.</p>
+<p>v1: no. The user prompt requested this be considered. The argument
+against:</p>
+<ul>
+<li>The planner LLM is the only entity with enough context to decide what
+  to delegate vs. do inline. A predicate-based router can't tell
+  "refactor this auth flow" from "rename this variable in src/auth.ts."</li>
+<li>A router-decided slot 5 would silently change which model handles a
+  user-facing turn — exactly the failure mode <code>routing-engine.md §4.2</code>
+  defends against ("user intent prevails over system suggestions").</li>
+</ul>
+<p>The argument for: it could rescue users whose planners don't reliably
+emit <code>delegate()</code> calls. Phase 4 may revisit; v1 deliberately makes the
+planner the only delegation-decider.</p>
+<h3 id="147-worker-prompt-always-answers-persisting-to-trustyaml">14.7 Worker-prompt "always" answers persisting to trust.yaml<a class="headerlink" href="#147-worker-prompt-always-answers-persisting-to-trustyaml" title="Permanent link">&para;</a></h3>
+<p>§13 conservatively suppresses persistence from worker prompts. Whether
+to lift the restriction (and how to surface to the user that a worker
+asked for the policy change, not the planner) is an open ergonomics
+question.</p>
+<h3 id="148-tier-name-configurability">14.8 Tier name configurability<a class="headerlink" href="#148-tier-name-configurability" title="Permanent link">&para;</a></h3>
+<p><a href="../routing-engine/"><code>routing-engine.md §6.10</code></a> hardcodes the tier names
+<code>fast</code> / <code>balanced</code> / <code>deep</code>. Some buyers may want richer taxonomies
+(<code>code</code> / <code>math</code> / <code>agent</code> tiers). v1: hardcoded; Phase 4+ may surface.</p>
+<h3 id="149-worker-history-visibility">14.9 Worker history visibility<a class="headerlink" href="#149-worker-history-visibility" title="Permanent link">&para;</a></h3>
+<p><a href="../routing-engine/"><code>routing-engine.md §6.2.2</code></a> hides workers from
+<code>/history</code> by default with <code>--include-workers</code> opt-in. Whether the
+dashboard's session-list view defaults to including or excluding
+workers is a UX choice the spec doesn't pin; the API surface
+(<code>GET /sessions?include_workers=true</code>) is in
+<a href="../server-api/"><code>server-api.md</code></a>.</p>
+<hr />
+<h2 id="15-decision-log">15. Decision log<a class="headerlink" href="#15-decision-log" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Decision</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-05-14</td>
+<td>Delegation is opt-in; default registry has <code>can_delegate: false</code> on fast</td>
+<td>Buyers without multi-step workloads shouldn't see the surface; savings story holds without it.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Worker = full session, not a special LLM call</td>
+<td>Re-uses canonical IR, context assembler, tool dispatcher, trace catalog. Smallest implementation surface.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Worker workspace = planner workspace; no sandbox subdirectory</td>
+<td>Trust unit is the workspace. Copy-on-write filesystem semantics are out of scope for v1.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Workers read-only against MEMORY.md / USER.md / skills / routing config</td>
+<td>Planner has broader context; sub-tasks shouldn't mutate durable system state the planner is reasoning about.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Workers cannot delegate (no <code>delegate</code> tool registered)</td>
+<td>Prevents recursion and fan-out cost explosions. Bounded recursion deferred to a future phase.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Slot 4 (pattern) always defers inside worker re-entry</td>
+<td>Planner's explicit <code>tier=</code> is an intentional cost/quality choice that learned patterns shouldn't override silently.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Slot 5 always present in the chain; reports <code>not_applicable</code> outside delegation</td>
+<td>Chain shape is fixed for trace uniformity; uniform predicates win over per-session chain shapes.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Worker terminal turn scored by evaluator independently; parent session rubric folds in delegate success</td>
+<td>Avoids double-counting transitive worker scores into the parent's turn score, which would distort the savings story.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Worker cost lands on worker's <code>llm.call_completed</code>; <code>delegate.completed.worker_total_cost_usd</code> is derived</td>
+<td>Single source of truth (<code>llm.call_completed</code>) avoids drift on re-pricing.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Top-down cancellation cascades atomically (planner → in-flight workers)</td>
+<td>Matches <code>streaming-protocol.md §6.4</code>; user-visible terminator is the planner's <code>turn.cancelled</code>.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Worker confirmation handler inherits planner's; "always" answers from worker prompts do NOT persist to trust.yaml in v1</td>
+<td>Conservative default — user is approving a worker sub-task, not a workspace-wide policy. Open question (§14.7).</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>One worker per <code>delegate()</code> call; planner fan-out via multiple tool calls</td>
+<td>Existing tool-dispatcher concurrency model handles fan-out; no new contract needed.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Worker streaming back to planner deferred (blocking only in v1)</td>
+<td>Partial tool-result state isn't modeled in the canonical IR; deferred per <code>streaming-protocol.md §12.2</code>.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Router-decided delegation (slot 5 firing outside <code>delegate()</code> call) deferred</td>
+<td>Predicate-based routing can't distinguish "delegate-worthy" sub-tasks from non-delegatable ones; the LLM has the context.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td><code>delegate.started</code> gains additive <code>allowed_tool_count</code> and <code>dropped_tools</code> fields</td>
+<td>Lets the dashboard explain why a worker behaved as if it had fewer tools than the planner asked for.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="16-references">16. References<a class="headerlink" href="#16-references" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../routing-engine/"><code>routing-engine.md §6</code></a> — canonical <code>delegate()</code>
+  tool signature, tier resolution, slot 5 re-entry, <code>InsufficientContextRequest</code>
+  schema, <code>can_delegate</code> flag.</li>
+<li><a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §6.8</code></a> — Phase-4
+  <code>delegate.started</code> / <code>delegate.completed</code> / <code>delegate.failed</code> payload schemas;
+  <code>Actor.WORKER</code>; <code>is_worker</code> on <code>llm.call_started</code>.</li>
+<li><a href="../streaming-protocol/"><code>streaming-protocol.md §6.4 + §7</code></a> — cancellation
+  cascade across parent + worker; <code>include_worker_sessions</code> subscribe filter;
+  direct worker WebSocket attach.</li>
+<li><a href="../server-api/"><code>server-api.md</code></a> — <code>is_worker</code> / <code>parent_session_id</code> fields
+  on session records; <code>include_workers</code> query parameter on <code>GET /sessions</code>.</li>
+<li><a href="../canonical-message-format/"><code>canonical-message-format.md §9.1</code></a> — Session
+  schema; the additive <code>parent_session_id</code> / <code>parent_tool_use_id</code> / <code>is_worker</code>
+  columns.</li>
+<li><a href="../pattern-store/"><code>pattern-store.md</code></a> — worker writes its own fingerprint
+  row; parent_session_id is not projected into the fingerprint.</li>
+<li><a href="../evaluator/"><code>evaluator.md §5.6 + §6.1</code></a> — worker terminal turn scored
+  independently; parent session rubric folds in <code>delegate.completed.success</code>.</li>
+<li><a href="../tool-dispatcher/"><code>tool-dispatcher.md</code></a> — registration, confirmation
+  policy inheritance, per-turn concurrent-tool contract.</li>
+<li><a href="../context-assembler/"><code>context-assembler.md §5</code></a> — worker's system prompt
+  assembled by the same path as planner's, including MEMORY.md / USER.md / skill
+  index.</li>
+<li><a href="../../STRATEGY/"><code>STRATEGY.md §4</code></a> — the third lever (planner→worker
+  delegation) in the cost-optimisation thesis.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../tool-dispatcher/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Tool dispatcher">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Tool dispatcher
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../pricing/" class="md-footer__link md-footer__link--next" aria-label="Next: Pricing">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Pricing
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/2sumAI/metis" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "navigation.footer", "search.highlight", "search.share", "search.suggest", "content.action.edit", "content.action.view", "content.code.copy", "content.code.annotate", "content.tabs.link", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

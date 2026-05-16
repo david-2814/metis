@@ -148,6 +148,7 @@ AUDIT_EVENT_TYPES: frozenset[str] = frozenset({
     "gateway.key_revoked",
     "gateway.key_rotated",
     "gateway.quota_exceeded",
+    "gateway.auth_failed",        # Wave 14a — credential-stuffing forensics
     "quota.alert",
     "routing.policy_invalid",
     "memory.eviction",

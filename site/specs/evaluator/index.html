@@ -1,0 +1,5749 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Local-first AI dev agent — provider-agnostic, self-improving, cost-aware. Canonical message format, layered routing, bounded memory, transparent cost attribution.">
+      
+      
+        <meta name="author" content="Metis maintainers">
+      
+      
+        <link rel="canonical" href="https://docs.metis.dev/specs/evaluator/">
+      
+      
+        <link rel="prev" href="../deployment-shape/">
+      
+      
+        <link rel="next" href="../benchmark/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Evaluator - Metis</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#evaluator-specification" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Metis" class="md-header__button md-logo" aria-label="Metis" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Metis
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Evaluator
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/2sumAI/metis" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    2sumAI/metis
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../project-overview/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../canonical-message-format/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Specs
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../operations/quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../STRATEGY/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Strategy
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Metis" class="md-nav__button md-logo" aria-label="Metis" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Metis
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/2sumAI/metis" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    2sumAI/metis
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project-overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    First savings number
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../customer-trial-recipe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customer trial recipe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gateway-client-quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway client quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../savings-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Savings demo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../standard-model-profiles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Standard model profiles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Specs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_1" id="__nav_3_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Foundation
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Foundation
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../canonical-message-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Canonical message format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../event-bus-and-trace-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Event bus & trace catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project-overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project overview (spec)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_2" id="__nav_3_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing & adapters
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Routing & adapters
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../routing-engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../provider-adapter-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Provider adapter contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-dispatcher/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool dispatcher
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../delegation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Delegation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pricing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pricing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_3" id="__nav_3_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sessions & memory
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sessions & memory
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../memory-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../context-assembler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context assembler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pattern-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pattern store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skill-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skill-curator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill curator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server & gateway
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Server & gateway
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../server-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../streaming-protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gateway-hardening/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway hardening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multi-user/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-user
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment-shape/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment shape
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3_5" id="__nav_3_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quality & evidence
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Quality & evidence
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluator
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Purpose
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-goals-and-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Goals and non-goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Goals and non-goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Non-goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-what-the-evaluator-evaluates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. What the evaluator evaluates
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-the-verdict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. The verdict
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. The verdict">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Shape
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-the-score-field" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 The score field
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-the-confidence-field" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 The confidence field
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-the-signals-dict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 The signals dict
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-the-judge_cost_usd-field" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 The judge_cost_usd field
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-re-evaluation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 Re-evaluation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-the-judge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. The judge
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. The judge">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-turn-heuristic-rubric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Turn heuristic rubric
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-llm-as-judge-rubric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 LLM-as-judge rubric
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-hybrid-escalation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Hybrid escalation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-workload-rubric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Workload rubric
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-tool-cycle-rubric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Tool-cycle rubric
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#56-session-rubric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.6 Session rubric
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-when-the-evaluator-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. When the evaluator runs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. When the evaluator runs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-bus-subscriber-online" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 Bus subscriber (online)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62-batch-re-evaluation-offline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 Batch re-evaluation (offline)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#63-no-mid-turn-evaluation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.3 No mid-turn evaluation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-budget-and-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Budget and safety
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-events" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Events
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Events">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-evalstarted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 eval.started
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#82-evalcompleted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.2 eval.completed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#83-evalfailed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.3 eval.failed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#84-sensitivity-classifications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.4 Sensitivity classifications
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-analytics-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Analytics surface
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Analytics surface">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-get-analyticscost-additive-include_eval-parameter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 GET /analytics/cost — additive include_eval parameter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92-get-analyticsquality" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 GET /analytics/quality
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#93-drill-down-turn-analytics-gains-an-evaluations-field" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.3 Drill-down: turn analytics gains an evaluations field
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#94-negative-space" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.4 Negative space
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-the-feedback-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. The feedback loop
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="11. The feedback loop">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#111-pattern-store-slot-4-of-the-routing-chain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.1 Pattern store (slot 4 of the routing chain)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#112-analytics-driven-escalation-phase-3-surface-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.2 Analytics-driven escalation (Phase 3+, surface only)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#113-benchmark-headline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.3 Benchmark headline
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-invariants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Invariants
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13-open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. Open questions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14-testing-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. Testing strategy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="14. Testing strategy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#141-required-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.1 Required tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#142-property-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.2 Property tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#15-coordinates-with-pattern-storemd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        15. Coordinates with pattern-store.md
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="15. Coordinates with pattern-store.md">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#151-closed-coordination-items" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        15.1 Closed coordination items
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#16-decision-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        16. Decision log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#17-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        17. References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmark
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../analytics-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Analytics API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_6" id="__nav_3_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compliance & retention
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Compliance & retention
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../audit-log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Audit log
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../trace-retention/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trace retention
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../redaction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Redaction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CHANGES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Change log
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    First savings number
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gateway-deployment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/upgrade-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrade guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/incident-response/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Incident response
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/observability-runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/status-page/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status page
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/sla-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLA template
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/trace-performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trace performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/concierge-onboarding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concierge onboarding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/ga-readiness-audit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GA readiness audit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/compliance-overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compliance overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/soc2-readiness/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SOC2 readiness
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/phase-claim-proposal/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Phase claim proposal
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Strategy
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Strategy
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../KNOWN_ISSUES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Known issues
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_3" id="__nav_5_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sales
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sales
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/one-pager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    One-pager
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Buyer FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/competitive-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Competitive comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/objection-handling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Objection handling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/case-study-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Case study template
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_4" id="__nav_5_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Market research
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Market research
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/synthesis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Synthesis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/01-coding-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coding agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/02-local-first-platforms/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local-first platforms
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/03-routing-layers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing layers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/04-skills-and-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills & memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Purpose
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-goals-and-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Goals and non-goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Goals and non-goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Non-goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-what-the-evaluator-evaluates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. What the evaluator evaluates
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-the-verdict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. The verdict
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. The verdict">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-shape" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Shape
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-the-score-field" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 The score field
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-the-confidence-field" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 The confidence field
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-the-signals-dict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 The signals dict
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-the-judge_cost_usd-field" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 The judge_cost_usd field
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-re-evaluation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 Re-evaluation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-the-judge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. The judge
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. The judge">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-turn-heuristic-rubric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Turn heuristic rubric
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-llm-as-judge-rubric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 LLM-as-judge rubric
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-hybrid-escalation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Hybrid escalation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-workload-rubric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Workload rubric
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-tool-cycle-rubric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Tool-cycle rubric
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#56-session-rubric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.6 Session rubric
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-when-the-evaluator-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. When the evaluator runs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. When the evaluator runs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#61-bus-subscriber-online" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.1 Bus subscriber (online)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#62-batch-re-evaluation-offline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.2 Batch re-evaluation (offline)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#63-no-mid-turn-evaluation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6.3 No mid-turn evaluation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-budget-and-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Budget and safety
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-events" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Events
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Events">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-evalstarted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 eval.started
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#82-evalcompleted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.2 eval.completed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#83-evalfailed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.3 eval.failed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#84-sensitivity-classifications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.4 Sensitivity classifications
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-analytics-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Analytics surface
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Analytics surface">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-get-analyticscost-additive-include_eval-parameter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 GET /analytics/cost — additive include_eval parameter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92-get-analyticsquality" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 GET /analytics/quality
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#93-drill-down-turn-analytics-gains-an-evaluations-field" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.3 Drill-down: turn analytics gains an evaluations field
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#94-negative-space" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.4 Negative space
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-the-feedback-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. The feedback loop
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="11. The feedback loop">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#111-pattern-store-slot-4-of-the-routing-chain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.1 Pattern store (slot 4 of the routing chain)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#112-analytics-driven-escalation-phase-3-surface-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.2 Analytics-driven escalation (Phase 3+, surface only)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#113-benchmark-headline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11.3 Benchmark headline
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-invariants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Invariants
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13-open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. Open questions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14-testing-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. Testing strategy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="14. Testing strategy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#141-required-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.1 Required tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#142-property-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.2 Property tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#15-coordinates-with-pattern-storemd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        15. Coordinates with pattern-store.md
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="15. Coordinates with pattern-store.md">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#151-closed-coordination-items" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        15.1 Closed coordination items
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#16-decision-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        16. Decision log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#17-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        17. References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/2sumAI/metis/edit/main/docs/specs/evaluator.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20.71 7.04c.39-.39.39-1.04 0-1.41l-2.34-2.34c-.37-.39-1.02-.39-1.41 0l-1.84 1.83 3.75 3.75M3 17.25V21h3.75L17.81 9.93l-3.75-3.75z"/></svg>
+    </a>
+  
+  
+    
+      
+    
+    <a href="https://github.com/2sumAI/metis/raw/main/docs/specs/evaluator.md" title="View source of this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0 8a5 5 0 0 1-5-5 5 5 0 0 1 5-5 5 5 0 0 1 5 5 5 5 0 0 1-5 5m0-12.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5"/></svg>
+    </a>
+  
+
+
+<h1 id="evaluator-specification">Evaluator Specification<a class="headerlink" href="#evaluator-specification" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> v1 (heuristic + LLM + hybrid tiers shipped)
+<strong>Last updated:</strong> 2026-05-14</p>
+<blockquote>
+<p>Defines the feedback loop that turns "was this turn successful?" into a
+recorded signal the pattern store and the analytics surface can read. This
+closes the open question in <a href="../../STRATEGY/"><code>STRATEGY.md §6.7</code></a>: without an
+evaluator, "is the system actually saving money vs naive sonnet-everywhere?"
+stays an open question forever — savings without quality is just a smaller
+bill for worse work.</p>
+<p>v1 is heuristics-first with an opt-in LLM-as-judge tier. No labeled
+training data, no fine-tuned classifier, no SaaS dependency. The judge
+outputs a numeric <code>score</code> in <code>[0, 1]</code> with a <code>confidence</code>, written as a
+bus event so every consumer (pattern store, <code>/analytics/*</code>, the dashboard)
+reads from the same record.</p>
+</blockquote>
+<hr />
+<h2 id="1-purpose">1. Purpose<a class="headerlink" href="#1-purpose" title="Permanent link">&para;</a></h2>
+<p>The build records <em>spend</em> honestly today: <code>llm.call_completed.cost_usd</code> is
+stamped at write time, <code>/analytics/savings</code> re-prices the counterfactual,
+<a href="../benchmark/"><code>benchmark.md</code></a> bounds the workload. None of that proves the
+agent's <em>output</em> was good — and the savings-vs-naive-sonnet pitch collapses
+the moment a buyer asks "how do you know haiku produced an answer worth
+keeping?"</p>
+<p>The evaluator answers that question. It consumes the events already in the
+bus (<code>turn.completed</code>, <code>tool.completed</code>, <code>feedback.*</code>, <code>route.decided</code>) and
+emits a <em>verdict</em> per subject — turn, tool cycle, session, or benchmark
+workload. The verdict is a single numeric score with a confidence and the
+provenance of the judge that produced it.</p>
+<p>This spec depends on:</p>
+<ul>
+<li><a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md</code></a> for the
+  events the evaluator subscribes to (<code>turn.completed</code>, <code>tool.completed</code>,
+  <code>tool.failed</code>, <code>feedback.explicit</code>, <code>feedback.implicit</code>, <code>route.decided</code>)
+  and the catalog the new <code>eval.*</code> events join.</li>
+<li><a href="../canonical-message-format/"><code>canonical-message-format.md §9.1</code></a> for the
+  trace store schema the evaluator reads and writes through.</li>
+<li><a href="../analytics-api/"><code>analytics-api.md</code></a> for the projection conventions the
+  new <code>/analytics/quality</code> endpoint follows.</li>
+<li><a href="../benchmark/"><code>benchmark.md §2.2</code></a> for the v1 limitation this spec closes
+  (quality scoring deferred to the evaluator).</li>
+<li><a href="../routing-engine/"><code>routing-engine.md §5.5</code></a> for the pattern store's
+  consumption shape (<code>success_score</code> in <code>[0, 1]</code>, weighted with cost).</li>
+</ul>
+<p>This spec coordinates with the planned <a href="../pattern-store/"><code>pattern-store.md</code></a>
+(drafted in parallel; see §15). Touchpoints are listed there so the two specs
+reconcile before either implementation lands.</p>
+<hr />
+<h2 id="2-goals-and-non-goals">2. Goals and non-goals<a class="headerlink" href="#2-goals-and-non-goals" title="Permanent link">&para;</a></h2>
+<h3 id="21-goals">2.1 Goals<a class="headerlink" href="#21-goals" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Closes STRATEGY.md §6.7.</strong> Every turn (and every workload run, and
+   every flagged tool cycle) yields a recorded verdict. "Is the system saving
+   money on tasks that succeeded?" becomes a join, not a guess.</li>
+<li><strong>Heuristic floor, LLM ceiling.</strong> v1 ships heuristic judges that cost
+   $0/turn and a hybrid escalation tier where an LLM-as-judge is invoked only
+   when the heuristic's confidence is below a threshold. The expensive judge
+   is <em>opt-in</em>, not the default.</li>
+<li><strong>Re-evaluatable.</strong> Every verdict is a record, not a mutation. Re-running
+   the evaluator over an older window produces <em>new</em> verdicts joined to the
+   same subjects — the dashboard's "evaluator agreement rate over time" tile
+   (<a href="#92-analytics-quality">§9.2</a>) is a query, not a side-table.</li>
+<li><strong>Single-user / local-first.</strong> Workspace-scoped by default per
+   <a href="../../STRATEGY/"><code>STRATEGY.md §2</code></a>; the verdict store lives next to the
+   trace store. No external service, no labeling pipeline.</li>
+<li><strong>Budget-explicit.</strong> LLM-as-judge calls cost money. The evaluator's
+   own spend is recorded (<code>eval.completed.judge_cost_usd</code>), capped per
+   session and per day, and surfaced under
+   <code>/analytics/cost?group_by=model&amp;include_eval=true</code> so an operator can see
+   "how much did the judge cost vs how much did it save."</li>
+<li><strong>Bus-as-spine.</strong> Output is <code>eval.started</code> / <code>eval.completed</code> /
+   <code>eval.failed</code> on the existing bus. No private side-channels; every
+   consumer is a normal subscriber.</li>
+<li><strong>Verdict shape is small and stable.</strong> The numeric <code>score</code> is a single
+   field, so the pattern store (<a href="../routing-engine/">routing-engine.md §5.5</a>)
+   plugs in without bespoke aggregation. Multi-dimensional rubrics are an
+   <em>additive</em> extension under <code>signals</code> — never a breaking change to the
+   score field.</li>
+</ol>
+<h3 id="22-non-goals">2.2 Non-goals<a class="headerlink" href="#22-non-goals" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>No supervised training, no labeled corpus.</strong> The single-user local
+   deployment has no labeling pipeline. Calibration is by self-consistency
+   (the agreement-rate view) and by spot-check against
+   <a href="../benchmark/"><code>benchmark.md</code></a> workloads with hand-asserted expectations,
+   not by fitting a model to a labeled set.</li>
+<li><strong>No quality scoring inside the routing chain.</strong> The evaluator runs
+   <em>after</em> <code>turn.completed</code>. Routing decisions for the <em>current</em> turn still
+   come from the chain in <a href="../routing-engine/"><code>routing-engine.md §4</code></a>. Verdicts
+   feed the <strong>pattern store</strong> (slot 4) which influences <em>future</em> turns —
+   never the current one. This preserves the turn-locked model invariant
+   (<a href="../../AGENTS.md"><code>AGENTS.md</code> "Gotchas"</a>).</li>
+<li><strong>No verdict overriding the user.</strong> A low score never silently degrades
+   the user's chosen model, never auto-escalates mid-turn, never refuses to
+   route. The evaluator is an observer; the user (or a future
+   pattern-disagreement banner per
+   <a href="../routing-engine/"><code>routing-engine.md §5.6</code></a>) is the actor.</li>
+<li><strong>No real-time LLM-as-judge in v1.</strong> The heuristic judge is fast-enough
+   to run inline on the <code>turn.completed</code> event. The LLM judge runs out-of-band
+   (batch / on-demand), not on the fast path. Promotion to a faster tier is
+   a §13 open question.</li>
+<li><strong>No multi-judge ensembling.</strong> v1 picks one judge per verdict and records
+   it. Ensembling (running two judges and combining their scores) is
+   tempting and a v2 question.</li>
+<li><strong>No quality scoring of <em>intermediate model output</em> (tokens
+   mid-stream).</strong> The judge sees the completed turn / cycle / session — the
+   atomic unit. Token-level scoring is a different research project.</li>
+<li><strong>No remote / multi-tenant rollups.</strong> Per
+   <a href="../../STRATEGY/"><code>STRATEGY.md §2</code></a>; deferred until the gateway path
+   (<a href="../deployment-shape/"><code>deployment-shape.md</code></a>) needs it.</li>
+</ol>
+<hr />
+<h2 id="3-what-the-evaluator-evaluates">3. What the evaluator evaluates<a class="headerlink" href="#3-what-the-evaluator-evaluates" title="Permanent link">&para;</a></h2>
+<p>The evaluator produces a verdict per <em>subject</em>. Four subject kinds, ordered
+by inclusion (each kind is the next-level aggregation of the prior):</p>
+<table>
+<thead>
+<tr>
+<th>Subject kind</th>
+<th>Identifier</th>
+<th>Bus trigger</th>
+<th>Typical judge</th>
+<th>v1?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>turn</code></td>
+<td><code>turn_id</code></td>
+<td><code>turn.completed</code></td>
+<td>heuristic; LLM optional</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>tool_cycle</code></td>
+<td><code>tool_use_id</code></td>
+<td><code>tool.completed</code> / <code>tool.failed</code></td>
+<td>heuristic only</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>session</code></td>
+<td><code>session_id</code></td>
+<td><code>session.ended</code></td>
+<td>heuristic-over-turns aggregation</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>workload</code></td>
+<td><code>workload_run_id</code></td>
+<td>benchmark harness final report</td>
+<td>heuristic + optional LLM</td>
+<td>yes</td>
+</tr>
+</tbody>
+</table>
+<p>A <code>tool_cycle</code> verdict scopes <em>one</em> tool invocation — did the dispatch
+return a useful result, or did the agent re-call the same tool with different
+arguments three calls later (tool thrash)? Tool-cycle verdicts roll up into
+the parent turn verdict's <code>signals</code> but do <em>not</em> arithmetic-average into
+the turn <code>score</code>; the heuristic rubric (<a href="#51-turn-heuristic-rubric">§5.1</a>)
+decides how much weight each signal carries.</p>
+<p>A <code>session</code> verdict is the per-turn weighted average plus session-scoped
+signals (explicit feedback, manual <code>/model</code> swaps inside the session, etc.).</p>
+<p>A <code>workload</code> verdict subsumes <a href="../benchmark/"><code>benchmark.md §2.2.2</code></a>'s "no
+quality scoring in v1" gap. The benchmark harness calls the evaluator with
+<code>subject_kind=workload</code> after the suite run; the workload-level rubric is
+defined per workload in <code>workload.yaml</code> (<a href="#54-workload-rubric">§5.4</a>).</p>
+<p><strong>No mid-turn evaluation.</strong> The evaluator never fires inside a turn. A turn
+that's still running has no <code>turn.completed</code> event yet, so the subscription
+filter never matches it. This is what keeps the evaluator off the fast path
+and out of the turn-locked model contract.</p>
+<hr />
+<h2 id="4-the-verdict">4. The verdict<a class="headerlink" href="#4-the-verdict" title="Permanent link">&para;</a></h2>
+<h3 id="41-shape">4.1 Shape<a class="headerlink" href="#41-shape" title="Permanent link">&para;</a></h3>
+<p><code>EvalVerdict</code> is a <code>msgspec.Struct(frozen=True)</code> carried as the payload of
+<code>eval.completed</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">EvalVerdict</span><span class="p">(</span><span class="n">msgspec</span><span class="o">.</span><span class="n">Struct</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">eval_id</span><span class="p">:</span> <span class="nb">str</span>                                    <span class="c1"># monotonic ULID</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">subject_kind</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;turn&quot;</span><span class="p">,</span> <span class="s2">&quot;tool_cycle&quot;</span><span class="p">,</span> <span class="s2">&quot;session&quot;</span><span class="p">,</span> <span class="s2">&quot;workload&quot;</span><span class="p">]</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">subject_id</span><span class="p">:</span> <span class="nb">str</span>                                 <span class="c1"># turn_id / tool_use_id / session_id / workload_run_id</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">score</span><span class="p">:</span> <span class="nb">float</span>                                    <span class="c1"># in [0.0, 1.0]; 1.0 = clear success, 0.0 = clear failure</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">confidence</span><span class="p">:</span> <span class="nb">float</span>                               <span class="c1"># in [0.0, 1.0]; judge&#39;s confidence in `score`</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">judge_kind</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;heuristic&quot;</span><span class="p">,</span> <span class="s2">&quot;llm&quot;</span><span class="p">,</span> <span class="s2">&quot;hybrid&quot;</span><span class="p">]</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">judge_model</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>                         <span class="c1"># canonical id when llm or hybrid used the LLM tier; else None</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">judge_cost_usd</span><span class="p">:</span> <span class="n">Decimal</span>                         <span class="c1"># 0 for heuristic; &gt; 0 for llm/hybrid</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">judge_pricing_version</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>               <span class="c1"># set when judge_cost_usd &gt; 0</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">judge_latency_ms</span><span class="p">:</span> <span class="nb">int</span>                           <span class="c1"># wall time for this verdict alone</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">rubric_id</span><span class="p">:</span> <span class="nb">str</span>                                  <span class="c1"># which rubric produced this (e.g. &quot;turn-heuristic-v1&quot;)</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="n">rubric_version</span><span class="p">:</span> <span class="nb">str</span>                             <span class="c1"># rubric&#39;s own version string</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="n">signals</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">object</span><span class="p">]</span>                      <span class="c1"># judge-specific evidence (see §4.4)</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    <span class="n">parent_eval_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>                      <span class="c1"># for tool_cycle → turn / turn → session rollups</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="n">created_at</span><span class="p">:</span> <span class="nb">str</span>                                 <span class="c1"># ISO 8601 UTC</span>
+</span></code></pre></div>
+<h3 id="42-the-score-field">4.2 The <code>score</code> field<a class="headerlink" href="#42-the-score-field" title="Permanent link">&para;</a></h3>
+<p><code>score</code> is a single number in <code>[0.0, 1.0]</code>. Higher is better. This shape is
+deliberate:</p>
+<ul>
+<li>The pattern store's
+  (<a href="../routing-engine/"><code>routing-engine.md §5.5</code></a>) <code>normalized_success_M</code>
+  formula expects <code>success_score</code> in <code>[0, 1]</code>. One number, one consumer
+  contract.</li>
+<li>Multi-dimensional rubrics (correctness × completeness × verbosity × …)
+  are expressible as <code>signals</code> and <em>collapse</em> to one <code>score</code> via the
+  rubric's own weights. The rubric is versioned (<code>rubric_version</code>) so a
+  weight change is observable as a new score series.</li>
+<li>Single numbers compose. Session score = weighted average of turn scores.
+  Workload score = weighted average of session scores. Multi-dimensional
+  scores require a per-dimension policy at every join — needless complexity
+  for v1.</li>
+</ul>
+<p>The "score is one number" rule is the <strong>only</strong> structural commitment to the
+pattern store consumer. Everything else under <code>signals</code> is judge-internal
+and may evolve without breaking routing.</p>
+<h3 id="43-the-confidence-field">4.3 The <code>confidence</code> field<a class="headerlink" href="#43-the-confidence-field" title="Permanent link">&para;</a></h3>
+<p><code>confidence</code> is the judge's stated confidence in the score it produced.
+Distinct from the score:</p>
+<ul>
+<li>A heuristic judge with all signals firing cleanly (no <code>tool.failed</code>, no
+  <code>manual_swap</code> follow-up, <code>stop_reason=end_turn</code>, low retry similarity)
+  emits high <code>confidence</code> even when the heuristic's rubric is coarse — it's
+  saying "the signals I have are unambiguous."</li>
+<li>A heuristic judge with conflicting signals (stop_reason clean but a
+  <code>feedback.implicit.type=retry</code> followed) emits low <code>confidence</code> — "I see
+  the signal but I'm not sure how to read it."</li>
+<li>An LLM judge emits a <code>confidence</code> that reflects its own self-reported
+  certainty (rubric-prompted; see <a href="#52-llm-as-judge-rubric">§5.2</a>).</li>
+</ul>
+<p>Confidence is a <em>gate</em>, not a score modifier. Consumers (pattern store,
+analytics) filter by confidence threshold before aggregating. The score
+itself is not down-weighted by confidence — that would conflate two distinct
+signals.</p>
+<p><strong>Routing-side gate.</strong> The pattern store <strong>ignores</strong> verdicts with
+<code>confidence &lt; pattern.min_eval_confidence</code> (default <code>0.5</code>, configured per
+the planned <a href="../pattern-store/"><code>pattern-store.md</code></a> — see §15). Low-confidence
+verdicts still record (for the agreement-rate view) but don't drive routing.</p>
+<h3 id="44-the-signals-dict">4.4 The <code>signals</code> dict<a class="headerlink" href="#44-the-signals-dict" title="Permanent link">&para;</a></h3>
+<p>Free-form, judge-specific evidence. Stable conventions:</p>
+<ul>
+<li>Keys are snake_case strings.</li>
+<li>Values are JSON-roundtrippable (no Decimal, no objects). Numeric weights
+  belong in the rubric, not in signals.</li>
+<li>Required-by-convention keys per judge_kind:</li>
+<li><strong>Heuristic:</strong> <code>flags: list[str]</code> — the heuristic flags that fired
+    (e.g. <code>["stop_reason_clean", "no_tool_failure"]</code>). <code>flags_negative:
+    list[str]</code> for flags that fired <em>against</em> the subject.</li>
+<li><strong>LLM:</strong> <code>rationale_hash: str</code> (SHA-256 of the judge's natural-language
+    rationale), <code>rationale_redacted: str | None</code> (populated only on opt-in,
+    similar to <code>turn.started.user_message_text_redacted</code> per
+    <a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §4.4.1</code></a>).</li>
+<li><strong>Hybrid:</strong> <code>heuristic_score: float</code>, <code>heuristic_confidence: float</code>,
+    <code>escalated: bool</code>, plus the LLM keys if <code>escalated</code>.</li>
+</ul>
+<p><code>signals</code> is opaque to the score; it exists for the audit trail and for
+re-evaluation (the next time this subject is judged, the new judge can see
+what the prior signals were).</p>
+<h3 id="45-the-judge_cost_usd-field">4.5 The <code>judge_cost_usd</code> field<a class="headerlink" href="#45-the-judge_cost_usd-field" title="Permanent link">&para;</a></h3>
+<p><code>Decimal</code>, computed via the existing <code>PriceTable.compute_cost</code>
+(<a href="../../packages/metis-core/src/metis_core/pricing/table.py">pricing/table.py</a>),
+stamped with <code>judge_pricing_version</code>. Same convention as
+<a href="../canonical-message-format/"><code>canonical-message-format.md §6.4</code></a>: aggregate
+in <code>Decimal</code>, serialize as JSON number with 6 decimal places at the wire
+boundary per <a href="../analytics-api/"><code>analytics-api.md §5.1</code></a>.</p>
+<p>For heuristic judges, <code>judge_cost_usd</code> is exactly <code>Decimal("0")</code> and
+<code>judge_pricing_version</code> is <code>None</code>. This is deliberate — pricing semantics
+don't apply to code that did no inference.</p>
+<h3 id="46-re-evaluation">4.6 Re-evaluation<a class="headerlink" href="#46-re-evaluation" title="Permanent link">&para;</a></h3>
+<p>A subject may have <em>many</em> verdicts over time. Re-running the evaluator on
+a past <code>turn_id</code> produces a new <code>EvalVerdict</code> with a fresh <code>eval_id</code>; the
+old verdict is <strong>not</strong> replaced or invalidated. The verdict table is
+append-only by construction (it's the trace store) and the analytics
+projection queries it like any other event (<a href="#9-analytics-surface">§9</a>).</p>
+<p>The <code>(subject_kind, subject_id, eval_id)</code> triple is the natural sort key.
+"Latest verdict" is <code>ORDER BY eval_id DESC LIMIT 1</code> per subject.
+"Agreement rate" joins distinct verdicts across runs (<a href="#92-analytics-quality">§9.2</a>).</p>
+<p>This is why the verdict is on the bus, not a column on <code>turn.completed</code>:
+the latter would make re-evaluation a destructive operation.</p>
+<hr />
+<h2 id="5-the-judge">5. The judge<a class="headerlink" href="#5-the-judge" title="Permanent link">&para;</a></h2>
+<h3 id="51-turn-heuristic-rubric">5.1 Turn heuristic rubric<a class="headerlink" href="#51-turn-heuristic-rubric" title="Permanent link">&para;</a></h3>
+<p><code>rubric_id = "turn-heuristic-v1"</code>. Cost: $0. Latency: &lt;1ms.</p>
+<p>Inputs (all derived from events already in the trace store for <code>turn_id</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Signal name</th>
+<th>Source</th>
+<th>Direction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>stop_reason_clean</code></td>
+<td><code>turn.completed.stop_reason == "end_turn"</code></td>
+<td>positive</td>
+</tr>
+<tr>
+<td><code>no_llm_failure</code></td>
+<td>No <code>llm.call_failed</code> in turn</td>
+<td>positive</td>
+</tr>
+<tr>
+<td><code>no_tool_failure</code></td>
+<td>No <code>tool.failed</code> in turn (uncaught Python exception path)</td>
+<td>positive</td>
+</tr>
+<tr>
+<td><code>no_tool_exit_failure</code></td>
+<td>No <code>tool.completed</code> with <code>success=False</code> in turn (clean-exit-nonzero path; e.g. shell-tool nonzero return code)</td>
+<td>positive (strong; single failure must drop a clean turn's score by ≥0.3)</td>
+</tr>
+<tr>
+<td><code>no_max_tokens_hit</code></td>
+<td>No <code>llm.call_completed.stop_reason == "max_tokens"</code> in turn</td>
+<td>positive</td>
+</tr>
+<tr>
+<td><code>tool_cycle_count_reasonable</code></td>
+<td><code>turn.completed.tool_call_count</code> ≤ a configured threshold (default 20)</td>
+<td>positive</td>
+</tr>
+<tr>
+<td><code>assistant_refusal_detected</code></td>
+<td><code>signals_extra.final_response_text</code> begins with a refusal phrase (e.g. "I cannot help", "I'm unable to") within the first 160 chars</td>
+<td>negative (×0.5)</td>
+</tr>
+<tr>
+<td><code>empty_assistant_response</code></td>
+<td><code>signals_extra.final_response_text</code> is whitespace-only</td>
+<td>negative (×0.4)</td>
+</tr>
+<tr>
+<td><code>no_retry_implicit</code></td>
+<td>No <code>feedback.implicit.type == "retry"</code> whose <code>subject_turn_id == turn_id</code> within next 5 user messages</td>
+<td>positive</td>
+</tr>
+<tr>
+<td><code>no_manual_swap_after</code></td>
+<td>No <code>feedback.implicit.type == "manual_swap"</code> whose <code>subject_turn_id == turn_id</code></td>
+<td>positive</td>
+</tr>
+<tr>
+<td><code>no_edit_followup</code></td>
+<td>No <code>feedback.implicit.type == "edit_followup"</code> whose <code>subject_turn_id == turn_id</code></td>
+<td>positive</td>
+</tr>
+<tr>
+<td><code>explicit_thumbs_up</code></td>
+<td>A <code>feedback.explicit.rating == "thumbs_up"</code> with <code>subject_turn_id == turn_id</code></td>
+<td>positive (heavy weight)</td>
+</tr>
+<tr>
+<td><code>explicit_thumbs_down</code></td>
+<td>A <code>feedback.explicit.rating == "thumbs_down"</code> with <code>subject_turn_id == turn_id</code></td>
+<td>negative (heavy weight)</td>
+</tr>
+</tbody>
+</table>
+<p>The score is the rubric-weighted sum of fired signals normalized to
+<code>[0, 1]</code>. Concrete v1 weights are an implementation detail of the rubric
+file (<code>rubrics/turn-heuristic-v1.yaml</code>, not specified here); the <em>contract</em>
+is that the score is bounded and that explicit feedback dominates implicit
+signals dominates lifecycle signals.</p>
+<p><strong>Two distinct tool-failure signals.</strong> v1 distinguishes <code>tool.failed</code> (an
+uncaught Python exception raised inside a <code>Tool.execute</code> body — the
+dispatcher catches it and emits <code>tool.failed</code>) from <code>tool.completed</code> with
+<code>success=False</code> (the tool ran cleanly to completion but returned a
+non-success outcome — the canonical case is the shell tool reporting a
+non-zero exit code). Both are real failures from the agent's perspective;
+the rubric reads them as two independent gates so a shell tool that
+prints <code>"FAIL N/M"</code> and exits 1 (<code>success=False</code>, no exception) lowers
+the score by the same shape as an uncaught exception would. The
+<code>no_tool_exit_failure</code> weight is sized so that a single failed exit
+drops a clean turn's score by ≥0.3 and the resulting confidence below
+the v1 hybrid escalation threshold (0.7, see
+<a href="#53-hybrid-escalation">§5.3</a>), so <code>HybridJudge</code> escalates to the LLM
+judge on this class of failure without depending on assistant-text
+content signals.</p>
+<p><strong>Content penalty (opt-in).</strong> <code>assistant_refusal_detected</code> and
+<code>empty_assistant_response</code> apply as multiplicative penalties on the
+normalized score (×0.5 and ×0.4 respectively), not as weighted lifecycle
+signals. They fire only when the caller plumbs <code>final_response_text</code> via
+<code>SubjectContext.signals_extra</code>. The refusal regex is anchored to the
+first 160 chars of the stripped response so substantive answers that
+incidentally quote a refusal phrase don't false-positive.</p>
+<p><strong><code>signals_extra</code> contract.</strong> The session manager's
+<code>_emit_turn_completed</code> stamps three text keys onto
+<code>turn.completed.signals_extra</code> when the underlying string is non-empty
+(any missing string is omitted so the judge's "(not available)"
+fallback fires honestly):</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Source</th>
+<th>Reader</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>final_response_text</code></td>
+<td>last assistant text block in the turn</td>
+<td>heuristic content-penalty path (this section)</td>
+</tr>
+<tr>
+<td><code>assistant_response_text</code></td>
+<td>alias of <code>final_response_text</code></td>
+<td>LLM judge <code>_build_user_message</code> (see <a href="#52-llm-as-judge-rubric">§5.2</a>)</td>
+</tr>
+<tr>
+<td><code>user_prompt_text</code></td>
+<td>first text block of the persisted user message</td>
+<td>LLM judge <code>_build_user_message</code> (see <a href="#52-llm-as-judge-rubric">§5.2</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>The two assistant-text keys are intentionally aliased to the same
+string so producer and consumer evolved independently — the heuristic
+content-penalty path was wired before the LLM judge tier landed and
+reads the older name; the LLM judge ships with the newer one. A future
+migration can drop the alias once the consumer side converges. The
+benchmark workload harness (see <a href="#54-workload-rubric">§5.4</a>) also
+populates these keys at the workload subject level, so workload-level
+evaluation exercises the same readers.</p>
+<p><strong>Confidence</strong> is high when ≥ N signals fire in the same direction with no
+conflict; low when signals contradict (e.g. clean stop reason but implicit
+retry detected later). Concrete threshold lives in the rubric file.</p>
+<p><strong>Lookahead window.</strong> Some signals (<code>no_retry_implicit</code>,
+<code>no_manual_swap_after</code>, <code>no_edit_followup</code>) require seeing user messages
+<em>after</em> the turn being judged. The heuristic judge waits until either (a)
+5 user messages follow in the same session, (b) the session ends, or &copy; 24
+hours pass without progress, then commits. v1 ships the heuristic with the
+lookahead window configurable per workspace; the trade-off is verdict
+latency vs verdict richness, and the dashboard's "pending" tile makes the
+backlog visible.</p>
+<h3 id="52-llm-as-judge-rubric">5.2 LLM-as-judge rubric<a class="headerlink" href="#52-llm-as-judge-rubric" title="Permanent link">&para;</a></h3>
+<p><code>rubric_id = "turn-llm-v1"</code>. Cost: typically $0.001–$0.01 per turn,
+depending on judge model and turn size. Latency: 500–3000ms.</p>
+<p>The LLM judge ingests:</p>
+<ul>
+<li>The user's prompt text and assistant's final response text for the turn
+  (from the canonical <code>messages</code> table per
+  <a href="../canonical-message-format/"><code>canonical-message-format.md §9.1</code></a>).</li>
+<li>The list of <code>tool.called</code> / <code>tool.completed</code> events with their hashes
+  and side-effect classifications.</li>
+<li>The turn's <code>route.decided.chosen_model</code>.</li>
+</ul>
+<p>It prompts a small model (default <code>anthropic:claude-haiku-4-5</code>,
+configurable; the same model the routing pipeline considers cheap) with a
+fixed rubric prompt asking for:</p>
+<ol>
+<li>A success score in <code>[0, 1]</code> with one decimal.</li>
+<li>A self-reported confidence in <code>[0, 1]</code> with one decimal.</li>
+<li>A one-sentence rationale.</li>
+</ol>
+<p>The judge response is parsed against a <code>msgspec</code> schema; parse failures emit
+<code>eval.failed.failure_mode="judge_output_invalid"</code> and the verdict is not
+written. Retries are bounded (default 1 retry on parse failure) — beyond
+that, the heuristic verdict (<a href="#51-turn-heuristic-rubric">§5.1</a>) stands as
+the only record for the subject.</p>
+<p>The rubric prompt is shipped as <code>rubrics/turn-llm-v1.md</code> and versioned with
+the spec — changing the prompt is a <code>rubric_version</code> bump that produces a
+new score series on the dashboard.</p>
+<p><strong>Why a small model for the judge.</strong> The judge's job is "did this look like
+a successful turn" — a classification, not synthesis. Spending opus to
+grade haiku's work would invert the cost story. The configuration must
+allow a bigger judge (a buyer running benchmarks may opt in), but the
+default is cheap.</p>
+<h3 id="53-hybrid-escalation">5.3 Hybrid escalation<a class="headerlink" href="#53-hybrid-escalation" title="Permanent link">&para;</a></h3>
+<p><code>rubric_id = "turn-hybrid-v1"</code>. Default judge for v1 turn evaluations.</p>
+<p>Algorithm:</p>
+<ol>
+<li>Run the heuristic rubric. Get <code>(h_score, h_confidence)</code>.</li>
+<li>If <code>h_confidence &gt;= hybrid.escalation_threshold</code> (default <code>0.7</code>),
+   emit the heuristic verdict and stop. Cost: $0.</li>
+<li>Otherwise, run the LLM judge. Emit a verdict with
+   <code>judge_kind="hybrid"</code>, <code>score=l_score</code>, <code>confidence=l_confidence</code>,
+   <code>signals.heuristic_score=h_score</code>,
+   <code>signals.heuristic_confidence=h_confidence</code>,
+   <code>signals.escalated=true</code>.</li>
+</ol>
+<p>The threshold is configurable per workspace. The session- and workload-
+level rubrics follow the same pattern; tool-cycle is heuristic-only in v1
+(the LLM judge there would cost more than the action it's grading).</p>
+<p>This is the cost-vs-truth knob. <code>escalation_threshold = 0</code> is "always run
+the LLM judge" (maximum cost, maximum signal); <code>escalation_threshold = 1</code> is
+"never run the LLM judge" (zero cost, heuristic-only). The default lands in
+between, with the dashboard's agreement-rate view (<a href="#92-analytics-quality">§9.2</a>)
+as the calibration surface.</p>
+<p><strong>Implementation status (2026-05-14).</strong> LLM tier landed at
+<a href="../../packages/metis-core/src/metis_core/eval/llm_judge.py"><code>packages/metis-core/src/metis_core/eval/llm_judge.py</code></a>.
+Hybrid escalation knob default <code>0.7</code> is configurable via
+<code>HybridJudge(..., escalation_threshold=...)</code>. Budget-exhausted LLM calls
+return a <code>signals.budget_exhausted=True</code> verdict (confidence=0); HybridJudge
+falls back to its heuristic verdict and records
+<code>signals.escalation_skipped="budget_exhausted"</code>. The LLM judge also delegates
+to the heuristic for tool_cycle / session subjects so the v1 heuristic-only
+commitment for those kinds holds even when an LLM judge is wired in.</p>
+<h3 id="54-workload-rubric">5.4 Workload rubric<a class="headerlink" href="#54-workload-rubric" title="Permanent link">&para;</a></h3>
+<p>For benchmark workloads (<a href="../benchmark/"><code>benchmark.md §3</code></a>), the rubric is
+authored per-workload in the existing <code>workload.yaml</code> schema as a new
+optional <code>evaluate:</code> block:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fix-a-bug-small</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nn">...</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nt">evaluate</span><span class="p">:</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">rubric</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">heuristic</span><span class="w">        </span><span class="c1"># heuristic | llm | hybrid; default heuristic</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">expect_substring_in_final_response</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;...&quot;</span><span class="w">   </span><span class="c1"># passthrough to heuristic signals</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">llm_judge_model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">anthropic:claude-haiku-4-5</span><span class="w">  </span><span class="c1"># only when rubric != heuristic</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">weight_per_turn</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.0</span><span class="w">                           </span><span class="c1"># how turns in the workload aggregate</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="nt">grounding_tokens</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;RoutingEngine&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;policy=&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;PolicyEvaluation&quot;</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># v1.1</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="nt">forbidden_grounding</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;PATTERN_LOOKUP&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;RouterChain&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;ModelSelector&quot;</span><span class="p p-Indicator">]</span><span class="w"> </span><span class="c1"># v1.1</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="nt">partial_credit</span><span class="p">:</span><span class="w">                                    </span><span class="c1"># v1.2</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">criterion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_pass_count_ratio</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">map</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">linear</span>
+</span></code></pre></div>
+<p>The benchmark harness (<a href="../benchmark/"><code>benchmark.md §9</code></a>) calls the
+evaluator with <code>subject_kind=workload</code> after the suite run. The resulting
+<code>EvalVerdict</code> is the workload's quality score; the benchmark's <code>savings_pct</code>
+multiplied (or filtered) by the workload's <code>score</code> becomes the headline
+"saved X% <strong>on successful work</strong>" number a buyer can quote without
+qualification.</p>
+<p>The benchmark v1's <code>expect.contains_substring</code> (<a href="../benchmark/"><code>benchmark.md §3.1</code></a>)
+is the special-case heuristic for the workload rubric: a present substring
+contributes positively to the score; an absent one negatively. New workload
+rubric primitives are added as <code>evaluate.*</code> fields, not as new schema
+versions.</p>
+<p>The workload rubric also applies the same content penalty as the turn
+rubric — <code>workload_assistant_refusal_detected</code> (×0.5) and
+<code>workload_empty_assistant_response</code> (×0.4) — using the harness-supplied
+<code>final_response_text</code>. Without this, a workload whose <code>evaluate:</code> block
+has no <code>expect_substring_in_final_response</code> would score 1.0 on a clean
+refusal (lifecycle is fine; substring isn't asserted). The
+<code>intentionally-failing-task</code> workload under <code>benchmarks/workloads/</code> is
+the control case that exercises this — it scores &lt; 0.8 when the agent
+refuses or returns nothing.</p>
+<h4 id="grounding-check-primitive-v11">Grounding-check primitive (v1.1)<a class="headerlink" href="#grounding-check-primitive-v11" title="Permanent link">&para;</a></h4>
+<p><code>grounding_tokens</code> and <code>forbidden_grounding</code> are the rubric inputs for
+workloads that probe <strong>hallucination / source-grounding</strong> rather than
+task completion. The motivating case is documented in
+<a href="../../benchmarks/RESULTS.md"><code>benchmarks/RESULTS.md §A3-rev</code></a>: the
+<code>architectural-explanation-without-hallucination</code> workload used a single
+<code>expect_substring_in_final_response="PATTERN_RECOMMENDATION"</code> assertion;
+sonnet's response cited the real <code>PolicyEvaluation</code> / <code>RoutingDecision</code>
+dataclasses and lowercase <code>policy=</code> literals — strictly more grounded than
+haiku — but scored 0.50 because it didn't parrot the UPPERCASE
+<code>PATTERN_RECOMMENDATION</code> label from the engine.py module docstring. The
+substring check rewarded <strong>stylistic mimicry</strong> over <strong>real grounding</strong>.</p>
+<p>Semantics:</p>
+<ul>
+<li><code>grounding_tokens</code>: a list of substrings that <strong>should</strong> appear in the
+  final response. Each one is a real symbol the agent must cite to count
+  as grounded — class names, function names, real string-literal values
+  the source uses. The heuristic awards <code>present / total</code> as a positive
+  score component.</li>
+<li><code>forbidden_grounding</code>: a list of substrings that <strong>should not</strong> appear.
+  Each one is a plausible-but-fabricated name a hallucinating agent would
+  invent. The heuristic awards <code>1 - (present / total)</code> as a positive
+  score component (i.e. it pays for <em>absence</em>).</li>
+<li>The two lists are independent. A workload may set either, both, or
+  neither. When both are set, the heuristic averages the two components.</li>
+</ul>
+<p>The rubric exposes a workload-level signal <code>workload_grounding_score</code>
+(plus <code>grounding_tokens_present</code>, <code>grounding_tokens_missing</code>,
+<code>forbidden_grounding_present</code> for the audit trail). The composed
+workload score averages this with the substring/assertion-derived score
+when grounding is configured — so a workload that fully grounds in real
+symbols and avoids fabricated ones is unaffected, and one that misses
+all expected symbols and contains forbidden ones is halved.</p>
+<p>LLM tier escalation: when <code>rubric: llm</code> or <code>rubric: hybrid</code> is set, the
+configured <code>grounding_tokens</code> and <code>forbidden_grounding</code> lists are
+surfaced to the judge LLM in the user message (under a "GROUNDING HINTS"
+section). The LLM tier can recognize <em>paraphrased</em> grounding (citing a
+real symbol with different capitalization or via a synonym) and <em>partial</em>
+fabrications (a real prefix joined to a fake suffix) that the heuristic
+substring match would miss. The LLM judge's score remains a single
+[0, 1] number; the grounding hints are inputs, not a separate axis.</p>
+<p>Cost discipline: heuristic-tier grounding is $0; LLM-tier grounding
+escalation is one judge call per workload, governed by the same
+<code>BudgetTracker</code> caps as the per-turn LLM judge.</p>
+<h4 id="partial-credit-primitive-v12">Partial-credit primitive (v1.2)<a class="headerlink" href="#partial-credit-primitive-v12" title="Permanent link">&para;</a></h4>
+<p><code>partial_credit</code> is the rubric input for workloads where the agent's final
+response carries a <strong>count</strong> (test pass/fail tallies, sub-task scoreboards)
+rather than a single boolean substring. The motivating case is documented
+in <a href="../../benchmarks/RESULTS.md"><code>benchmarks/RESULTS.md §A3-rev6 / §13a-1</code></a>:
+across six A3 iterations the per-workload haiku-vs-sonnet quality gap on
+the v1 suite is below the heuristic judge's resolution. Pass/fail substring
+detection collapses partial successes — 12/16 regex cases, &frac34; pytest
+tests — to 0; partial-credit surfaces the mid-range gradient haiku and
+sonnet actually produce.</p>
+<p>Schema:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">evaluate</span><span class="p">:</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">rubric</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">heuristic</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">partial_credit</span><span class="p">:</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">criterion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_pass_count_ratio</span><span class="w">   </span><span class="c1"># only criterion in v1</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">map</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">linear</span><span class="w">                        </span><span class="c1"># &quot;linear&quot; | &quot;stepped&quot;</span>
+</span></code></pre></div>
+<p>Semantics:</p>
+<ul>
+<li><code>enabled: false</code> (default): partial-credit is off; the workload falls
+  back to the pre-v1.2 substring path.</li>
+<li><code>enabled: true</code>: the heuristic parses <code>final_response_text</code> for the
+  configured criterion, applies <code>map</code>, and folds the resulting score into
+  the composed workload score <strong>in place of</strong> the pass/fail substring
+  assertion. <code>expect_substring_in_final_response</code> is bypassed when
+  partial-credit is active — pick one or the other.</li>
+<li><code>criterion: test_pass_count_ratio</code>: the parser recognizes two shapes,
+  preferring whichever produces an explicit total:<ol>
+<li><code>PASS N/M</code> / <code>FAIL N/M</code> runner output (per the <code>runner.py</code>
+   convention used in this repo's workloads). The last occurrence in
+   the text wins, so iterative per-case lines followed by the final
+   summary line are graded correctly.</li>
+<li>Pytest summary tokens: <code>N passed</code>, <code>M failed</code>, <code>K error(s)</code>. Total
+   is <code>passed + failed + errors</code>; skipped tests are excluded from
+   the denominator (a skip isn't a pass or a fail).
+   The ratio is <code>passed / total</code>. When the response contains no parseable
+   test signal (e.g. the agent never reached the test step), the ratio is
+   <code>0.0</code> and the <code>partial_credit_no_test_signal</code> negative flag fires — a
+   missing signal is treated as a failure.</li>
+</ol>
+</li>
+<li><code>map: linear</code> (default): pass the ratio through unchanged. Mid-ratios
+  produce mid-scores; perfect-pass produces 1.0 (recovering the same
+  composed score as the prior <code>substring_present=True</code> path); zero-pass
+  produces 0.0 (matching the prior <code>substring_present=False</code> halving).</li>
+<li><code>map: stepped</code>: round the ratio to the nearest 0.25 (so the only
+  possible mapped scores are 0.0, 0.25, 0.5, 0.75, 1.0). Useful when the
+  caller wants a stable bucketed score rather than the continuous version.
+  Endpoints (0/N and N/N) stay exact.</li>
+</ul>
+<p>Composition: when partial-credit is active, the composed score is
+<code>(base + partial_credit_score) / 2.0</code>, parallel to how the grounding
+score folds in. The rubric exposes workload-level signals
+<code>partial_credit_score</code>, <code>partial_credit_ratio</code>, <code>partial_credit_passed</code>,
+<code>partial_credit_total</code>, <code>partial_credit_criterion</code>, <code>partial_credit_map</code>,
+and <code>partial_credit_test_signal_found</code> for the audit trail. Pre-v1.2
+workloads (no <code>partial_credit</code> block) are unaffected.</p>
+<p>Cost discipline: heuristic-tier partial-credit is $0 (pure regex over
+the response text). The LLM tier does not consult partial-credit — it
+forms its own [0, 1] judgment.</p>
+<h3 id="55-tool-cycle-rubric">5.5 Tool-cycle rubric<a class="headerlink" href="#55-tool-cycle-rubric" title="Permanent link">&para;</a></h3>
+<p><code>rubric_id = "tool-cycle-heuristic-v1"</code>. Heuristic only in v1.</p>
+<p>Signals:</p>
+<ul>
+<li><code>tool_succeeded</code>: <code>tool.completed</code> with <code>success=true</code>.</li>
+<li><code>output_size_in_window</code>: <code>tool.completed.output_size_bytes</code> within a
+  per-tool reasonable range (the range is rubric-internal).</li>
+<li><code>no_immediate_re_call_same_input</code>: the next <code>tool.called</code> in the turn
+  doesn't have the same <code>input_hash</code> for the same <code>tool_name</code>.</li>
+<li><code>no_thrash_in_window</code>: within the next 3 tool calls, the same
+  <code>tool_name</code> is not called with <code>input_hash</code> differing by a small
+  Hamming-style threshold (catches "re-call with one arg tweaked").</li>
+</ul>
+<p>Tool-cycle verdicts attach to their parent turn via <code>parent_eval_id</code>. They
+do not arithmetic-average into the turn score; the turn rubric reads
+<code>signals.tool_cycles_with_score_below_threshold</code> and applies its own weight.</p>
+<h3 id="56-session-rubric">5.6 Session rubric<a class="headerlink" href="#56-session-rubric" title="Permanent link">&para;</a></h3>
+<p><code>rubric_id = "session-aggregate-v1"</code>. Heuristic-only (LLM at session scale
+is expensive and the per-turn signal is already in the bus).</p>
+<p>Algorithm:</p>
+<ol>
+<li>Aggregate child turn verdicts: <code>mean_turn_score</code>,
+   <code>min_turn_score</code>, <code>turns_with_explicit_thumbs_down</code>.</li>
+<li>Add session-scoped signals: <code>feedback.explicit</code> with <code>scope="session"</code>,
+   number of distinct models swapped via <code>/model</code>, session ended with
+   <code>disposition="abandoned"</code>.</li>
+<li>Emit a session-level verdict with <code>signals</code> carrying the child
+   <code>eval_id</code>s.</li>
+</ol>
+<hr />
+<h2 id="6-when-the-evaluator-runs">6. When the evaluator runs<a class="headerlink" href="#6-when-the-evaluator-runs" title="Permanent link">&para;</a></h2>
+<h3 id="61-bus-subscriber-online">6.1 Bus subscriber (online)<a class="headerlink" href="#61-bus-subscriber-online" title="Permanent link">&para;</a></h3>
+<p>The evaluator registers a <strong>non-fast-path</strong> subscriber per
+<a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §3.4</code></a>:</p>
+<table>
+<thead>
+<tr>
+<th>Filter event</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>turn.completed</code></td>
+<td>Queue a <code>turn</code>-subject evaluation (delayed until the lookahead window resolves; §5.1)</td>
+</tr>
+<tr>
+<td><code>tool.completed</code></td>
+<td>Queue a <code>tool_cycle</code>-subject evaluation</td>
+</tr>
+<tr>
+<td><code>tool.failed</code></td>
+<td>Queue a <code>tool_cycle</code>-subject evaluation</td>
+</tr>
+<tr>
+<td><code>session.ended</code></td>
+<td>Queue a <code>session</code>-subject evaluation</td>
+</tr>
+<tr>
+<td><code>feedback.explicit</code></td>
+<td>Re-queue the matching turn / session for re-evaluation (the verdict gains a thumb signal)</td>
+</tr>
+</tbody>
+</table>
+<p>Non-fast-path is the right choice: the heuristic judge is fast (~ms), the
+LLM judge is slow (seconds), and neither is on a critical user-facing path.
+A backlog is observable as <code>eval.started - eval.completed</code> over time on
+<code>/analytics/quality.backlog</code>.</p>
+<h3 id="62-batch-re-evaluation-offline">6.2 Batch re-evaluation (offline)<a class="headerlink" href="#62-batch-re-evaluation-offline" title="Permanent link">&para;</a></h3>
+<p>The dashboard's agreement-rate view (<a href="#92-analytics-quality">§9.2</a>)
+depends on re-evaluating subjects on demand. The evaluator exposes a
+<code>re_evaluate(window, subject_kind, rubric_id)</code> entry point (CLI subcommand
+in v1: <code>metis evaluate --since &lt;ts&gt; --subject turn --rubric turn-hybrid-v1</code>)
+that runs the judge across the trace store window and emits fresh
+<code>eval.completed</code> events.</p>
+<p>Re-evaluation is <strong>bounded</strong> by the same per-day and per-session
+<code>judge_cost_usd</code> caps (<a href="#7-budget-and-safety">§7</a>) as online evaluation —
+the cap is across both modes.</p>
+<h3 id="63-no-mid-turn-evaluation">6.3 No mid-turn evaluation<a class="headerlink" href="#63-no-mid-turn-evaluation" title="Permanent link">&para;</a></h3>
+<p>Per <a href="#22-non-goals">§2.2.2</a>. The evaluator never reads in-flight state.
+This is what keeps it off the turn-locked-model path
+(<a href="../../AGENTS.md"><code>AGENTS.md</code> "Gotchas"</a>) and out of the routing chain.</p>
+<hr />
+<h2 id="7-budget-and-safety">7. Budget and safety<a class="headerlink" href="#7-budget-and-safety" title="Permanent link">&para;</a></h2>
+<p>The LLM judge spends real money. Three caps apply:</p>
+<table>
+<thead>
+<tr>
+<th>Cap</th>
+<th>Default</th>
+<th>Configurable</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>eval.per_session_max_usd</code></td>
+<td><code>Decimal("0.10")</code></td>
+<td>yes</td>
+<td>After spend, eval queue drops <code>judge_kind in (llm, hybrid)</code> for the session — heuristic still runs.</td>
+</tr>
+<tr>
+<td><code>eval.per_day_max_usd</code></td>
+<td><code>Decimal("1.00")</code></td>
+<td>yes</td>
+<td>After spend, eval queue drops <code>judge_kind in (llm, hybrid)</code> workspace-wide for the day.</td>
+</tr>
+<tr>
+<td><code>eval.escalation_threshold</code></td>
+<td><code>0.7</code></td>
+<td>yes</td>
+<td>Hybrid judge escalates to LLM only when heuristic confidence is below this.</td>
+</tr>
+</tbody>
+</table>
+<p>When a cap throttles a verdict, an <code>eval.completed</code> is still emitted with
+<code>judge_kind="heuristic"</code> (the heuristic always runs) and
+<code>signals.throttled_reason: Literal["session_cap", "daily_cap"]</code>. No verdict
+is silently dropped.</p>
+<p>Kill switch: workspace config <code>eval.disabled = true</code> skips <em>both</em> judges. No
+<code>eval.*</code> events emitted for that workspace; the bus subscriber unregisters.
+Useful for benchmarking the cost story without the evaluator's own cost
+confounding it.</p>
+<p><strong>Why both per-session and per-day caps.</strong> A single chatty session can
+exhaust the daily budget alone (LLM judge on every escalated turn × tens of
+turns × $0.005 ≈ pennies-fast). The per-session cap prevents one session
+from starving the rest of the day's evaluation; the per-day cap is the
+hard ceiling the operator sees on their bill.</p>
+<hr />
+<h2 id="8-events">8. Events<a class="headerlink" href="#8-events" title="Permanent link">&para;</a></h2>
+<p>Three new bus catalog events. All payloads are <code>msgspec.Struct(frozen=True)</code>
+defined in <code>packages/metis-core/src/metis_core/events/payloads.py</code> when the
+implementation lands (this spec describes the contract only).</p>
+<h3 id="81-evalstarted">8.1 <code>eval.started</code><a class="headerlink" href="#81-evalstarted" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p><strong>Sensitivity:</strong> <code>pseudonymous</code>
+<strong>Phase:</strong> 3
+<strong>Actor:</strong> SYSTEM
+<strong>Parent:</strong> <code>turn.completed</code> / <code>tool.completed</code> / <code>tool.failed</code> / <code>session.ended</code> / <code>feedback.explicit</code></p>
+</blockquote>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="s2">&quot;eval_id&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>                                   <span class="c1"># monotonic ULID</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="s2">&quot;subject_kind&quot;</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;turn&quot;</span><span class="p">,</span> <span class="s2">&quot;tool_cycle&quot;</span><span class="p">,</span> <span class="s2">&quot;session&quot;</span><span class="p">,</span> <span class="s2">&quot;workload&quot;</span><span class="p">],</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="s2">&quot;subject_id&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="s2">&quot;rubric_id&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="s2">&quot;rubric_version&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="s2">&quot;judge_kind_planned&quot;</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;heuristic&quot;</span><span class="p">,</span> <span class="s2">&quot;llm&quot;</span><span class="p">,</span> <span class="s2">&quot;hybrid&quot;</span><span class="p">],</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="s2">&quot;trigger&quot;</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;bus&quot;</span><span class="p">,</span> <span class="s2">&quot;batch&quot;</span><span class="p">,</span> <span class="s2">&quot;feedback_arrived&quot;</span><span class="p">,</span> <span class="s2">&quot;benchmark&quot;</span><span class="p">],</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="p">}</span>
+</span></code></pre></div>
+<h3 id="82-evalcompleted">8.2 <code>eval.completed</code><a class="headerlink" href="#82-evalcompleted" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p><strong>Sensitivity:</strong> <code>user_controlled</code> (floor; downgrades to <code>pseudonymous</code>
+  per <a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §4.4.1</code></a>
+  when <code>signals.rationale_redacted</code> is absent)
+<strong>Phase:</strong> 3
+<strong>Actor:</strong> SYSTEM
+<strong>Parent:</strong> <code>eval.started</code></p>
+</blockquote>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="s2">&quot;eval_id&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="s2">&quot;subject_kind&quot;</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;turn&quot;</span><span class="p">,</span> <span class="s2">&quot;tool_cycle&quot;</span><span class="p">,</span> <span class="s2">&quot;session&quot;</span><span class="p">,</span> <span class="s2">&quot;workload&quot;</span><span class="p">],</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="s2">&quot;subject_id&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="s2">&quot;score&quot;</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>                                   <span class="c1"># in [0.0, 1.0]</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="s2">&quot;confidence&quot;</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>                              <span class="c1"># in [0.0, 1.0]</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="s2">&quot;judge_kind&quot;</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;heuristic&quot;</span><span class="p">,</span> <span class="s2">&quot;llm&quot;</span><span class="p">,</span> <span class="s2">&quot;hybrid&quot;</span><span class="p">],</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>    <span class="s2">&quot;judge_model&quot;</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>    <span class="s2">&quot;judge_cost_usd&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>                            <span class="c1"># Decimal serialized as string (canonical: same as Usage.cost_usd)</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>    <span class="s2">&quot;judge_pricing_version&quot;</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>    <span class="s2">&quot;judge_latency_ms&quot;</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>    <span class="s2">&quot;rubric_id&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>    <span class="s2">&quot;rubric_version&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>    <span class="s2">&quot;signals&quot;</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span>                                  <span class="c1"># see §4.4</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>    <span class="s2">&quot;parent_eval_id&quot;</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Cost is serialized as a string (mirrors <code>Usage.cost_usd</code> in
+<a href="../canonical-message-format/"><code>canonical-message-format.md §6.4</code></a>) so the
+JSON envelope round-trips through the trace store without <code>Decimal</code> loss.</p>
+<p><strong>Sensitivity floor.</strong> The catalog floor is <code>user_controlled</code> — the worst
+case, when <code>signals.rationale_redacted</code> is populated (the user opted into
+capturing LLM judge rationales) and the event carries user-derived text.
+When the rationale field is absent (heuristic verdict, or LLM verdict
+without rationale opt-in), the subscriber passes <code>pseudonymous</code> to
+<code>make_event</code> — a downgrade toward less private, which the dynamic-sensitivity
+rule in <a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §4.4.1</code></a>
+allows.</p>
+<h3 id="83-evalfailed">8.3 <code>eval.failed</code><a class="headerlink" href="#83-evalfailed" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p><strong>Sensitivity:</strong> <code>pseudonymous</code>
+<strong>Phase:</strong> 3
+<strong>Actor:</strong> SYSTEM
+<strong>Parent:</strong> <code>eval.started</code></p>
+</blockquote>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="s2">&quot;eval_id&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="s2">&quot;subject_kind&quot;</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;turn&quot;</span><span class="p">,</span> <span class="s2">&quot;tool_cycle&quot;</span><span class="p">,</span> <span class="s2">&quot;session&quot;</span><span class="p">,</span> <span class="s2">&quot;workload&quot;</span><span class="p">],</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="s2">&quot;subject_id&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="s2">&quot;failure_mode&quot;</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="s2">&quot;judge_output_invalid&quot;</span><span class="p">,</span>       <span class="c1"># LLM response didn&#39;t parse against the rubric schema</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>        <span class="s2">&quot;judge_call_failed&quot;</span><span class="p">,</span>          <span class="c1"># LLM call hit a hard error (provider down, auth, etc.)</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>        <span class="s2">&quot;throttled_no_heuristic&quot;</span><span class="p">,</span>     <span class="c1"># caps fired AND heuristic also unavailable (shouldn&#39;t happen in v1; defensive)</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>        <span class="s2">&quot;subject_not_found&quot;</span><span class="p">,</span>          <span class="c1"># subject_id resolved to no events</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>        <span class="s2">&quot;rubric_invalid&quot;</span><span class="p">,</span>             <span class="c1"># rubric file failed to load</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>    <span class="p">],</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>    <span class="s2">&quot;error_message&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>    <span class="s2">&quot;judge_latency_ms&quot;</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="p">}</span>
+</span></code></pre></div>
+<p><code>throttled_no_heuristic</code> is defensive — v1 always has a heuristic fallback,
+so the live path never emits it. Reserved for future configurations where a
+rubric is LLM-only.</p>
+<h3 id="84-sensitivity-classifications">8.4 Sensitivity classifications<a class="headerlink" href="#84-sensitivity-classifications" title="Permanent link">&para;</a></h3>
+<p>Summary of the three new events in the
+<a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §4.4</code></a> frame:</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Floor sensitivity</th>
+<th>Downgrade pathway</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>eval.started</code></td>
+<td><code>pseudonymous</code></td>
+<td>(no opt-in fields)</td>
+</tr>
+<tr>
+<td><code>eval.completed</code></td>
+<td><code>user_controlled</code></td>
+<td><code>pseudonymous</code> when <code>signals.rationale_redacted</code> is absent</td>
+</tr>
+<tr>
+<td><code>eval.failed</code></td>
+<td><code>pseudonymous</code></td>
+<td>(no opt-in fields)</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>eval</code> domain joins the closed domain list in
+<a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §4.5</code></a>.
+This is an additive domain (no collision with <code>feedback</code>, which describes
+<em>user-supplied</em> signal; the evaluator describes the <em>system's</em> assessment).</p>
+<p><strong>Payload registry.</strong> The three payloads land in <code>PAYLOAD_REGISTRY</code>
+(<a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §6</code></a>)
+<em>when the implementation lands</em>, per the same convention used for the
+gateway's pending payload-field additions
+(<a href="../CHANGES/"><code>CHANGES.md</code> 2026-05-13 gateway entry</a>). The catalog spec
+gains §6.11 (the <code>eval</code> domain) at implementation time.</p>
+<hr />
+<h2 id="9-analytics-surface">9. Analytics surface<a class="headerlink" href="#9-analytics-surface" title="Permanent link">&para;</a></h2>
+<p>The evaluator's data is consumable from <code>/analytics/*</code> per
+<a href="../analytics-api/"><code>analytics-api.md §2.1</code></a> ("read-only and derived"). One
+new endpoint, plus an additive field on the existing cost view.</p>
+<h3 id="91-get-analyticscost-additive-include_eval-parameter">9.1 <code>GET /analytics/cost</code> — additive <code>include_eval</code> parameter<a class="headerlink" href="#91-get-analyticscost-additive-include_eval-parameter" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>GET /analytics/cost?group_by=model&amp;include_eval=false   # default: only llm.call_completed rows
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>GET /analytics/cost?group_by=model&amp;include_eval=true    # add eval.completed.judge_cost_usd to model totals
+</span></code></pre></div>
+<p>Default <code>false</code> keeps the savings story honest (eval spend is metis's
+overhead, not the buyer's agent workload). The dashboard's overhead tile
+sets <code>include_eval=true</code> and renders the eval cost as a separate column.
+SPA-side: subtract for "agent-only spend," include for "total Metis spend."</p>
+<h3 id="92-get-analyticsquality">9.2 <code>GET /analytics/quality</code><a class="headerlink" href="#92-get-analyticsquality" title="Permanent link">&para;</a></h3>
+<p>New endpoint. Aggregates <code>eval.completed</code> events over a time window.</p>
+<p><strong>Query parameters:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Type</th>
+<th>Required</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>from</code>,<code>to</code></td>
+<td>ISO 8601 UTC</td>
+<td>no</td>
+<td>last 7d</td>
+</tr>
+<tr>
+<td><code>subject_kind</code></td>
+<td><code>turn</code> | <code>tool_cycle</code> | <code>session</code> | <code>workload</code></td>
+<td>no</td>
+<td><code>turn</code></td>
+</tr>
+<tr>
+<td><code>group_by</code></td>
+<td><code>model</code> | <code>judge_kind</code> | <code>rubric_id</code> | <code>none</code></td>
+<td>no</td>
+<td><code>model</code></td>
+</tr>
+<tr>
+<td><code>min_confidence</code></td>
+<td>float</td>
+<td>no</td>
+<td><code>0.0</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Response shape (<code>group_by=model</code>):</strong></p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="p">{</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">&quot;window&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="err">...</span><span class="p">},</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">&quot;current_pricing_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">&quot;data&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="p">{</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">      </span><span class="nt">&quot;chosen_model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;anthropic:claude-haiku-4-5&quot;</span><span class="p">,</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">      </span><span class="nt">&quot;verdict_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">142</span><span class="p">,</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">      </span><span class="nt">&quot;mean_score&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.82</span><span class="p">,</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">      </span><span class="nt">&quot;p50_score&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.85</span><span class="p">,</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">      </span><span class="nt">&quot;p10_score&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.50</span><span class="p">,</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">      </span><span class="nt">&quot;mean_confidence&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.71</span><span class="p">,</span>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">      </span><span class="nt">&quot;judge_cost_usd_total&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.0823</span><span class="p">,</span>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="w">      </span><span class="nt">&quot;thumbs_down_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="w">  </span><span class="p">]</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="p">}</span>
+</span></code></pre></div>
+<p><code>chosen_model</code> is joined from the <code>route.decided</code> event of the subject
+turn — the model whose work is being judged, not the judge's model. The
+join walks <code>subject_id (turn_id) → route.decided.chosen_model</code>; per
+<a href="../analytics-api/"><code>analytics-api.md §4.3</code></a> the routing event is one
+per turn so this is a 1:1.</p>
+<p><strong>Agreement rate tile (computed from the same source).</strong> When two distinct
+verdicts exist for the same <code>subject_id</code> (one online, one from a batch
+re-eval; or two with different <code>rubric_id</code>s), the dashboard computes
+"verdict agreement" as the fraction whose <code>|score_a - score_b| &lt;=
+agreement_window</code> (default 0.15, configurable client-side). This is a SPA-
+side computation over the verdict rows; the API surface is <em>just</em> the
+<code>eval.completed</code> event projection. No new endpoint needed.</p>
+<p><strong>Backlog tile.</strong> <code>verdict_count</code> versus the count of <code>eval.started</code>
+without a matching <code>eval.completed</code> / <code>eval.failed</code> in the window. SPA
+queries <code>/analytics/quality?subject_kind=turn</code> and counts open <code>eval_id</code>s
+client-side.</p>
+<h3 id="93-drill-down-turn-analytics-gains-an-evaluations-field">9.3 Drill-down: turn analytics gains an <code>evaluations</code> field<a class="headerlink" href="#93-drill-down-turn-analytics-gains-an-evaluations-field" title="Permanent link">&para;</a></h3>
+<p><a href="../analytics-api/"><code>analytics-api.md §4.6</code></a> (<code>GET /analytics/turns/{id}</code>)
+gets an additive <code>evaluations</code> array in <code>data</code>. Each entry is the
+<code>EvalVerdict</code> shape from <a href="#41-shape">§4.1</a>. No breaking change; existing
+consumers ignoring the field continue to work.</p>
+<p>This is the only place a <code>signals.rationale_redacted</code> value can surface to
+the UI (under the opt-in sensitivity uplift in <a href="#84-sensitivity-classifications">§8.4</a>).</p>
+<h3 id="94-negative-space">9.4 Negative space<a class="headerlink" href="#94-negative-space" title="Permanent link">&para;</a></h3>
+<p>Not in v1:</p>
+<ul>
+<li><code>/analytics/quality_trend</code> (time series of mean score by week). Cheap
+  to add later via <code>group_by=day</code>; not worth the SPA tile yet.</li>
+<li>Cross-workload quality dashboards (the benchmark harness emits its own
+  workload-level verdict; the SPA can fetch via <code>subject_kind=workload</code>).</li>
+<li>Per-rubric comparison views. Add when there are multiple rubrics
+  shipping (v1 ships exactly one per subject_kind).</li>
+</ul>
+<hr />
+<h2 id="10-storage">10. Storage<a class="headerlink" href="#10-storage" title="Permanent link">&para;</a></h2>
+<p>Verdicts are bus events, persisted in the existing trace store
+(<a href="../canonical-message-format/"><code>canonical-message-format.md §9.1</code></a>,
+<code>events</code> table). No new table.</p>
+<p>Indexes:</p>
+<ul>
+<li>The existing <code>(type, timestamp_us)</code> index covers the time-windowed
+  projection in <code>/analytics/quality</code>.</li>
+<li>A new index <code>idx_events_eval_subject</code> on
+  <code>(json_extract(payload_json, '$.subject_kind'),
+    json_extract(payload_json, '$.subject_id'), id)</code>
+  is <em>optional</em> — at single-user scale (≤10K verdicts) the full scan over
+  <code>type='eval.completed'</code> rows is fast enough. The index lands as a Phase
+  3 follow-up if the agreement-rate query measurably slows the dashboard.</li>
+</ul>
+<p>Following <a href="../analytics-api/"><code>analytics-api.md §2.1</code></a>: the source of truth
+is the bus + trace store; analytics is a projection. No rollup, no
+materialized verdict table.</p>
+<hr />
+<h2 id="11-the-feedback-loop">11. The feedback loop<a class="headerlink" href="#11-the-feedback-loop" title="Permanent link">&para;</a></h2>
+<p>The verdict feeds <em>future</em> turn routing through the pattern store. Three
+consumers:</p>
+<h3 id="111-pattern-store-slot-4-of-the-routing-chain">11.1 Pattern store (slot 4 of the routing chain)<a class="headerlink" href="#111-pattern-store-slot-4-of-the-routing-chain" title="Permanent link">&para;</a></h3>
+<p>The pattern store (<a href="../pattern-store/">planned spec: pattern-store.md</a>; see
+§15 for coordination) reads <code>eval.completed.score</code> as the <code>success_score</code>
+in <code>outcome.primary_model</code> clusters. Per
+<a href="../routing-engine/"><code>routing-engine.md §5.5</code></a>:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>normalized_success_M = mean(success_score) for neighbors with primary_model = M
+</span></code></pre></div>
+<p>The pattern store's K-nearest aggregation reads from <code>eval.completed</code>
+events directly (not from a separate outcome table). Verdicts with
+<code>confidence &lt; pattern.min_eval_confidence</code> (default <code>0.5</code>) are excluded
+from the aggregation but stay in the trace store (they're still useful for
+the agreement-rate view).</p>
+<p><strong>Which verdict wins when there are multiple.</strong> The pattern store reads
+the <em>latest</em> <code>eval.completed</code> per <code>(subject_kind, subject_id)</code> —
+<code>MAX(eval_id)</code> per subject. Re-evaluation, by construction, supersedes older
+verdicts for routing purposes.</p>
+<h3 id="112-analytics-driven-escalation-phase-3-surface-only">11.2 Analytics-driven escalation (Phase 3+, surface only)<a class="headerlink" href="#112-analytics-driven-escalation-phase-3-surface-only" title="Permanent link">&para;</a></h3>
+<p>When a model accumulates <code>mean_score &lt; quality_floor</code> (default <code>0.6</code>) over
+a configurable window on <code>/analytics/quality?group_by=model</code>, the dashboard
+surfaces it ("This task type is underperforming on haiku — consider
+escalating"). The surface is a <em>banner</em>, not an automatic rule change.
+Auto-escalation belongs to the pattern store, not the analytics view.</p>
+<h3 id="113-benchmark-headline">11.3 Benchmark headline<a class="headerlink" href="#113-benchmark-headline" title="Permanent link">&para;</a></h3>
+<p>The benchmark harness (<a href="../benchmark/"><code>benchmark.md §8</code></a>) gains a quality
+column in its report: each workload's <code>score</code>, the suite-level mean, and
+the gating note "savings on successful work: $X of $Y total." This is what
+turns "saved 67%" into "saved 67% on work the evaluator judged as
+successful at confidence ≥ 0.5." The exact format lands in a follow-up
+benchmark.md amendment when the evaluator implementation does.</p>
+<hr />
+<h2 id="12-invariants">12. Invariants<a class="headerlink" href="#12-invariants" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Append-only.</strong> <code>eval.completed</code> events are never updated or deleted.
+   Re-evaluation produces new events.</li>
+<li><strong>One score field.</strong> The <code>score</code> is one number in <code>[0, 1]</code>. Multi-
+   dimensional rubrics collapse into <code>signals</code>, never into the score field.</li>
+<li><strong>Heuristic always available.</strong> Every subject for which the heuristic
+   has all required input events produces a verdict. Throttling never
+   silently drops; it downgrades the planned <code>judge_kind</code>.</li>
+<li><strong>Eval cost is recorded.</strong> <code>judge_cost_usd</code> is always set (zero for
+   heuristic; positive for LLM / hybrid that escalated). Pricing version is
+   stamped when cost &gt; 0.</li>
+<li><strong>No routing-chain involvement.</strong> The evaluator is not a chain slot. It
+   does not appear in <code>route.decided.chain</code>. It feeds the pattern store
+   (which <em>is</em> a slot) via the bus, not via direct call.</li>
+<li><strong>No mid-turn execution.</strong> Subscribers fire on terminal events
+   (<code>turn.completed</code>, etc.), never inside a turn.</li>
+<li><strong>Rubric is versioned.</strong> Every verdict carries <code>rubric_id</code> and
+   <code>rubric_version</code>. Changing the rubric is a version bump, not a silent
+   recalibration.</li>
+<li><strong>Confidence gates routing, not display.</strong> The dashboard shows all
+   verdicts; the pattern store filters by confidence threshold.</li>
+</ol>
+<hr />
+<h2 id="13-open-questions">13. Open questions<a class="headerlink" href="#13-open-questions" title="Permanent link">&para;</a></h2>
+<p>These are <strong>live</strong>. Do not unilaterally close them.</p>
+<ol>
+<li><strong>Hybrid escalation threshold default.</strong> <code>0.7</code> is a guess. The right
+   value is whatever makes the agreement-rate view show heuristic and LLM
+   agreeing ≥ 95% of the time at that threshold — observable only after
+   the dashboard ships and data accumulates.</li>
+<li><strong>Should explicit <code>feedback.explicit</code> overwrite a prior verdict's
+   score?</strong> Today a thumbs-down arriving after a verdict triggers a
+   re-evaluation that produces a new verdict (the old verdict stays
+   recorded). Alternative: the new feedback updates the <em>latest</em> verdict's
+   <code>signals</code> without producing a new verdict. The current shape is cleaner
+   for the agreement-rate view; the alternative is cheaper in event count.</li>
+<li><strong>LLM judge prompt-cache discipline.</strong> Per
+   <a href="../context-assembler/"><code>context-assembler.md</code></a>, the LLM judge's rubric
+   prompt is stable and a perfect cache candidate. The implementation
+   should mark it for caching; the spec doesn't yet pin the cache contract
+   for the judge's request shape.</li>
+<li><strong>Workload-rubric primitives.</strong> v1 leans on <code>expect_substring_in_final_response</code>
+   plus the LLM judge. The benchmark workloads may want richer
+   primitives (assert tests pass, assert a file's contents match a
+   pattern). Wait for the v1 suite to settle before adding noise.</li>
+<li><strong>Tool-cycle LLM judging.</strong> v1 ships heuristic-only at the tool-cycle
+   level. The thrash detector catches the obvious case; subtle cases
+   (tool succeeded but the answer was wrong) require the LLM judge. The
+   cost calculus is unfavorable at v1 scale — revisit when there's
+   evidence of missed signal.</li>
+<li><strong>Cross-rubric agreement as a calibration signal.</strong> Two heuristic
+   rubrics scoring the same subjects (e.g. "lenient" and "strict")
+   produce an agreement series independent of the LLM. This is a v2
+   tool for rubric maintenance; not on the v1 surface.</li>
+<li><strong>Per-user calibration.</strong> A future signal: "user X consistently
+   thumbs-down turns the heuristic scored ≥ 0.8." The eval rubric could
+   learn a per-user offset. Defer until multi-user / multi-profile
+   lands per <a href="../../STRATEGY/"><code>STRATEGY.md §2</code></a>.</li>
+<li><strong>Evaluating the evaluator.</strong> Spot-checking via benchmark workloads
+   with hand-asserted expectations is the v1 calibration plan. A more
+   rigorous "golden verdict" corpus (a sampled set of turns the operator
+   manually scores) is plausible but expensive — and would itself need a
+   labeling UI. Open until evidence shows the v1 plan is insufficient.</li>
+<li><strong>Cost of re-evaluation at scale.</strong> Batch re-evaluation under the
+   per-day cap is bounded, but the cap could throttle an honest
+   investigation. Caps are workspace config; a one-off <code>metis evaluate
+   --override-cap</code> may be needed. Wait for actual friction.</li>
+</ol>
+<hr />
+<h2 id="14-testing-strategy">14. Testing strategy<a class="headerlink" href="#14-testing-strategy" title="Permanent link">&para;</a></h2>
+<p>V1's tests cover the contract, not the rubric weights (those live in the
+rubric files and may evolve without the spec needing to change).</p>
+<h3 id="141-required-tests">14.1 Required tests<a class="headerlink" href="#141-required-tests" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Heuristic verdict shape.</strong> Seed a clean <code>turn.completed</code> + supporting
+   events; assert <code>eval.completed</code> carries <code>judge_kind="heuristic"</code>,
+   <code>judge_cost_usd == Decimal("0")</code>, <code>judge_pricing_version is None</code>,
+   and <code>score</code> is in <code>[0, 1]</code>.</li>
+<li><strong>Hybrid escalation threshold.</strong> A turn whose heuristic produces
+   <code>confidence &lt; escalation_threshold</code> triggers the LLM judge (mocked via
+   the scripted adapter, per <code>conftest.py</code> / <code>tests_shared/</code>); the verdict
+   carries <code>judge_kind="hybrid"</code>, <code>signals.escalated=true</code>, and
+   <code>judge_cost_usd &gt; 0</code>.</li>
+<li><strong>Hybrid no-escalation.</strong> A turn whose heuristic produces
+   <code>confidence &gt;= escalation_threshold</code> produces a verdict with
+   <code>judge_kind="heuristic"</code>, no LLM call, <code>judge_cost_usd == 0</code>.</li>
+<li><strong>Per-session cap downgrade.</strong> A configured <code>eval.per_session_max_usd
+   = Decimal("0")</code> causes a <code>judge_kind="hybrid"</code> plan to emit a
+   heuristic verdict with <code>signals.throttled_reason="session_cap"</code>.</li>
+<li><strong>Per-day cap downgrade.</strong> Same shape, <code>signals.throttled_reason
+   ="daily_cap"</code>. Caps are independent.</li>
+<li><strong>Re-evaluation produces a new event.</strong> Re-running the evaluator on a
+   prior <code>turn_id</code> produces a second <code>eval.completed</code> with a fresh
+   <code>eval_id</code>; both are queryable; pattern-store-style "latest" query
+   returns the newer.</li>
+<li><strong>Confidence gate filters analytics aggregation.</strong> Verdicts below
+   <code>min_confidence</code> are excluded from <code>mean_score</code> on <code>/analytics/quality</code>
+   but still present in <code>verdict_count</code> (or vice versa, per the response
+   contract; pin this in implementation tests).</li>
+<li><strong>Subject not found emits <code>eval.failed</code>.</strong> Triggering an eval against a
+   nonexistent <code>turn_id</code> produces <code>eval.failed.failure_mode
+   ="subject_not_found"</code> and no <code>eval.completed</code>.</li>
+<li><strong>Invalid LLM judge response.</strong> A scripted LLM judge whose response
+   fails the rubric schema produces <code>eval.failed.failure_mode
+   ="judge_output_invalid"</code> after the bounded retry; no <code>eval.completed</code>.</li>
+<li><strong>Rubric versioning.</strong> Two verdicts on the same subject with different
+    <code>rubric_version</code> strings both persist; <code>/analytics/quality?group_by
+    =rubric_id</code> shows two rows.</li>
+<li><strong>Tool-cycle attaches to parent turn.</strong> A <code>tool.completed</code> triggers a
+    <code>tool_cycle</code>-subject verdict whose <code>parent_eval_id</code> references the
+    turn's eval (when the turn has been evaluated; null otherwise).</li>
+<li><strong>Session aggregation reads child turn verdicts.</strong> A
+    <code>session.ended</code> with three child turn verdicts produces a
+    session-subject verdict whose <code>signals.child_eval_ids</code> lists all three.</li>
+<li><strong>Sensitivity uplift.</strong> Setting <code>signals.rationale_redacted</code> produces
+    a recorded event whose <code>sensitivity == "user_controlled"</code>; omitting
+    the field keeps it at <code>"pseudonymous"</code>.</li>
+<li><strong>Eval cost folds into <code>/analytics/cost?include_eval=true</code>.</strong> Sum of
+    <code>eval.completed.judge_cost_usd</code> matches the delta between the two
+    endpoint calls.</li>
+<li><strong>No mid-turn fire.</strong> The subscriber filter doesn't match
+    <code>llm.call_completed</code> events; verifying via subscription registration
+    introspection.</li>
+</ol>
+<h3 id="142-property-tests">14.2 Property tests<a class="headerlink" href="#142-property-tests" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Score boundedness.</strong> All emitted <code>eval.completed.score</code> are in
+  <code>[0.0, 1.0]</code>.</li>
+<li><strong>Heuristic determinism.</strong> Same input events → same heuristic verdict
+  (<code>score</code>, <code>confidence</code>, <code>signals.flags</code>) byte-equal. LLM judges are
+  excluded (provider variance).</li>
+<li><strong>Cost monotonicity in re-evaluation.</strong> Re-evaluating a turn under a
+  more-expensive judge never reduces total eval spend recorded.</li>
+</ul>
+<hr />
+<h2 id="15-coordinates-with-pattern-storemd">15. Coordinates with <code>pattern-store.md</code><a class="headerlink" href="#15-coordinates-with-pattern-storemd" title="Permanent link">&para;</a></h2>
+<blockquote>
+<p><em>Authored 2026-05-13 in parallel with Agent 3A's draft of
+<code>pattern-store.md</code>. Reconciled 2026-05-14 — see CHANGES.md
+"Pattern-store ↔ evaluator reconciliation sweep." The table below
+reflects the reconciled contract; the open coordination items
+originally listed have been closed (see §15.1).</em></p>
+</blockquote>
+<p>The pattern-store spec (<a href="../pattern-store/"><code>pattern-store.md §15</code></a>)
+imports the verdict shape and consumption semantics from this spec
+verbatim. This section lists the load-bearing touchpoints and their
+reconciled status.</p>
+<table>
+<thead>
+<tr>
+<th>Touchpoint</th>
+<th>Reconciled outcome (2026-05-14)</th>
+<th>Where it lives in this spec</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Verdict shape (<code>EvalVerdict</code>) ownership</td>
+<td>Evaluator owns it; pattern store consumes verbatim and does <strong>not</strong> re-specify.</td>
+<td><a href="#41-shape">§4.1</a></td>
+</tr>
+<tr>
+<td>Score timing (sync vs async)</td>
+<td><strong>Async.</strong> Pattern-store writes outcome immediately on <code>session.ended</code> with <code>success_score=None</code>; the <code>eval.completed</code> subscriber later calls <code>PatternStore.update_score(turn_id, ...)</code>. Join key: <code>turn_id</code>.</td>
+<td><a href="#61-bus-subscriber-online">§6.1</a>, pattern-store §10.4, §15.3</td>
+</tr>
+<tr>
+<td>Confidence-gate filter home + default</td>
+<td>Lives in <strong>pattern-store config</strong> (<code>routing.yaml::pattern.min_eval_confidence</code>); default <code>0.5</code>. Evaluator emits all verdicts; pattern store filters at K-cluster aggregation time.</td>
+<td><a href="#43-the-confidence-field">§4.3</a>, pattern-store §15.4</td>
+</tr>
+<tr>
+<td>Sample-size weighting in K-cluster aggregation</td>
+<td>Pinned in <a href="../routing-engine/"><code>routing-engine.md §5.5</code></a> (2026-05-14 clarification): <code>Σ(success_score_i × sample_size_i) / Σ(sample_size_i)</code>.</td>
+<td>routing-engine §5.5</td>
+</tr>
+<tr>
+<td>Latest-verdict rule when multiple verdicts exist</td>
+<td><code>MAX(eval_id)</code> per <code>(subject_kind, subject_id)</code> — re-evaluation supersedes. Pattern store rolls back prior contribution to its outcome accumulator before applying the new score (pattern-store §10.4).</td>
+<td><a href="#46-re-evaluation">§4.6</a>, <a href="#111-pattern-store-slot-4-of-the-routing-chain">§11.1</a>, pattern-store §10.4</td>
+</tr>
+<tr>
+<td><code>outcome.primary_model</code> join</td>
+<td>Joined client-side from <code>route.decided.chosen_model</code> of the subject turn; not embedded in <code>eval.completed</code> payload.</td>
+<td><a href="#92-analytics-quality">§9.2</a></td>
+</tr>
+<tr>
+<td>Pattern domain vs eval domain</td>
+<td>Distinct domains. Pattern store does <strong>not</strong> emit <code>eval.*</code> events; evaluator does <strong>not</strong> emit <code>pattern.*</code> events.</td>
+<td><a href="#22-non-goals">§2.2.2</a>, <a href="#12-invariants">§12</a></td>
+</tr>
+<tr>
+<td>Fingerprint computation independence</td>
+<td>Fingerprint = task shape (pattern-store concern); verdict = outcome (evaluator concern). No overlap.</td>
+<td>(no overlap)</td>
+</tr>
+<tr>
+<td>Cost source for K-cluster <code>avg_cost_M</code></td>
+<td>Sourced from <code>llm.call_completed.cost_usd</code> summed over the turn — <strong>not</strong> from <code>eval.completed.judge_cost_usd</code> (that's the <em>judge's</em> cost, surfaced separately under <code>/analytics/cost?include_eval=true</code>).</td>
+<td><a href="#45-the-judge_cost_usd-field">§4.5</a>, <a href="#91-get-analyticscost---additive-include_eval-parameter">§9.1</a></td>
+</tr>
+<tr>
+<td>Session-level vs turn-level verdicts</td>
+<td>Pattern-store K-nearest is <strong>turn-level only</strong> in v1. Session verdicts are not a pattern-store input; they surface on <code>/analytics/quality?subject_kind=session</code> for dashboard use.</td>
+<td><a href="#56-session-rubric">§5.6</a></td>
+</tr>
+</tbody>
+</table>
+<h3 id="151-closed-coordination-items">15.1 Closed coordination items<a class="headerlink" href="#151-closed-coordination-items" title="Permanent link">&para;</a></h3>
+<p>The three open items listed in the original draft are closed:</p>
+<ul>
+<li><strong>Confidence-gate filter as pattern-store override.</strong> Resolved: the
+  filter is a pattern-store config knob (<code>pattern.min_eval_confidence</code>),
+  not an evaluator-side concern. The evaluator emits unfiltered;
+  consumers (pattern store, analytics) decide their own thresholds.</li>
+<li><strong>Pattern-store outcome rollup losslessness.</strong> Resolved: the
+  <code>eval.completed</code> payload (<a href="#82-eval-completed">§8.2</a>) carries
+  <code>subject_id</code> (the turn_id), <code>score</code>, <code>confidence</code>, <code>eval_id</code>, and
+  <code>judge_pricing_version</code> — sufficient for the pattern store's
+  <code>update_score()</code> flow (pattern-store §10.4). No additional fields
+  needed in v1.</li>
+<li><strong>Session verdicts as pattern-store input.</strong> Resolved: turn-level
+  only in v1. Pattern-store §10.4 reads <code>eval.completed</code> events
+  filtered to <code>subject_kind=turn</code>.</li>
+</ul>
+<hr />
+<h2 id="16-decision-log">16. Decision log<a class="headerlink" href="#16-decision-log" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Decision</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-05-13</td>
+<td>Numeric <code>score</code> in <code>[0, 1]</code> as the only structural commitment</td>
+<td>Pattern store consumes one number; multi-dim rubrics expressible via <code>signals</code> collapsed by the rubric.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td><code>confidence</code> is a gate, not a score modifier</td>
+<td>Conflating confidence and score loses signal; downstream consumers (pattern store, analytics) can filter or weight independently.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>Heuristic-first, LLM-as-judge gated by hybrid escalation</td>
+<td>Default-cheap; LLM judge is opt-in via a single threshold knob the operator can tune from the dashboard.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>Verdicts are append-only bus events, not a mutable verdict table</td>
+<td>Re-evaluation must not destroy the old verdict (it's the source data for the agreement-rate view).</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>Three new bus events (<code>eval.started/completed/failed</code>)</td>
+<td>Bus-as-spine consistency; trace store gets re-eval data for free; consumers (pattern store, analytics) subscribe normally.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>Non-fast-path subscriber</td>
+<td>Heuristic is ms-fast; LLM judge is seconds; neither belongs on a user-facing path.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>Per-session AND per-day cost caps</td>
+<td>One chatty session can exhaust a daily budget alone; both caps are needed.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>LLM judge defaults to a small model (haiku-class)</td>
+<td>Spending opus to grade haiku inverts the cost story; small-model classification is the right tier.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>No mid-turn evaluation</td>
+<td>Preserves turn-locked-model invariant; the routing chain stays out of the evaluator's path.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>Single-user / local-first / per-workspace by default</td>
+<td>Per <a href="../../STRATEGY/"><code>STRATEGY.md §2</code></a>; multi-user is downstream of the gateway / replacement-agent fork.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>Re-evaluation produces new verdict, doesn't mutate old</td>
+<td>Agreement-rate-over-time is a query, not a side-table; preserves audit trail.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td><code>judge_cost_usd</code> is <code>Decimal</code>, serialized as string in event payload</td>
+<td>Matches <code>Usage.cost_usd</code> convention from <a href="../canonical-message-format/"><code>canonical-message-format.md §6.4</code></a>.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>Rubrics versioned via <code>rubric_id</code> + <code>rubric_version</code></td>
+<td>Changing the rubric is a version bump that produces a new score series; old verdicts remain comparable.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>One new analytics endpoint (<code>/analytics/quality</code>), additive <code>include_eval</code> on <code>/cost</code></td>
+<td>Minimal surface increase; SPA composition (agreement-rate, backlog) computed client-side from one event projection.</td>
+</tr>
+<tr>
+<td>2026-05-13</td>
+<td>Workload rubric is per-workload in <code>workload.yaml.evaluate</code></td>
+<td>The benchmark harness already owns the workload contract; the evaluator extends it rather than building a parallel surface.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="17-references">17. References<a class="headerlink" href="#17-references" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md</code></a> — the
+  catalog these events join; non-fast-path subscriber contract; sensitivity
+  classifications; dynamic sensitivity for opt-in payloads.</li>
+<li><a href="../canonical-message-format/"><code>canonical-message-format.md</code></a> — <code>Decimal</code>
+  cost convention, trace store schema, ULID generation.</li>
+<li><a href="../routing-engine/"><code>routing-engine.md §5.5</code></a> — <code>success_score</code>
+  consumption shape (the pattern-store side of the contract).</li>
+<li><a href="../analytics-api/"><code>analytics-api.md</code></a> — projection conventions, response
+  envelope, SQL-injection-safe parameter whitelisting, Decimal serialization
+  at the wire boundary.</li>
+<li><a href="../benchmark/"><code>benchmark.md</code></a> — v1 limitation closed by this spec
+  (quality scoring deferred to the evaluator); workload rubric extension.</li>
+<li><a href="../context-assembler/"><code>context-assembler.md</code></a> — prompt-cache discipline
+  the LLM judge should follow (open question 13.3).</li>
+<li><a href="../memory-store/"><code>memory-store.md</code></a> — sibling spec for shape reference.</li>
+<li><a href="../../STRATEGY/"><code>../STRATEGY.md §6.7</code></a> — the open question this spec
+  closes.</li>
+<li><a href="../../project-overview/"><code>../project-overview.md</code></a> — Evaluator's role in
+  the architecture diagram; Phase 3 ("full evaluator") deliverable.</li>
+<li><a href="../../AGENTS.md"><code>../../AGENTS.md</code></a> — turn-locked-model invariant the
+  evaluator preserves by never running mid-turn.</li>
+<li><a href="../pattern-store/"><code>pattern-store.md</code></a> (planned, drafted in parallel) —
+  the primary consumer; see §15 for coordination touchpoints.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../deployment-shape/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Deployment shape">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Deployment shape
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../benchmark/" class="md-footer__link md-footer__link--next" aria-label="Next: Benchmark">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Benchmark
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/2sumAI/metis" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "navigation.footer", "search.highlight", "search.share", "search.suggest", "content.action.edit", "content.action.view", "content.code.copy", "content.code.annotate", "content.tabs.link", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

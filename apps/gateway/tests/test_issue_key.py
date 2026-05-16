@@ -157,6 +157,62 @@ def test_issue_key_command_prints_identity_when_set(
     assert "team:   eng" in captured.out
 
 
+def test_issue_key_persists_customer_tier(tmp_path: Path) -> None:
+    """`--customer-tier trial` (Wave 14b) lands in the keystore JSON and survives a reload."""
+    keystore_path = tmp_path / "keys.json"
+    key_id, plaintext = issue_key(
+        keystore_path=keystore_path,
+        name="acme-trial",
+        workspace_path=str(tmp_path),
+        customer_tier="trial",
+    )
+    raw = json.loads(keystore_path.read_text(encoding="utf-8"))
+    entry = next(k for k in raw["keys"] if k["key_id"] == key_id)
+    assert entry["customer_tier"] == "trial"
+
+    store = Keystore.from_file(keystore_path)
+    matched = store.authenticate(plaintext)
+    assert matched is not None
+    assert matched.customer_tier == "trial"
+
+
+def test_issue_key_omits_customer_tier_when_unset(tmp_path: Path) -> None:
+    """Pre-Wave-14b posture: no tier → field is absent from the JSON."""
+    keystore_path = tmp_path / "keys.json"
+    issue_key(
+        keystore_path=keystore_path,
+        name="untagged",
+        workspace_path=str(tmp_path),
+    )
+    entry = json.loads(keystore_path.read_text(encoding="utf-8"))["keys"][0]
+    assert "customer_tier" not in entry
+
+
+def test_issue_key_rejects_unknown_customer_tier(tmp_path: Path) -> None:
+    """Only `trial` / `paid` / `internal` are accepted."""
+    with pytest.raises(IssueKeyError, match="customer-tier"):
+        issue_key(
+            keystore_path=tmp_path / "keys.json",
+            name="bad",
+            workspace_path=str(tmp_path),
+            customer_tier="platinum",  # type: ignore[arg-type]
+        )
+
+
+def test_issue_key_command_prints_customer_tier_when_set(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = issue_key_command(
+        keystore_path=tmp_path / "keys.json",
+        name="acme-trial",
+        workspace_path=str(tmp_path),
+        customer_tier="trial",
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "customer_tier: trial" in captured.out
+
+
 def test_issue_key_command_omits_identity_lines_for_untagged_keys(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

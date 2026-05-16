@@ -16,14 +16,17 @@ Triggers (§4.5.1):
 - ≥3 distinct models from one provider hit Unavailable within 2 minutes →
   the whole provider Unavailable.
 - Any AUTH error on any model from a provider → the whole provider
-  Unavailable.
-- Any NETWORK / DNS error reaching a provider's host → the whole provider
-  Unavailable.
+  Unavailable immediately. A misconfigured key affects every model.
+- ≥2 NETWORK errors on a provider within 30 seconds → the whole provider
+  Unavailable. A single transient SSL / connection hiccup only contributes
+  to the per-(provider, model) counter; the 2-within-30s requirement
+  distinguishes a real provider-side outage from a one-off TLS renegotiation
+  glitch.
 
 Auto-clear after 5 minutes of no attempts (§4.5.2). A successful call against
 a ``(provider, model)`` clears that scope's Unavailable state immediately;
 a successful call against any model from a provider clears the provider-wide
-Unavailable state.
+Unavailable state and the NETWORK-failure window.
 """
 
 from __future__ import annotations
@@ -39,10 +42,12 @@ _FAILURE_WINDOW_SECONDS = 2 * 60.0
 _MULTI_MODEL_ESCALATION_THRESHOLD = 3
 _RECOVERY_TIMEOUT_SECONDS = 5 * 60.0
 
-# Error classes that immediately mark the whole provider Unavailable.
-_PROVIDER_WIDE_IMMEDIATE_CLASSES: frozenset[ErrorClass] = frozenset(
-    {ErrorClass.AUTH, ErrorClass.NETWORK}
-)
+# NETWORK-class escalation: ≥N failures within W seconds → provider-wide.
+# One isolated SSL handshake / connection error must not blackout the
+# whole provider for 5 minutes; require a second NETWORK failure inside
+# a short window to confirm a sustained provider-side problem.
+_NETWORK_PROVIDER_ESCALATION_THRESHOLD = 2
+_NETWORK_PROVIDER_ESCALATION_WINDOW_SECONDS = 30.0
 
 
 class AvailabilityState(StrEnum):
@@ -67,6 +72,9 @@ class _ProviderState:
     # When each model from this provider entered UNAVAILABLE; pruned to the
     # last 2 minutes when consulted.
     recent_model_unavailables: dict[str, float] = field(default_factory=dict)
+    # Timestamps of recent NETWORK-class failures; pruned to the
+    # _NETWORK_PROVIDER_ESCALATION_WINDOW_SECONDS window when consulted.
+    recent_network_failures: list[float] = field(default_factory=list)
 
 
 class ProviderAvailability:
@@ -93,6 +101,7 @@ class ProviderAvailability:
             if now - prov.last_call_at >= _RECOVERY_TIMEOUT_SECONDS:
                 prov.state = AvailabilityState.HEALTHY
                 prov.recent_model_unavailables.clear()
+                prov.recent_network_failures.clear()
             else:
                 return AvailabilityState.UNAVAILABLE
         if model is None:
@@ -120,6 +129,7 @@ class ProviderAvailability:
         prov.state = AvailabilityState.HEALTHY
         prov.last_call_at = now
         prov.recent_model_unavailables.clear()
+        prov.recent_network_failures.clear()
         if model is not None:
             m = self._models.setdefault((provider, model), _ModelState())
             m.state = AvailabilityState.HEALTHY
@@ -137,7 +147,15 @@ class ProviderAvailability:
 
         Routing rules per §4.5.1:
 
-        - AUTH / NETWORK → whole provider Unavailable immediately.
+        - AUTH → whole provider Unavailable immediately. A misconfigured key
+          affects every model.
+        - NETWORK → register the failure on the provider's sliding window;
+          escalate to provider-wide Unavailable only on the
+          ``_NETWORK_PROVIDER_ESCALATION_THRESHOLD``th failure within
+          ``_NETWORK_PROVIDER_ESCALATION_WINDOW_SECONDS``. A single transient
+          SSL / connection hiccup still contributes to the per-(provider,
+          model) counter below — it just can't blackout the whole provider
+          on its own.
         - Otherwise the (provider, model) counter increments; ≥5 within 2
           minutes flips that scope to Unavailable. The counter resets to 1
           if the previous failure is older than the 2-minute window.
@@ -148,9 +166,20 @@ class ProviderAvailability:
         prov = self._providers.setdefault(provider, _ProviderState())
         prov.last_call_at = now
 
-        if error_class in _PROVIDER_WIDE_IMMEDIATE_CLASSES:
+        if error_class == ErrorClass.AUTH:
             prov.state = AvailabilityState.UNAVAILABLE
             return
+
+        if error_class == ErrorClass.NETWORK:
+            cutoff = now - _NETWORK_PROVIDER_ESCALATION_WINDOW_SECONDS
+            prov.recent_network_failures = [t for t in prov.recent_network_failures if t >= cutoff]
+            prov.recent_network_failures.append(now)
+            if len(prov.recent_network_failures) >= _NETWORK_PROVIDER_ESCALATION_THRESHOLD:
+                prov.state = AvailabilityState.UNAVAILABLE
+                return
+            # Single NETWORK error: fall through to the per-(provider, model)
+            # counter so a model that keeps producing NETWORK errors still
+            # trips itself via the standard 5-within-2-min threshold.
 
         if model is None:
             # No per-model context; treat as a provider-level signal but
@@ -180,6 +209,7 @@ class ProviderAvailability:
         prov = self._providers.setdefault(provider, _ProviderState())
         prov.state = AvailabilityState.HEALTHY
         prov.recent_model_unavailables.clear()
+        prov.recent_network_failures.clear()
         if model is not None:
             m = self._models.setdefault((provider, model), _ModelState())
             m.state = AvailabilityState.HEALTHY

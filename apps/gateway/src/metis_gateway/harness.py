@@ -98,6 +98,54 @@ class GatewayCallResult:
     cost_usd: Decimal
 
 
+# Maps the inbound shape to the canonical-id provider prefix (gateway.md §4.8).
+# `metis://` is the documented opt-out — those names are alias-resolved as-is.
+_PROVIDER_PREFIX_FOR_SHAPE: dict[str, str] = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+}
+
+
+def _normalize_inbound_model(
+    requested_model: str,
+    *,
+    inbound_shape: str,
+    registry: ModelRegistry,
+) -> str:
+    """Map a client-side model string to its canonical `provider:name` form.
+
+    SDK clients speak their provider's bare model names (e.g. Anthropic SDK
+    sends `claude-3-5-haiku-20241022`, OpenAI SDK sends `gpt-4o-mini`) because
+    the upstream APIs reject the `anthropic:` / `openai:` prefix Metis uses
+    internally. Without normalization the routing chain's `per_message_override`
+    slot can't resolve the bare name, falls through to `global_default`, and
+    bills under whatever model that points at — the GA-readiness audit's
+    "gateway over-reports cost ~6x" blocker (gateway.md §4.8, audit §2.4).
+
+    Rules (in order):
+    1. Registry already knows the name (alias like `haiku` / canonical id like
+       `anthropic:claude-haiku-4-5`): pass through unchanged.
+    2. `metis://...` opt-out: pass through unchanged.
+    3. Already `provider:name` shape: pass through unchanged.
+    4. Bare name: prepend the inbound shape's provider prefix.
+
+    The function is total — when nothing matches it still returns the prefixed
+    form so the routing trace records the buyer's *intent* (and pricing can
+    look up the canonical key) instead of stamping a bare name no analytics
+    surface knows what to do with.
+    """
+    if registry.resolve_alias(requested_model) is not None:
+        return requested_model
+    if requested_model.startswith("metis://"):
+        return requested_model
+    if ":" in requested_model:
+        return requested_model
+    prefix = _PROVIDER_PREFIX_FOR_SHAPE.get(inbound_shape)
+    if prefix is None:
+        return requested_model
+    return f"{prefix}:{requested_model}"
+
+
 @dataclass
 class GatewayHarness:
     """Routes + dispatches + traces a single inbound LLM request.
@@ -135,7 +183,10 @@ class GatewayHarness:
         turn_id = f"gt_{new_message_id()}"
         loop_start = time.monotonic()
 
-        resolved_override = self.registry.resolve_alias(requested_model)
+        normalized_model = _normalize_inbound_model(
+            requested_model, inbound_shape=self.inbound_shape, registry=self.registry
+        )
+        resolved_override = self.registry.resolve_alias(normalized_model)
 
         ctx = self._build_turn_context(
             session_id=session_id,
@@ -312,7 +363,10 @@ class GatewayHarness:
         turn_id = f"gt_{new_message_id()}"
         loop_start = time.monotonic()
 
-        resolved_override = self.registry.resolve_alias(requested_model)
+        normalized_model = _normalize_inbound_model(
+            requested_model, inbound_shape=self.inbound_shape, registry=self.registry
+        )
+        resolved_override = self.registry.resolve_alias(normalized_model)
         ctx = self._build_turn_context(
             session_id=session_id,
             turn_id=turn_id,

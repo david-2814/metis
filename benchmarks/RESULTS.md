@@ -4511,3 +4511,75 @@ uv run python scripts/benchmark.py \
 
 To resume the §A3-rev7 abort from where credits exhausted (recommended path before re-running everything from scratch): the partial `benchmarks/.runs/a3rev7-patterns.db` already has Pass A complete + Pass B subtle complete + Pass B recursive 1/3, so a resume needs only the missing Pass B sonnet samples on `recursive` (2 more reps), `refactor-with-contract-preservation`, `regex-with-edge-cases`, and `multi-file-refactor-with-shared-types` — then Pass C across all five workloads — then Pass D + Pass D-baseline.
 
+### §A3-rev7 completion (2026-05-16) — resumed after credit top-up; full Pass B + Pass C + Pass D + Pass D-baseline executed; the regex residual signal did not materialize as predicted
+
+The partial section above (preserved verbatim) named two specific things the completion would either confirm or refute: (i) "if a topped-up Pass B sonnet on `regex-with-edge-cases` lands at 0.95+, the cluster aggregate has a +0.2 to +0.3 gap" — the predicted cleanest-ever partial-credit inversion datapoint; and (ii) the §A3-rev6 delegation 26.1% cost-per-quality finding, untested in the partial Pass D. The completion executed the documented resume recipe end-to-end against the same `a3rev7-patterns.db` (Pass A + Pass B subtle + Pass B recursive 1/3 retained from the partial). Pass B sonnet finished on the four missing workloads, Pass C ran with `--no-active-model` on all five workloads, Pass D + Pass D-baseline ran on `multi-step-with-delegation`. Total completion spend: ~$2.0 of API.
+
+**Headline: Pass C picked haiku on every routed turn across all 5 workloads, including the predicted-residual-signal `regex-with-edge-cases`. Sonnet's own noise on the regex Pass B (q_mean=0.88, std=0.217, one 0.62 rep alongside two 1.00 reps) prevented the cluster aggregate from clearing haiku's. Delegation re-measurement landed at 19.9% better cost-per-quality, inside the §A3-rev5 (8.3%) / §A3-rev6 (26.1%) range — confirming the delegation differentiator on a third independent datapoint.**
+
+#### Completed Pass B sonnet per-workload quality (rubric_version=1.2.0)
+
+| Workload | Pass A haiku (mean, N=3) | Pass B sonnet completion (mean, N=3) | Gap | Std flag |
+|----------|--------------------------|--------------------------------------|------|----------|
+| subtle-bug-fix-with-test | 0.97 | 0.97 (held from partial) | +0.000 | ok |
+| recursive-data-structure-traversal | 1.00 | 1.00 / 1.00 / 1.00 (mean 1.00) | +0.000 | ok |
+| refactor-with-contract-preservation | 0.96 | 0.97 / 0.97 / 1.00 (mean 0.98) | +0.020 | ok |
+| **regex-with-edge-cases** | **0.70** | **1.00 / 0.62 / 1.00 (mean 0.88)** | **+0.18** | **NOISY (std=0.217)** |
+| multi-file-refactor-with-shared-types | 0.95 (N=1 in partial) | 0.95 / 0.91 / 0.96 (mean 0.94) | -0.01 | ok |
+
+The regex Pass B sonnet rep that scored 0.62 hit the same failure mode haiku fails on: assistant_text missing `PASS 16/16` plus `tool_calls=4 > max_tool_calls=1`. At temperature=0 with the same prompt and starting state, sonnet sometimes lands the 16-test fix (1.00) and sometimes doesn't (0.62). The mean gap (+0.18 in sonnet's favor) is real but the variance overwhelms the K-NN aggregation in Pass C.
+
+#### Pass C slot-4 K-NN cluster aggregates by workload (the routing-engine readout the partial section couldn't produce)
+
+| Workload | Slot-4 fires | Haiku cluster score | Sonnet cluster score | Confidence | Chose | vs gate (0.05) |
+|----------|-------------:|--------------------:|---------------------:|-----------:|-------|----------------|
+| regex-with-edge-cases | 6 of 9 | 1.000 (n=6–7) | 0.950 (n=3–4) | 0.050 | **haiku** | at gate |
+| subtle-bug-fix-with-test | 3 of 6 | 0.932–0.953 | 0.855–0.879 | 0.077–0.096 | haiku | clear |
+| multi-file-refactor-with-shared-types | 6 of 12 | 0.661–0.959 | 0.602–0.893 | 0.053–0.281 | haiku | clear |
+| recursive-data-structure-traversal | 0 of 3 | (gated off — identical perfect clusters) | — | — | global_default → haiku | n/a |
+| refactor-with-contract-preservation | 0 of 6 | (gated off — identical perfect clusters) | — | — | global_default → haiku | n/a |
+
+**Zero sonnet picks across 36 routing decisions on 5 workloads.** The §A3-rev3 partial-N=1 inversion still stands as the one end-to-end demonstration of the differentiator; §A3-rev7 completion did not reproduce it.
+
+The regex K-NN read is the most informative cell. Haiku's cluster aggregate of 1.000 is higher than the per-turn Pass A haiku scores (0.63–0.75) would suggest in isolation — that's because the K-NN aggregates across fingerprints in the cluster, and the easy turn-1 and turn-3 fingerprints (both models reliably perfect) outweigh the hard turn-2 fingerprint where haiku drops to mid-range. Sonnet's noisy 0.62 rep on turn 2 lowered its cluster mean to 0.950, exactly at the haiku cost-floor-adjusted score, so the (top − runner)/top confidence sits right at the `min_confidence=0.05` gate. The differentiator-flipping condition the partial section predicted — sonnet 0.95+ vs haiku ~0.70 producing a +0.2 to +0.3 cluster gap — did not occur because sonnet itself failed the hard turn ~33% of the time at temperature=0, not 0%.
+
+#### Pass D delegation re-measurement vs §A3-rev5 / §A3-rev6 range
+
+| Run | Pass D delegation | Pass D-baseline (sonnet-only) | Cost/quality delta |
+|-----|--------------------|-------------------------------|-------------------:|
+| §A3-rev5 | $0.221 / q=0.91 = $0.243/quality-unit | $0.183 / q=0.69 = $0.265/quality-unit | **−8.3%** (delegation cheaper per quality-unit) |
+| §A3-rev6 | (26.1% headline; identical protocol, different absolute numbers) | — | **−26.1%** |
+| **§A3-rev7 completion** | **$0.220 / q=0.91 = $0.242/quality-unit** | **$0.205 / q=0.68 = $0.302/quality-unit** | **−19.9%** |
+
+3 `delegate.started` events fired on the §A3-rev7 completion Pass D turn 2 as designed (sonnet planner + haiku workers). The 19.9% datapoint lands between the §A3-rev5 floor (8.3%) and the §A3-rev6 ceiling (26.1%) — a third independent measurement of the delegation differentiator and the closest to the cluster midpoint. The cost-per-quality lever is reproducible across three runs; the absolute magnitude varies (~8–26%) but the sign and the order of magnitude are stable. **Delegation remains the validated routing-surface lever in the §A3 series.**
+
+#### Q1 (model-selection) update: interpretation (a) gets a stronger evidentiary base; (c) is largely refuted on the canonical "residual signal" workload too
+
+The partial section identified `regex-with-edge-cases` as the strongest reason to complete the run because it was the only workload where Pass A haiku produced mid-range partial-credit scores. The completion data lets us close that book:
+
+- **Interpretation (a) — haiku-4.5 is genuinely strong on dev-loop coding at temperature=0** — now has direct positive evidence on **4 of 5 workloads** (subtle +0.000, recursive +0.000, contract +0.020, mfile −0.010). Only regex shows a real mean gap (+0.18), and even there sonnet's own variance prevents the K-NN from inverting.
+- **Interpretation (c) — insufficient judge resolution** — refuted on all 5 workloads. The partial-credit rubric correctly produced mid-range scores on the one workload that had headroom for partial outcomes (regex). On the other 4, both models hit the per-test ratio of 1.0 at temperature=0 and there's no gradient for any rubric to surface. The bottleneck is not the rubric.
+- **Newly visible: sonnet noise as a co-factor.** The partial section's prediction assumed sonnet would solve the regex hard turn reliably; the completion shows it does not (1 of 3 reps failed in the same way haiku fails). When sonnet itself is noisy on the load-bearing turn, K-NN cluster aggregates can't open a confidence-clearing gap even with finer-grained scoring active.
+
+**The post-§A3-rev7-completion call:** the model-selection-routing differentiator works mechanically end-to-end (proven §A3-rev3 N=1) but its generalization across the v1 dev-loop coding suite is gated by two compounding things, not one: (i) the rate at which haiku-4.5 produces measurably-worse outcomes than sonnet-4.6, and (ii) sonnet's own variance at temperature=0 on the workloads where (i) is non-zero. Both push toward the same wedge candidate already named: **task domains haiku has known weakness in** (math/symbolic, long-context multi-document synthesis, rare API surfaces) where the haiku-vs-sonnet outcome distance is large enough that sonnet's variance can't close it. The 7 A3 iterations consistently land at the same place: routing-engine knobs are correctly tuned, the load-bearing variable is now workload-domain choice outside the dev-loop theme.
+
+#### A3-rev7 series cumulative cluster scoreboard (updated)
+
+| Run | Cluster config | Pass C slot-4 sonnet picks | Inversion generalized? |
+|-----|----------------|----------------------------|------------------------|
+| §A3-original | v1 structural, cost_weight=0.3 | 0 of 18 | no |
+| §A3-rev2 | v1 + cost_weight=0.1 | 0 of 18 (slot 4 gated off) | no |
+| §A3-rev3 | v1 + min_confidence=0.05 | **1 of 14** (regex turn 2) | partial — single inversion |
+| §A3-rev4 | v2 HYBRID partial wiring | 0 of 17 | no (wiring bug) |
+| §A3-rev5 | v2 HYBRID (Wave 11 landing) | 0 of 17 | no |
+| §A3-rev6 | v2 HYBRID + cost_weight=0.05 | 0 of 18 | no |
+| §A3-rev7 (partial) | v2 HYBRID + 14a-1 partial_credit | N/A (Pass C not executed) | inconclusive |
+| **§A3-rev7 (completion)** | **v2 HYBRID + 14a-1 partial_credit (full)** | **0 of 15 slot-4 wins** (21 of 36 fell to slot 7) | **no — even on the predicted-residual `regex-with-edge-cases`** |
+
+#### Completion caveats
+
+- **The completion was actually cheaper than the partial section estimated.** The recipe predicted ~$2 remaining; the completion came in at ~$2.0 (Pass B ~$1.25 + Pass C ~$0.54 + Pass D ~$0.22 + Pass D-baseline ~$0.21 + embedding calls < $0.01). The estimate held.
+- **The patterns DB at `benchmarks/.runs/a3rev7-patterns.db` has slight asymmetry on `recursive-data-structure-traversal`** — the resume re-ran 3 sonnet reps on top of the partial's 1, leaving sonnet at 4 samples (haiku at 3) for that workload. This does not affect the analysis because both clusters land at 1.000 and slot 4 gates off on perfect-tied clusters anyway. All other workloads have symmetric 3+3 Pass A + Pass B coverage.
+- **The Pass D / Pass D-baseline DBs are at `a3rev7-pass-d-resumed.db` / `a3rev7-pass-d-baseline-resumed.db`** (the original `a3rev7-pass-d.db` from the abort retained the half-completed turn). The original `-resumed` suffix on the Pass B + Pass D DBs preserves the partial-run artifacts for forensic comparison.
+- **Honest reporting:** the partial section predicted the regex residual signal would invert. It did not. The completion writes down both the prediction and the result without revising the partial.
+

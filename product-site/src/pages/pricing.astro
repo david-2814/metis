@@ -13,7 +13,7 @@ const tentativeTiers = [
     label: "Open-source gateway",
     price: "free",
     body: "metis gateway, metis chat, metis serve, the canonical IR, the routing engine, the trace store, the analytics surface. Self-host on your own infra, BYO API keys.",
-    cta: "github",
+    cta: "early access",
   },
   {
     label: "Pro",
@@ -31,8 +31,8 @@ const tentativeTiers = [
 ---
 
 <Layout
-  title="Pricing — coming soon | Metis"
-  description="Metis pricing — open-core gateway is free; Pro and Enterprise tiers ratify in Wave 15."
+  title="Pricing — coming soon | Metis by 2sum AI"
+  description="Pricing for Metis from 2sum AI — open-core gateway is free; Pro and Enterprise tiers ratify in Wave 15."
 >
   <div
     class="pointer-events-none fixed inset-0 grid-bg opacity-60 [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]"
@@ -101,10 +101,7 @@ const tentativeTiers = [
               </p>
               <div class="mt-6">
                 <a
-                  href={tier.cta === "github"
-                    ? "https://github.com/2sumAI/metis"
-                    : "/signup"}
-                  rel={tier.cta === "github" ? "noopener" : undefined}
+                  href="/signup"
                   class="inline-flex w-full items-center justify-center gap-2 rounded border border-border-strong bg-bg px-4 py-2 text-sm font-bold text-fg transition-colors hover:border-accent"
                 >
                   {tier.cta}

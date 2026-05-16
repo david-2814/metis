@@ -1,0 +1,164 @@
+{{- if .Values.statusPage.enabled -}}
+{{/*
+  Status page (Uptime Kuma self-hosted) — opt-in addon.
+
+  Wave 11 deliverable: a single helm toggle that stands up a status page
+  next to the gateway in the same release. This is the recommended
+  self-hosted path documented in docs/operations/status-page.md.
+
+  Trade-off (documented in status-page.md "Tier B"): a cluster-wide
+  outage takes the status page down too. For an off-failure-domain
+  status surface, use Tier A (UptimeRobot / Statuspage.io / Better Stack)
+  and leave statusPage.enabled at its default `false`.
+
+  Resources rendered (all gated on this single toggle):
+    - PersistentVolumeClaim   (Kuma's SQLite DB + monitor config)
+    - Deployment              (louislam/uptime-kuma image, 1 replica)
+    - Service                 (ClusterIP by default)
+    - Ingress                 (optional, gated on .Values.statusPage.ingress.enabled)
+
+  Selector labels carry a distinct app.kubernetes.io/name so the
+  gateway Service cannot accidentally match the Kuma pod (see helper
+  `metis-gateway.statusPage.selectorLabels`).
+*/}}
+{{- if .Values.statusPage.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "metis-gateway.statusPage.pvcName" . }}
+  labels:
+    {{- include "metis-gateway.statusPage.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.statusPage.persistence.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.statusPage.persistence.size | quote }}
+  {{- with .Values.statusPage.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "metis-gateway.statusPage.fullname" . }}
+  labels:
+    {{- include "metis-gateway.statusPage.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    # Uptime Kuma owns its own SQLite DB on the PVC; concurrent
+    # writers from a rolling-update overlap would corrupt it. Recreate
+    # is safe because a brief gap in the status page during upgrade is
+    # acceptable (the status page is informational, not load-bearing).
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "metis-gateway.statusPage.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "metis-gateway.statusPage.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.statusPage.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: uptime-kuma
+          image: "{{ .Values.statusPage.image.repository }}:{{ .Values.statusPage.image.tag }}"
+          imagePullPolicy: {{ .Values.statusPage.image.pullPolicy }}
+          {{- with .Values.statusPage.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 3001
+              protocol: TCP
+          # Kuma's first-boot DB migration takes ~10s; bump initial delay
+          # higher than the gateway's defaults so the pod doesn't get
+          # killed mid-migration.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          resources:
+            {{- toYaml .Values.statusPage.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.statusPage.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "metis-gateway.statusPage.pvcName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "metis-gateway.statusPage.fullname" . }}
+  labels:
+    {{- include "metis-gateway.statusPage.labels" . | nindent 4 }}
+  {{- with .Values.statusPage.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.statusPage.service.type }}
+  ports:
+    - port: {{ .Values.statusPage.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "metis-gateway.statusPage.selectorLabels" . | nindent 4 }}
+{{- if .Values.statusPage.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "metis-gateway.statusPage.fullname" . }}
+  labels:
+    {{- include "metis-gateway.statusPage.labels" . | nindent 4 }}
+  {{- with .Values.statusPage.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.statusPage.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.statusPage.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.statusPage.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "metis-gateway.statusPage.fullname" . }}
+                port:
+                  number: {{ .Values.statusPage.service.port }}
+{{- end }}
+{{- end -}}

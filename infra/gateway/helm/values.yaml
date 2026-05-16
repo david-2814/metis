@@ -424,6 +424,112 @@ signup:
   # across pod restarts mount a PVC or Secret here instead.
   accountsPath: /var/lib/metis/accounts.json
 
+# Stripe-backed billing (pricing.md §5.5.4 — Wave 15). OFF by default.
+# Requires signup.enabled=true (no account model → nobody to bill).
+# When enabled, the gateway mounts /account/billing/* + /webhooks/stripe
+# and composes a Free-tier spend cap with the existing per-key quotas.
+#
+# Stripe creds (api key + webhook secret) are pulled from a Kubernetes
+# Secret. Use the test-mode `sk_test_...` key during trial; rotate the
+# secret to a live key before the first paying customer hits production.
+billing:
+  enabled: false
+  # -- Existing Secret holding `stripeApiKey` + `stripeWebhookSecret`
+  # keys. Leave empty to let the chart materialize a Secret from the
+  # `stripeApiKey` / `stripeWebhookSecret` values below (NOT recommended
+  # for production — drop those into a Secret you control instead).
+  existingSecret: ""
+  # -- Inline Stripe credentials (test-mode only). Empty values render
+  # an empty Secret; the gateway pod refuses to start with billing
+  # enabled and no creds.
+  stripeApiKey: ""
+  stripeWebhookSecret: ""
+  # -- Stripe Price ids. `proPriceId` covers the per-seat Pro line;
+  # `enterpriseMeteredPriceId` is the metered usage line for the
+  # Enterprise %-of-savings add-on. Leave the latter empty if you're
+  # only offering Free + Pro.
+  proPriceId: "price_pro_seat_monthly"
+  enterpriseMeteredPriceId: ""
+  # -- Path inside the container for the billing SQLite store. Mount a
+  # PVC here for durability across pod restarts.
+  storePath: /var/lib/metis/billing.db
+  # -- Free-tier monthly spend cap (USD). The cap aggregates spend
+  # across every key under the account so issuing more keys doesn't
+  # open more headroom. Default $5.00 per pricing.md §5.5.4. Set to 0
+  # or empty to disable the cap entirely.
+  freeMonthlyCapUsd: "5.00"
+  freeDailyCapUsd: ""
+  # -- The Enterprise add-on's cut of measurable savings, as a whole
+  # percent. Default 15 (matches pricing.md §5.3 examples); per-contract
+  # negotiation can override.
+  enterpriseSavingsRatePct: 15
+
+# Status page (Uptime Kuma self-hosted) — opt-in addon for the Wave 11
+# status-page recipe (docs/operations/status-page.md "Tier B"). OFF by
+# default: most buyers begin on the external tier (UptimeRobot /
+# Statuspage.io / Better Stack) which lives outside the gateway's
+# failure domain. Flip this on once the compliance team objects to
+# "status reported by a SaaS we don't control."
+#
+# Trade-off: a cluster-wide outage takes the status page down too,
+# because Uptime Kuma runs as a sibling Deployment in the same cluster.
+# This is the documented Tier B trade-off, not a chart bug.
+#
+# When enabled, the chart renders a separate Deployment + Service + PVC
+# (and an optional Ingress) carrying `app.kubernetes.io/name=
+# <chart>-status-page` so the gateway's Service cannot accidentally
+# match Kuma's pod.
+statusPage:
+  enabled: false
+  image:
+    # -- Uptime Kuma image. `1` tracks the latest stable 1.x; pin to a
+    # versioned tag for production (e.g. "1.23.16").
+    repository: louislam/uptime-kuma
+    tag: "1"
+    pullPolicy: IfNotPresent
+  service:
+    # -- ClusterIP suits the typical pattern: Ingress / Gateway in front
+    # of the status page on its own hostname.
+    type: ClusterIP
+    port: 3001
+    annotations: {}
+  # PVC for Kuma's SQLite DB + monitor config. Persistent storage is
+  # strongly recommended — the alternative (emptyDir) loses every
+  # monitor and incident history on pod restart.
+  persistence:
+    enabled: true
+    size: 1Gi
+    accessMode: ReadWriteOnce
+    # -- StorageClass. Leave empty to use the cluster default.
+    storageClass: ""
+  # Ingress is OFF by default. Enable on its OWN hostname (not the
+  # gateway's) per docs/operations/status-page.md "Tier B". Suggested
+  # hostname: `status.<your-domain>`; co-locating on the gateway's
+  # Ingress defeats the point of having a status page.
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    host: status.example.com
+    tls: []
+    # - secretName: status-page-tls
+    #   hosts:
+    #     - status.example.com
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Pod security context: Uptime Kuma's upstream image runs as root by
+  # default; provide non-root security contexts here only if you've
+  # verified the image variant you're using supports it. Default empty
+  # = trust the image's own default user.
+  podSecurityContext: {}
+  containerSecurityContext: {}
+
 # Global default model — slot 7 of the routing chain, only consulted when
 # clients omit `model` (rare; SDKs always pass one — see gateway.md §V).
 globalDefaultModel: anthropic:claude-sonnet-4-6
@@ -501,6 +607,49 @@ monitoring:
     relabelings: []
     # -- Per-metric relabeling (drop high-cardinality series, etc.).
     metricRelabelings: []
+  # Prometheus alert rules (Wave 14a — observability-runbook.md). Renders a
+  # `monitoring.coreos.com/v1.PrometheusRule` with four templates: LLM p99
+  # latency, LLM error rate, gateway auth-failure rate, and per-key cost
+  # anomaly. Each rule can be tuned (threshold/for/severity) or disabled
+  # individually. Disabled by default so `monitoring.enabled: true` doesn't
+  # silently start paging on first install — flip on after a one-week
+  # baseline pass so thresholds match real traffic instead of generic guesses.
+  prometheusRules:
+    enabled: false
+    # -- Eval interval for the rule group (Prometheus operator default 30s).
+    interval: 30s
+    # -- Extra labels for the PrometheusRule selector. Match your
+    # `Prometheus` resource's `ruleSelector` (kube-prometheus-stack default:
+    # `release: prometheus`).
+    labels: {}
+    # LLM call p99 latency alert. Fires when wall-time for any single
+    # (provider, model) exceeds the threshold for `for` minutes.
+    llmLatencyP99:
+      enabled: true
+      threshold: 30        # seconds
+      for: 5m
+      severity: warning
+    # LLM error rate alert. Threshold is a fraction (0.05 = 5%); the alert
+    # divides metis_llm_call_errors_total by metis_llm_calls_total.
+    llmErrorRate:
+      enabled: true
+      threshold: 0.05      # 5% error rate
+      for: 10m
+      severity: warning
+    # Gateway auth-failure rate. Counts ALL auth-failure reasons (missing,
+    # invalid, revoked). Threshold is failures-per-second across the fleet.
+    gatewayAuthFailureRate:
+      enabled: true
+      threshold: 0.1       # 0.1 fails/sec ≈ 6/min ≈ 360/hr
+      for: 5m
+      severity: warning
+    # Single-key cost anomaly. Spend rate per gateway_key_id, hourly basis.
+    # Threshold is USD/hour. Catches leaked-key burn before daily caps fire.
+    gatewayKeyCostSpike:
+      enabled: true
+      threshold: 10        # $10/hour per key
+      for: 10m
+      severity: warning
 
 # -- Extra environment variables (e.g. METIS_LOG_LEVEL).
 extraEnv: []

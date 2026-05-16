@@ -136,23 +136,105 @@ def test_failure_after_long_gap_starts_fresh_streak():
     assert a.is_available("anthropic", OPUS)
 
 
-# ---- Bug 3: NETWORK error triggers immediate Unavailable --------------
+# ---- NETWORK class escalation (refined 2026-05-16) --------------------
+#
+# A single transient SSL / TCP error must NOT blackout the whole provider:
+# routing-engine.md §4.5.1 now requires ≥2 NETWORK failures within 30s for
+# provider-wide escalation. AUTH still escalates on the first error.
 
 
-def test_network_error_marks_provider_unavailable_immediately():
+def test_single_network_error_does_not_blackout_provider():
+    """One transient SSL / connection hiccup must not mark the whole
+    provider Unavailable. Sibling models stay reachable."""
     a = ProviderAvailability()
     a.mark_failure("anthropic", OPUS, ErrorClass.NETWORK)
-    # Whole provider should be Unavailable on the first network error.
+    assert a.is_available("anthropic")
+    assert a.is_available("anthropic", SONNET)
+
+
+def test_two_network_errors_within_30s_blackout_provider():
+    """Two NETWORK errors inside the 30-second window → the whole
+    provider flips to Unavailable. This is what a real provider-side
+    outage looks like."""
+    clock = _Clock()
+    a = ProviderAvailability(time_fn=clock)
+    a.mark_failure("anthropic", OPUS, ErrorClass.NETWORK)
+    clock.advance(15.0)
+    a.mark_failure("anthropic", SONNET, ErrorClass.NETWORK)
     assert not a.is_available("anthropic")
-    assert not a.is_available("anthropic", SONNET)
+    # Other provider unaffected.
+    assert a.is_available("openai")
 
 
-def test_network_error_without_model_still_marks_provider():
-    """Some callers may not have a model attributed (e.g. DNS failure
-    before request build); provider-wide should still flip."""
-    a = ProviderAvailability()
+def test_two_network_errors_31s_apart_do_not_blackout_provider():
+    """If the second NETWORK error falls outside the 30-second window
+    the first error has aged out — the second arrives alone and is
+    treated as a fresh one-off, not an outage."""
+    clock = _Clock()
+    a = ProviderAvailability(time_fn=clock)
+    a.mark_failure("anthropic", OPUS, ErrorClass.NETWORK)
+    clock.advance(31.0)
+    a.mark_failure("anthropic", OPUS, ErrorClass.NETWORK)
+    assert a.is_available("anthropic")
+
+
+def test_two_network_errors_with_model_none_still_escalate():
+    """A NETWORK error without per-model context (e.g. DNS failure
+    before request build) is still a real signal. Two of them inside
+    30s flip the provider."""
+    clock = _Clock()
+    a = ProviderAvailability(time_fn=clock)
+    a.mark_failure("anthropic", None, ErrorClass.NETWORK)
+    assert a.is_available("anthropic")
+    clock.advance(5.0)
     a.mark_failure("anthropic", None, ErrorClass.NETWORK)
     assert not a.is_available("anthropic")
+
+
+def test_single_network_error_advances_per_model_counter():
+    """A single NETWORK error doesn't escalate provider-wide, but it
+    still contributes to the per-(provider, model) 5-within-2-min
+    breaker so a model that keeps producing NETWORK errors eventually
+    trips itself."""
+    clock = _Clock()
+    a = ProviderAvailability(time_fn=clock)
+    # Five NETWORK errors against the same model, spaced 35s apart so
+    # the 30-second provider-escalation window expires between each
+    # but the 2-minute per-model window does not. The per-model streak
+    # only requires the gap between consecutive failures to stay below
+    # 120s; 35s satisfies that.
+    for _ in range(5):
+        a.mark_failure("anthropic", OPUS, ErrorClass.NETWORK)
+        clock.advance(35.0)
+    # Per-model breaker should have tripped; provider-wide should not
+    # (no two failures landed within 30s).
+    assert not a.is_available("anthropic", OPUS)
+    assert a.is_available("anthropic", SONNET)
+
+
+def test_success_clears_network_failure_window():
+    """A successful call resets the NETWORK sliding window, so a later
+    isolated NETWORK error doesn't pair with one from before the
+    success."""
+    clock = _Clock()
+    a = ProviderAvailability(time_fn=clock)
+    a.mark_failure("anthropic", OPUS, ErrorClass.NETWORK)
+    clock.advance(5.0)
+    a.mark_success("anthropic", OPUS)
+    clock.advance(5.0)
+    a.mark_failure("anthropic", SONNET, ErrorClass.NETWORK)
+    # The first failure was cleared by the success; this is a fresh
+    # one-off, not the second of a pair.
+    assert a.is_available("anthropic")
+
+
+def test_auth_error_still_escalates_immediately():
+    """Regression net: AUTH still trips provider-wide on the first
+    error. A misconfigured key cannot be a one-off."""
+    a = ProviderAvailability()
+    a.mark_failure("anthropic", OPUS, ErrorClass.AUTH)
+    assert not a.is_available("anthropic")
+    assert not a.is_available("anthropic", SONNET)
 
 
 # ---- Multi-model escalation (§4.5.1) ----------------------------------

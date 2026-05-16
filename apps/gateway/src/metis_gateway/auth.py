@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 KeyStatus = Literal["active", "revoked"]
+CustomerTier = Literal["trial", "paid", "internal"]
+_CUSTOMER_TIER_VALUES: tuple[CustomerTier, ...] = ("trial", "paid", "internal")
 
 # multi-user.md §3.4 — stable id format for `--user` / `--team` flags.
 # Matches the shipped `^[A-Za-z0-9_-]{1,200}$` defense used by analytics-api
@@ -92,6 +94,12 @@ class GatewayKey:
     status: KeyStatus = "active"
     revoked_at: datetime | None = None
     grace_period_until: datetime | None = None
+    # Concierge-onboarding tag for support / report-formatting. Optional;
+    # keys issued before Wave 14b have `None` and behave identically. Not
+    # an entitlement field — the gateway does not gate behavior on tier —
+    # but the `metis customer-report` / `metis trial-status` flows pivot
+    # on it for headline framing (trial vs paid copy).
+    customer_tier: CustomerTier | None = None
 
     def is_active(self, *, now: datetime) -> bool:
         """True if the key authenticates right now.
@@ -203,6 +211,7 @@ class Keystore:
             grace_period_until = _parse_datetime_field(
                 entry, index=index, field_name="grace_period_until"
             )
+            customer_tier = _parse_customer_tier_field(entry, index=index)
             if status == "revoked" and revoked_at is None:
                 raise KeystoreError(
                     f"keystore keys[{index}] status='revoked' requires a `revoked_at` timestamp"
@@ -221,6 +230,7 @@ class Keystore:
                     status=status,
                     revoked_at=revoked_at,
                     grace_period_until=grace_period_until,
+                    customer_tier=customer_tier,
                 )
             )
         return cls(keys)
@@ -307,6 +317,18 @@ def _parse_identity_field(entry: dict[str, Any], *, index: int, field_name: str)
         return validate_identity_tag(raw_value, field_name=f"keys[{index}].{field_name}")
     except ValueError as exc:
         raise KeystoreError(str(exc)) from exc
+
+
+def _parse_customer_tier_field(entry: dict[str, Any], *, index: int) -> CustomerTier | None:
+    raw_value = entry.get("customer_tier")
+    if raw_value is None:
+        return None
+    if raw_value not in _CUSTOMER_TIER_VALUES:
+        raise KeystoreError(
+            f"keystore keys[{index}].customer_tier must be one of "
+            f"{list(_CUSTOMER_TIER_VALUES)} (got {raw_value!r})"
+        )
+    return raw_value  # type: ignore[return-value]
 
 
 def _parse_status_field(entry: dict[str, Any], *, index: int) -> KeyStatus:

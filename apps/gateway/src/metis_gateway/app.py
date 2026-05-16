@@ -13,6 +13,7 @@ provider quirk in one shape can't bleed into the other.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import socket
 from dataclasses import dataclass, field
@@ -23,6 +24,9 @@ from typing import Literal
 
 import msgspec
 from metis_core.adapters.tool_id_map import ToolIdMap
+from metis_core.canonical.ids import new_message_id
+from metis_core.events.envelope import Actor
+from metis_core.events.payloads import GatewayAuthFailed, make_event
 from metis_core.observability import METRICS_CONTENT_TYPE, MetricsCollector
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
@@ -32,6 +36,23 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from metis_gateway.auth import extract_bearer_token, identity_from_key
+from metis_gateway.billing import (
+    BillingClient,
+    BillingConfig,
+    BillingState,
+    billing_cancel_handler,
+    billing_pause_handler,
+    billing_payment_method_handler,
+    billing_status_handler,
+    build_billing_state,
+    stripe_webhook_handler,
+)
+from metis_gateway.billing.routes import (
+    billing_error_response,
+    billing_resume_handler,
+    billing_subscribe_handler,
+)
+from metis_gateway.billing.subscriptions import BillingError
 from metis_gateway.endpoints.anthropic import (
     InboundTranslationError as AnthropicInboundTranslationError,
 )
@@ -56,6 +77,7 @@ from metis_gateway.middleware_versioning import VersioningMiddleware
 from metis_gateway.quotas import (
     QuotaExceeded,
     RequestQuotaCache,
+    TierCaps,
     enforce_quotas,
 )
 from metis_gateway.runtime import GatewayRuntime
@@ -154,6 +176,11 @@ class GatewayConfig:
     tls_key: Path | None = None
     # Wave 14 — self-serve signup. Off by default; SaaS deployments opt in.
     signup: SignupConfig | None = None
+    # Wave 15 — Stripe-backed billing per pricing.md §5.5.4. Off by default;
+    # mounting `/account/billing/*` + `/webhooks/stripe` requires the
+    # operator to flip `enabled=True` and supply `stripe_api_key` +
+    # `stripe_webhook_secret`. Pre-Wave-15 deployments are byte-identical.
+    billing: BillingConfig | None = None
 
     def __post_init__(self) -> None:
         if (self.tls_cert is None) != (self.tls_key is None):
@@ -182,6 +209,7 @@ class _AppState:
     started_at: datetime
     metrics: MetricsCollector
     signup: SignupState | None = None
+    billing: BillingState | None = None
 
 
 def build_app(
@@ -189,6 +217,8 @@ def build_app(
     *,
     rate_limit: RateLimitConfig | None = None,
     signup: SignupConfig | None = None,
+    billing: BillingConfig | None = None,
+    billing_client: BillingClient | None = None,
 ) -> Starlette:
     """Build the Starlette ASGI app bound to a fully-wired GatewayRuntime.
 
@@ -202,6 +232,12 @@ def build_app(
     links are logged to stdout in v1 (no real email transport); flipping
     this on in production requires the operator to swap in a real email
     sender before the endpoints face the open internet.
+
+    `billing` follows pricing.md §5.5.4 (Wave 15) — off by default;
+    passing a `BillingConfig(enabled=True, ...)` mounts the
+    ``/account/billing/*`` routes and the ``/webhooks/stripe``
+    listener. `billing_client` is the test-injection seam: pass a
+    `FakeBillingClient` to bypass the real Stripe wrapper.
     """
     metrics = MetricsCollector(
         bus=runtime.bus,
@@ -216,14 +252,18 @@ def build_app(
     # caller that only passes `enabled=True` still gets the right wiring.
     signup_config = _resolve_signup_config(signup, runtime)
     signup_state = build_signup_state(signup_config)
+    billing_state = build_billing_state(billing, runtime.bus, client=billing_client)
     state = _AppState(
         runtime=runtime,
         started_at=datetime.now(UTC),
         metrics=metrics,
         signup=signup_state,
+        billing=billing_state,
     )
 
     async def _err_handler(_request: Request, exc: Exception) -> Response:
+        if isinstance(exc, BillingError):
+            return billing_error_response(exc)
         if isinstance(exc, SignupError):
             return signup_error_response(exc)
         if isinstance(exc, HTTPException):
@@ -234,6 +274,10 @@ def build_app(
     async def _signup_err_handler(_request: Request, exc: Exception) -> Response:
         assert isinstance(exc, SignupError)
         return signup_error_response(exc)
+
+    async def _billing_err_handler(_request: Request, exc: Exception) -> Response:
+        assert isinstance(exc, BillingError)
+        return billing_error_response(exc)
 
     routes = [
         Route("/healthz", _health, methods=["GET"]),
@@ -255,12 +299,40 @@ def build_app(
                 ),
             ]
         )
+    if billing_state is not None:
+        # Billing routes piggy-back on the signup-session auth — the
+        # gateway's stance is "if you're not running signup, you don't
+        # have an account model to bill" so we require signup to be on.
+        if signup_state is None:
+            raise GatewayConfigError(
+                "BillingConfig.enabled=True requires SignupConfig.enabled=True"
+            )
+        routes.extend(
+            [
+                Route("/account/billing", billing_status_handler, methods=["GET"]),
+                Route(
+                    "/account/billing/subscribe",
+                    billing_subscribe_handler,
+                    methods=["POST"],
+                ),
+                Route(
+                    "/account/billing/payment-method",
+                    billing_payment_method_handler,
+                    methods=["POST"],
+                ),
+                Route("/account/billing/cancel", billing_cancel_handler, methods=["POST"]),
+                Route("/account/billing/pause", billing_pause_handler, methods=["POST"]),
+                Route("/account/billing/resume", billing_resume_handler, methods=["POST"]),
+                Route("/webhooks/stripe", stripe_webhook_handler, methods=["POST"]),
+            ]
+        )
     middleware_stack: list[Middleware] = [Middleware(VersioningMiddleware)]
     if rate_limit is not None and rate_limit.enabled:
         middleware_stack.append(Middleware(RateLimitMiddleware, config=rate_limit))
     app = Starlette(
         routes=routes,
         exception_handlers={
+            BillingError: _billing_err_handler,
             SignupError: _signup_err_handler,
             Exception: _err_handler,
         },
@@ -308,6 +380,49 @@ async def _metrics(request: Request) -> Response:
     return Response(content=body, media_type=METRICS_CONTENT_TYPE)
 
 
+def _emit_auth_failed(
+    runtime: GatewayRuntime,
+    *,
+    reason: Literal["missing_token", "invalid_token", "key_revoked"],
+    inbound_shape: Literal["openai", "anthropic"],
+    token: str | None,
+    gateway_key_id: str | None = None,
+) -> None:
+    """Audit + metric every rejected auth attempt.
+
+    Persists a `gateway.auth_failed` event on the bus (audit-flagged per
+    `audit-log.md §AUDIT_EVENT_TYPES`) and bumps
+    `metis_gateway_auth_failures_total{reason}` via the bus subscriber.
+    The token is hashed to an 8-char SHA-256 prefix so SIEM operators
+    can correlate repeated attempts of the same leaked credential
+    without persisting the credential itself — the full hash is too
+    long to bucket usefully and the raw token would defeat the
+    purpose. Best-effort: bus emission errors are logged and swallowed
+    so an observability glitch can't open a side-channel that bypasses
+    the 401 response.
+    """
+    token_hash_prefix: str | None = None
+    if token:
+        token_hash_prefix = hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]
+    try:
+        runtime.bus.emit(
+            make_event(
+                type="gateway.auth_failed",
+                session_id=f"gw_{new_message_id()}",
+                actor=Actor.SYSTEM,
+                payload=GatewayAuthFailed(
+                    reason=reason,
+                    inbound_shape=inbound_shape,
+                    token_hash_prefix=token_hash_prefix,
+                    gateway_key_id=gateway_key_id,
+                ),
+                timestamp=datetime.now(UTC),
+            )
+        )
+    except Exception:
+        logger.warning("failed to emit gateway.auth_failed", exc_info=True)
+
+
 def _count_gateway_keys(runtime: GatewayRuntime) -> tuple[int, int]:
     """Tally `(active, revoked)` for the keystore at scrape time.
 
@@ -340,6 +455,12 @@ async def chat_completions(request: Request) -> Response:
     bearer = extract_bearer_token(request.headers.get("authorization"))
     key = runtime.keystore.authenticate(bearer or "")
     if key is None:
+        _emit_auth_failed(
+            runtime,
+            reason="missing_token" if not bearer else "invalid_token",
+            inbound_shape="openai",
+            token=bearer,
+        )
         return _openai_error(
             "invalid or missing API key",
             status=401,
@@ -348,6 +469,13 @@ async def chat_completions(request: Request) -> Response:
         )
     now = datetime.now(UTC)
     if not key.is_active(now=now):
+        _emit_auth_failed(
+            runtime,
+            reason="key_revoked",
+            inbound_shape="openai",
+            token=bearer,
+            gateway_key_id=key.key_id,
+        )
         return _key_revoked_response(
             key_id=key.key_id,
             revoked_at=key.effective_revoked_at(now=now),
@@ -363,6 +491,7 @@ async def chat_completions(request: Request) -> Response:
             key=key,
             identity=identity,
             inbound_shape="openai",
+            tier_caps=_resolve_tier_caps(st, key),
         )
         if verdict is not None:
             return _quota_exceeded_response(verdict, shape="openai")
@@ -542,11 +671,24 @@ async def messages(request: Request) -> Response:
     )
     key = runtime.keystore.authenticate(token or "")
     if key is None:
+        _emit_auth_failed(
+            runtime,
+            reason="missing_token" if not token else "invalid_token",
+            inbound_shape="anthropic",
+            token=token,
+        )
         return _anthropic_error(
             "invalid or missing API key", status=401, type_="authentication_error"
         )
     now = datetime.now(UTC)
     if not key.is_active(now=now):
+        _emit_auth_failed(
+            runtime,
+            reason="key_revoked",
+            inbound_shape="anthropic",
+            token=token,
+            gateway_key_id=key.key_id,
+        )
         return _key_revoked_response(
             key_id=key.key_id,
             revoked_at=key.effective_revoked_at(now=now),
@@ -562,6 +704,7 @@ async def messages(request: Request) -> Response:
             key=key,
             identity=identity,
             inbound_shape="anthropic",
+            tier_caps=_resolve_tier_caps(st, key),
         )
         if verdict is not None:
             return _quota_exceeded_response(verdict, shape="anthropic")
@@ -803,7 +946,12 @@ async def run_gateway(runtime: GatewayRuntime, config: GatewayConfig | None = No
     if not _is_loopback_host(cfg.host):
         _log_non_loopback_warning(cfg)
 
-    app = build_app(runtime, rate_limit=cfg.rate_limit, signup=cfg.signup)
+    app = build_app(
+        runtime,
+        rate_limit=cfg.rate_limit,
+        signup=cfg.signup,
+        billing=cfg.billing,
+    )
     uvicorn_config = _build_uvicorn_config(app, cfg)
     server = uvicorn.Server(uvicorn_config)
 
@@ -936,6 +1084,42 @@ def _build_quota_cache(runtime: GatewayRuntime) -> RequestQuotaCache | None:
     if runtime.quota_tracker is None:
         return None
     return RequestQuotaCache(runtime.quota_tracker)
+
+
+def _resolve_tier_caps(state: _AppState, key) -> TierCaps | None:
+    """Wave 15 — resolve the billing tier cap that composes with key caps.
+
+    Returns `None` when:
+      - billing isn't enabled on this deployment;
+      - signup isn't enabled (no account model to attach a tier to);
+      - the gateway key has no signup account (CLI-issued key);
+      - the account is on a tier without a configured cap (pro / enterprise
+        default unlimited at the tier layer).
+
+    On the Free tier, returns the configured `free_daily_cap_usd` /
+    `free_monthly_cap_usd` aggregated across every key under the account
+    so a buyer can't slide past the cap by issuing more keys.
+    """
+    if state.billing is None or state.signup is None:
+        return None
+    account = state.signup.store.account_for_key(key.key_id)
+    if account is None:
+        return None
+    customer = state.billing.store.get_customer(account.account_id)
+    tier = customer.tier if customer is not None else "free"
+    if tier != "free":
+        return None
+    cfg = state.billing.config
+    daily_cap = cfg.free_daily_cap_usd
+    monthly_cap = cfg.free_monthly_cap_usd
+    if daily_cap is None and monthly_cap is None:
+        return None
+    return TierCaps(
+        account_id=account.account_id,
+        key_ids=tuple(account.key_ids),
+        daily_cap_usd=daily_cap,
+        monthly_cap_usd=monthly_cap,
+    )
 
 
 def _team_budget_remaining(quota_cache: RequestQuotaCache | None, key) -> Decimal | None:

@@ -30,7 +30,13 @@ from metis_core.canonical.ids import next_monotonic_ulid
 from metis_core.events.envelope import Actor
 from metis_core.events.payloads import GatewayKeyIssued, make_event
 
-from metis_gateway.auth import hash_bearer_token, validate_cap_usd, validate_identity_tag
+from metis_gateway.auth import (
+    _CUSTOMER_TIER_VALUES,
+    CustomerTier,
+    hash_bearer_token,
+    validate_cap_usd,
+    validate_identity_tag,
+)
 
 
 class IssueKeyError(Exception):
@@ -46,6 +52,7 @@ def build_new_key_record(
     monthly_cap_usd: Decimal | float | str | None = None,
     user_id: str | None = None,
     team_id: str | None = None,
+    customer_tier: CustomerTier | None = None,
     now: datetime | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Mint a new key record + plaintext token (without touching the keystore file).
@@ -71,6 +78,11 @@ def build_new_key_record(
             team_id = validate_identity_tag(team_id, field_name="--team")
         except ValueError as exc:
             raise IssueKeyError(str(exc)) from exc
+
+    if customer_tier is not None and customer_tier not in _CUSTOMER_TIER_VALUES:
+        raise IssueKeyError(
+            f"--customer-tier must be one of {list(_CUSTOMER_TIER_VALUES)} (got {customer_tier!r})"
+        )
 
     daily_cap_decimal: Decimal | None = None
     if daily_cap_usd is not None:
@@ -108,6 +120,8 @@ def build_new_key_record(
         record["user_id"] = user_id
     if team_id is not None:
         record["team_id"] = team_id
+    if customer_tier is not None:
+        record["customer_tier"] = customer_tier
 
     return record, plaintext
 
@@ -122,6 +136,7 @@ def issue_key(
     monthly_cap_usd: Decimal | float | None = None,
     user_id: str | None = None,
     team_id: str | None = None,
+    customer_tier: CustomerTier | None = None,
     now: datetime | None = None,
     db_path: Path | None = None,
 ) -> tuple[str, str]:
@@ -143,6 +158,7 @@ def issue_key(
         monthly_cap_usd=monthly_cap_usd,
         user_id=user_id,
         team_id=team_id,
+        customer_tier=customer_tier,
         now=now,
     )
 
@@ -201,6 +217,7 @@ def _emit_issued_event(*, record: dict[str, Any], db_path: Path) -> None:
         allowed_models=list(record["allowed_models"]) if record.get("allowed_models") else None,
         daily_cap_usd=Decimal(str(daily_cap)) if daily_cap is not None else None,
         monthly_cap_usd=Decimal(str(monthly_cap)) if monthly_cap is not None else None,
+        customer_tier=record.get("customer_tier"),
     )
     _emit_audit_event(
         db_path=db_path,
@@ -233,6 +250,7 @@ def issue_key_command(
     monthly_cap_usd: Decimal | float | None = None,
     user_id: str | None = None,
     team_id: str | None = None,
+    customer_tier: CustomerTier | None = None,
     db_path: Path | None = None,
 ) -> int:
     """CLI shim: prints the plaintext token once and returns a Unix exit code."""
@@ -246,6 +264,7 @@ def issue_key_command(
             monthly_cap_usd=monthly_cap_usd,
             user_id=user_id,
             team_id=team_id,
+            customer_tier=customer_tier,
             db_path=db_path,
         )
     except IssueKeyError as exc:
@@ -257,6 +276,8 @@ def issue_key_command(
         print(f"user:   {user_id}")
     if team_id is not None:
         print(f"team:   {team_id}")
+    if customer_tier is not None:
+        print(f"customer_tier: {customer_tier}")
     if daily_cap_usd is not None:
         print(f"daily_cap_usd: {daily_cap_usd}")
     if monthly_cap_usd is not None:

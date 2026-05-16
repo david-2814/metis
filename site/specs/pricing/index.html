@@ -1,0 +1,4638 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Local-first AI dev agent — provider-agnostic, self-improving, cost-aware. Canonical message format, layered routing, bounded memory, transparent cost attribution.">
+      
+      
+        <meta name="author" content="Metis maintainers">
+      
+      
+        <link rel="canonical" href="https://docs.metis.dev/specs/pricing/">
+      
+      
+        <link rel="prev" href="../delegation/">
+      
+      
+        <link rel="next" href="../memory-store/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Pricing - Metis</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#pricing-specification" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Metis" class="md-header__button md-logo" aria-label="Metis" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Metis
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Pricing
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/2sumAI/metis" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    2sumAI/metis
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../project-overview/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../canonical-message-format/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Specs
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../operations/quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Operations
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../STRATEGY/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Strategy
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Metis" class="md-nav__button md-logo" aria-label="Metis" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Metis
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/2sumAI/metis" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    2sumAI/metis
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project-overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    First savings number
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../customer-trial-recipe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Customer trial recipe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gateway-client-quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway client quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../savings-demo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Savings demo
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../standard-model-profiles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Standard model profiles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Specs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_1" id="__nav_3_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Foundation
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Foundation
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../canonical-message-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Canonical message format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../event-bus-and-trace-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Event bus & trace catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project-overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project overview (spec)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3_2" id="__nav_3_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing & adapters
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Routing & adapters
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../routing-engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../provider-adapter-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Provider adapter contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-dispatcher/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool dispatcher
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../delegation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Delegation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pricing
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pricing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Purpose
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-scope-and-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Scope and goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Scope and goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Non-goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-background-what-is-being-priced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Background: what is being priced
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Background: what is being priced">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-what-metis-does-not-bill-for" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 What Metis does NOT bill for
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-the-cost-lever-metis-sells" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 The cost lever Metis sells
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-constraints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Constraints
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Constraints">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-the-trial-without-payment-floor-from-deployment-shapemd-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 The "trial without payment" floor (from deployment-shape.md §1)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-the-buyer-is-not-the-user-constraint-from-strategymd-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 The buyer-is-not-the-user constraint (from STRATEGY.md §2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-the-shipped-primitives-that-pricing-must-compose-with-from-multi-usermd-5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 The shipped primitives that pricing must compose with (from multi-user.md §5)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-the-first-paying-buyer-is-a-startup-cto-constraint-from-strategymd-62" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 The "first paying buyer is a startup-CTO" constraint (from STRATEGY.md §6.2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-pricing-model-survey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Pricing model survey
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Pricing model survey">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-per-seat-developer-count-monthly-fee" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Per-seat (developer count × monthly fee)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-per-call-api-surface-charge-per-llm-call-routed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Per-call (API surface charge per LLM call routed)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-percentage-of-savings-x-of-baseline-minus-actual" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Percentage of savings (X% of baseline-minus-actual)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-free-paid-tiers-open-core" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Free + paid tiers (open-core)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-hybrid-combinations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Hybrid combinations
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-comparison-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Comparison matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-recommendation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Recommendation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Recommendation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71-free-tier-metis-community" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 Free tier — "Metis Community"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72-paid-tier-metis-pro" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 Paid tier — "Metis Pro"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73-enterprise-tier-metis-enterprise-future" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 Enterprise tier — "Metis Enterprise" (future)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74-why-this-recommendation-in-one-sentence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 Why this recommendation in one sentence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#75-what-this-recommendation-deliberately-does-not-decide" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.5 What this recommendation deliberately does NOT decide
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#76-surface-for-human-sign-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.6 Surface for human sign-off
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-how-the-recommendation-composes-with-shipped-primitives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. How the recommendation composes with shipped primitives
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. How the recommendation composes with shipped primitives">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-seat-count" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 Seat count
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#82-tier-gating" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.2 Tier gating
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#83-hard-caps-composed-with-billing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.3 Hard caps composed with billing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#84-savings-rollup-as-a-pro-feature" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.4 Savings rollup as a Pro feature
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#85-future-of-savings-enterprise-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.5 Future %-of-savings enterprise tier
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-out-of-scope-for-v1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Out of scope for v1
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Open questions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-invariants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Invariants
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-decision-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Decision log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14-sign-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. Sign-off
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_3" id="__nav_3_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sessions & memory
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sessions & memory
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../memory-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../context-assembler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context assembler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pattern-store/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pattern store
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skill-format/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill format
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skill-curator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill curator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_4" id="__nav_3_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server & gateway
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Server & gateway
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../server-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../streaming-protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gateway-hardening/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway hardening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multi-user/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-user
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment-shape/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment shape
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_5" id="__nav_3_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quality & evidence
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Quality & evidence
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../evaluator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmark
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../analytics-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Analytics API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_6" id="__nav_3_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compliance & retention
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Compliance & retention
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../audit-log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Audit log
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../trace-retention/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trace retention
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../redaction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Redaction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CHANGES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Change log
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    First savings number
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../gateway-deployment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/upgrade-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrade guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/incident-response/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Incident response
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/observability-runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/status-page/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Status page
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/sla-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SLA template
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/trace-performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trace performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/concierge-onboarding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concierge onboarding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/ga-readiness-audit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GA readiness audit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/compliance-overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compliance overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/soc2-readiness/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SOC2 readiness
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/phase-claim-proposal/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Phase claim proposal
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Strategy
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Strategy
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../KNOWN_ISSUES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Known issues
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_3" id="__nav_5_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sales
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sales
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/one-pager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    One-pager
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Buyer FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/competitive-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Competitive comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/objection-handling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Objection handling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../sales/case-study-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Case study template
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_5_4" id="__nav_5_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Market research
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_5_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Market research
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/synthesis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Synthesis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/01-coding-agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coding agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/02-local-first-platforms/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local-first platforms
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/03-routing-layers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing layers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../market-research/04-skills-and-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills & memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Purpose
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-scope-and-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Scope and goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Scope and goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Non-goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-background-what-is-being-priced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Background: what is being priced
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Background: what is being priced">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-what-metis-does-not-bill-for" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 What Metis does NOT bill for
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-the-cost-lever-metis-sells" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 The cost lever Metis sells
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-constraints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Constraints
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Constraints">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-the-trial-without-payment-floor-from-deployment-shapemd-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 The "trial without payment" floor (from deployment-shape.md §1)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-the-buyer-is-not-the-user-constraint-from-strategymd-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 The buyer-is-not-the-user constraint (from STRATEGY.md §2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-the-shipped-primitives-that-pricing-must-compose-with-from-multi-usermd-5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 The shipped primitives that pricing must compose with (from multi-user.md §5)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-the-first-paying-buyer-is-a-startup-cto-constraint-from-strategymd-62" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 The "first paying buyer is a startup-CTO" constraint (from STRATEGY.md §6.2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-pricing-model-survey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Pricing model survey
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Pricing model survey">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-per-seat-developer-count-monthly-fee" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Per-seat (developer count × monthly fee)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-per-call-api-surface-charge-per-llm-call-routed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Per-call (API surface charge per LLM call routed)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-percentage-of-savings-x-of-baseline-minus-actual" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Percentage of savings (X% of baseline-minus-actual)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#54-free-paid-tiers-open-core" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.4 Free + paid tiers (open-core)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#55-hybrid-combinations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.5 Hybrid combinations
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-comparison-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Comparison matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-recommendation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Recommendation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Recommendation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71-free-tier-metis-community" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 Free tier — "Metis Community"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72-paid-tier-metis-pro" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 Paid tier — "Metis Pro"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73-enterprise-tier-metis-enterprise-future" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 Enterprise tier — "Metis Enterprise" (future)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74-why-this-recommendation-in-one-sentence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 Why this recommendation in one sentence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#75-what-this-recommendation-deliberately-does-not-decide" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.5 What this recommendation deliberately does NOT decide
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#76-surface-for-human-sign-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.6 Surface for human sign-off
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-how-the-recommendation-composes-with-shipped-primitives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. How the recommendation composes with shipped primitives
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. How the recommendation composes with shipped primitives">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-seat-count" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 Seat count
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#82-tier-gating" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.2 Tier gating
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#83-hard-caps-composed-with-billing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.3 Hard caps composed with billing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#84-savings-rollup-as-a-pro-feature" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.4 Savings rollup as a Pro feature
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#85-future-of-savings-enterprise-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.5 Future %-of-savings enterprise tier
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-out-of-scope-for-v1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Out of scope for v1
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Open questions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-invariants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Invariants
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-decision-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Decision log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14-sign-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. Sign-off
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/2sumAI/metis/edit/main/docs/specs/pricing.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20.71 7.04c.39-.39.39-1.04 0-1.41l-2.34-2.34c-.37-.39-1.02-.39-1.41 0l-1.84 1.83 3.75 3.75M3 17.25V21h3.75L17.81 9.93l-3.75-3.75z"/></svg>
+    </a>
+  
+  
+    
+      
+    
+    <a href="https://github.com/2sumAI/metis/raw/main/docs/specs/pricing.md" title="View source of this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0 8a5 5 0 0 1-5-5 5 5 0 0 1 5-5 5 5 0 0 1 5 5 5 5 0 0 1-5 5m0-12.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5"/></svg>
+    </a>
+  
+
+
+<h1 id="pricing-specification">Pricing Specification<a class="headerlink" href="#pricing-specification" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Draft v1 — recommendation, awaiting owner sign-off / commercial decision
+<strong>Last updated:</strong> 2026-05-14</p>
+<blockquote>
+<p>Frames the commercial pricing model for the Metis product itself: gateway access, the analytics dashboard, multi-user identity, the upgrade-tier agent. Surveys the candidate models, names the trade-offs each one creates, and proposes one for the owner to ratify or reject. <strong>The spec lays out the choice; the owner closes <a href="../../STRATEGY/"><code>STRATEGY.md §6.8</code></a>.</strong></p>
+<p>This spec depends on:</p>
+<ul>
+<li><a href="../../STRATEGY/"><code>../STRATEGY.md §2</code></a> — <em>buyer ≠ user</em> framing; the buyer is the budget owner.</li>
+<li><a href="../../STRATEGY/"><code>../STRATEGY.md §6.8</code></a> — the open question this spec exists to close.</li>
+<li><a href="../deployment-shape/"><code>deployment-shape.md</code></a> — hybrid (gateway-first → agent-upgrade); pricing must accommodate "trial without payment" → "convert to paid."</li>
+<li><a href="../multi-user/"><code>multi-user.md §5</code></a> — per-user / per-team identity layer; pricing must compose with the shipped per-team budget cap primitive.</li>
+<li><a href="../analytics-api/"><code>analytics-api.md §4.7</code></a> — <code>actual_repriced_usd</code> / <code>baseline_repriced_usd</code> / <code>savings_pct</code>; the measurement substrate any "% of savings" model would depend on.</li>
+<li><a href="../gateway/"><code>gateway.md</code></a> — the OSS surface that's the foot-in-the-door.</li>
+</ul>
+<p>This spec is <strong>product / commercial design</strong>, not an engineering contract. It does not add wire fields, event types, or HTTP endpoints. The implementation lands only after the buyer signs off on the model — which means none of §5–§7 below should be read as "to-build."</p>
+</blockquote>
+<hr />
+<h2 id="1-purpose">1. Purpose<a class="headerlink" href="#1-purpose" title="Permanent link">&para;</a></h2>
+<p>Today there is no specced pricing model. Every GTM conversation invents one on the spot. That is fine while the project is one part-time owner with zero paying buyers, but it is the missing piece that blocks the first commercial conversation: the buyer asks "what does this cost?" and the answer needs to be a single sentence backed by a defensible rationale, not a real-time deliberation.</p>
+<p>The job of this spec is to:</p>
+<ol>
+<li><strong>Survey</strong> the credible pricing models for a cost-optimization product positioned as a hybrid gateway-plus-agent.</li>
+<li><strong>Name the trade-offs</strong> each model creates — what it incentivizes Metis to build, what it discourages buyers from doing, who pays when, the billing complexity it implies.</li>
+<li><strong>Recommend one</strong> with rationale, while explicitly leaving the decision to the owner. The spec frames the choice; it does not close it.</li>
+<li><strong>Pin composability</strong> with the multi-user identity layer (<a href="../multi-user/"><code>multi-user.md §5</code></a>) and the analytics surface (<a href="../analytics-api/"><code>analytics-api.md</code></a>) so whichever model wins is <em>enforceable</em> via primitives already shipped.</li>
+</ol>
+<p>What this spec deliberately does <strong>not</strong> do: settle list prices, name competitors' price points (the project does not yet have the buyer signal to triangulate against), pick a tiering structure for the paid plan (that's downstream of the model choice), or commit Metis to any billing infrastructure (Stripe, metering, invoicing). Those are commercial / operational decisions, not engineering ones.</p>
+<hr />
+<h2 id="2-scope-and-goals">2. Scope and goals<a class="headerlink" href="#2-scope-and-goals" title="Permanent link">&para;</a></h2>
+<h3 id="21-goals">2.1 Goals<a class="headerlink" href="#21-goals" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>One owner-ratifiable recommendation.</strong> A single proposed model with rationale tight enough that the owner can either accept it ("ship pricing.md as the answer") or reject it in favor of one of the other candidates ("section 5.X is closer to what I want").</li>
+<li><strong>Honest trade-off framing.</strong> Every candidate has obvious upsides; this spec names the corresponding <em>downsides</em> with the same vigor. The recommendation only earns its slot by losing fewer dimensions than the alternatives, not by winning on every dimension.</li>
+<li><strong>Composability with shipped primitives.</strong> The recommended model must be enforceable using the multi-user identity records, the per-team budget caps, the per-key analytics rollups, and the savings-counterfactual already specced. If a model requires a new metering subsystem, that cost surfaces in the rationale.</li>
+<li><strong>Compatibility with the hybrid deployment.</strong> A gateway buyer flips an env var with <strong>zero commitment</strong> (<a href="../deployment-shape/"><code>deployment-shape.md §1</code></a>). Pricing must not break that floor: the path from "trial" to "convert to paid" needs a deliberate point of conversion, not a paywall at the front door.</li>
+<li><strong>Buyer-legible billing.</strong> A CTO looking at an invoice should be able to map every line item to a single sentence ("this is what we spent on Metis seats" / "this is what Metis took of our savings") without consulting a glossary. Models that fail this test cost the sale.</li>
+</ol>
+<h3 id="22-non-goals">2.2 Non-goals<a class="headerlink" href="#22-non-goals" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Price points.</strong> $/seat, $/call, %-of-savings thresholds — the spec frames the dimensions; the numbers come from market evidence (competitor benchmarks, first buyer conversations) the project does not yet have.</li>
+<li><strong>Billing infrastructure.</strong> Stripe vs. Lago vs. invoice-by-PDF, currency support, tax handling, dunning, prorating, annual-vs-monthly: all downstream of model choice.</li>
+<li><strong>Contract / SLA structure.</strong> Service credits, uptime guarantees, support tiers: tied to the deployment-posture choice in <a href="../../STRATEGY/"><code>STRATEGY.md §6.3</code></a> which is still open.</li>
+<li><strong>Channel pricing.</strong> Reseller / partner / OEM pricing, marketplace listings (AWS / GCP / Azure): zero v1 evidence anything will use these.</li>
+<li><strong>Open-source license choice.</strong> Apache 2.0 vs. BUSL vs. AGPL is a separate decision, made when the OSS surface is published. The spec assumes "permissive enough that a CTO does not need to read it"; the actual license is the owner's call.</li>
+</ol>
+<hr />
+<h2 id="3-background-what-is-being-priced">3. Background: what is being priced<a class="headerlink" href="#3-background-what-is-being-priced" title="Permanent link">&para;</a></h2>
+<p>Metis sells three artifacts to the same buyer:</p>
+<ol>
+<li><strong>The gateway</strong> — a transparent HTTP proxy that any OpenAI- or Anthropic-shape client can speak (<a href="../gateway/"><code>gateway.md</code></a>). Provides routing, lossless canonical IR, cost attribution, and per-(key / user / team) rollups. Per-request stateless. This is the foot-in-the-door (§4.1).</li>
+<li><strong>The agent</strong> — the replacement coding agent (CLI / TUI / future desktop) that owns context assembly, skill loading, bounded memory, and learned routing (<a href="../../STRATEGY/"><code>STRATEGY.md §7</code></a>, "If hybrid"). High-ceiling cost lever; takes weeks of use to materialize. This is the upgrade (§4.2).</li>
+<li><strong>The dashboard</strong> — the analytics surface (<a href="../analytics-api/"><code>analytics-api.md</code></a>) that turns trace events into per-(user / team / model / inbound shape) cost rollups, cache-effectiveness panels, the savings counterfactual. The <em>artifact that closes the deal</em> per <a href="../../STRATEGY/"><code>STRATEGY.md §2</code></a>. This is the <em>evidence</em> the gateway tier surfaces — the thing that makes the upgrade worth buying.</li>
+</ol>
+<p>These three are <strong>one product</strong> from the buyer's perspective ("Metis"), priced under one umbrella. The pricing model is what determines which of the three each tier actually charges for.</p>
+<h3 id="31-what-metis-does-not-bill-for">3.1 What Metis does NOT bill for<a class="headerlink" href="#31-what-metis-does-not-bill-for" title="Permanent link">&para;</a></h3>
+<p>Metis does <strong>not</strong> meter or resell provider tokens. The buyer brings their own provider API key (BYO-keys per <a href="../gateway/"><code>gateway.md §2</code></a>); Metis routes through it, but the bill for the LLM call itself goes from Anthropic / OpenAI / OpenRouter to the buyer directly. There is no transit margin. This is load-bearing for §5.2 below: a per-call Metis price stacks on top of, not in place of, the provider bill.</p>
+<h3 id="32-the-cost-lever-metis-sells">3.2 The cost lever Metis sells<a class="headerlink" href="#32-the-cost-lever-metis-sells" title="Permanent link">&para;</a></h3>
+<p>Per <a href="../../STRATEGY/"><code>STRATEGY.md §1</code></a>, three levers compose the savings:</p>
+<ol>
+<li><strong>Context engineering</strong> (largest; cache discipline, history pruning) — reachable only from the agent.</li>
+<li><strong>Skills</strong> (medium; lazy-loaded expert prompts) — reachable only from the agent.</li>
+<li><strong>Model selection</strong> (smallest in raw size, but the most measurable) — reachable from the gateway <em>and</em> the agent.</li>
+</ol>
+<p>The gateway is the cheaper lever in the hybrid. The agent is the deeper lever. The pricing model has to make sense for both forms of value — otherwise the gateway-to-agent upsell breaks at the price tag.</p>
+<hr />
+<h2 id="4-constraints">4. Constraints<a class="headerlink" href="#4-constraints" title="Permanent link">&para;</a></h2>
+<h3 id="41-the-trial-without-payment-floor-from-deployment-shapemd-1">4.1 The "trial without payment" floor (from deployment-shape.md §1)<a class="headerlink" href="#41-the-trial-without-payment-floor-from-deployment-shapemd-1" title="Permanent link">&para;</a></h3>
+<p>The whole point of the gateway is that a buyer flips one env var and savings show up on their dashboard within hours, <strong>before</strong> they have signed a contract. This requires a usable free tier — paywalling the gateway at request #1 kills the GTM motion.</p>
+<p>The pricing model <strong>must</strong> accept "buyer evaluates Metis for some bounded period at $0" as a first-class state. The exit from that state (to a paid plan) is the <em>conversion event</em> the rest of pricing exists to motivate. The natural conversion triggers are:</p>
+<ul>
+<li><strong>Team size crosses a threshold</strong> (e.g. 6+ users on one keystore). Solo / pair use stays free; team use pays.</li>
+<li><strong>Quota usage crosses a threshold</strong> (e.g. &gt;$X/month of routed cost). Light use stays free; heavy use pays.</li>
+<li><strong>Paid feature is required</strong> (multi-user identity, hard caps, audit log export, the agent tier). Buyer opts in when they need the feature, not before.</li>
+<li><strong>Hosted SaaS posture</strong> (vs. self-hosted). Operationally outsourcing the deploy crosses the line.</li>
+</ul>
+<p>Any of these can be the conversion trigger; the model choice in §5 picks one or composes more than one.</p>
+<h3 id="42-the-buyer-is-not-the-user-constraint-from-strategymd-2">4.2 The buyer-is-not-the-user constraint (from STRATEGY.md §2)<a class="headerlink" href="#42-the-buyer-is-not-the-user-constraint-from-strategymd-2" title="Permanent link">&para;</a></h3>
+<p>The buyer (CTO, eng leader) does not invoice themselves for the dev tool the devs use. The buyer pays a vendor invoice and expects:</p>
+<ul>
+<li><strong>Predictability.</strong> "What is my Metis bill going to be next month?" should have a tight upper bound. Pure usage-based pricing fails this.</li>
+<li><strong>Attribution.</strong> "Why was last month's bill $X?" — the buyer wants to see the bill broken down by team / project / user. The multi-user identity layer (<a href="../multi-user/"><code>multi-user.md §5</code></a>) is the mechanism; the pricing model has to align its <em>unit</em> with that mechanism so the rollup answers the right question.</li>
+<li><strong>Single bill, single vendor.</strong> Buyers strongly prefer one Metis line item to N. This biases against models that produce per-team or per-project sub-bills unless they're rolled up.</li>
+</ul>
+<p>The user — the dev running Claude Code through the gateway — has different preferences ("don't interrupt me with a quota wall mid-debug-session"), and the routing-rule soft caps from <a href="../multi-user/"><code>multi-user.md §6</code></a> are the mechanism that lets the buyer's caps land softly on the user. Pricing should not require the buyer to explain billing to every dev; the gateway abstracts it.</p>
+<h3 id="43-the-shipped-primitives-that-pricing-must-compose-with-from-multi-usermd-5">4.3 The shipped primitives that pricing must compose with (from multi-user.md §5)<a class="headerlink" href="#43-the-shipped-primitives-that-pricing-must-compose-with-from-multi-usermd-5" title="Permanent link">&para;</a></h3>
+<p>The identity layer ships with:</p>
+<ul>
+<li><strong>Per-user / per-team / per-key rollups</strong> — <code>cost_usd</code>, <code>input_tokens</code>, <code>output_tokens</code>, <code>cached_input_tokens</code>, <code>cache_creation_input_tokens</code>, <code>call_count</code> per dimension per window (<a href="../multi-user/"><code>multi-user.md §5.2</code></a>).</li>
+<li><strong>Per-team hard caps</strong> (<code>daily_cap_usd</code>, <code>monthly_cap_usd</code>) enforced at the gateway boundary (<a href="../multi-user/"><code>multi-user.md §6.3</code></a>). Request short-circuits with 429 + a typed scope.</li>
+<li><strong>Per-team soft caps</strong> as routing-engine predicates (<code>team_cost_today_exceeds_usd</code>, <code>team_cost_month_exceeds_usd</code>) that redirect to cheaper models (<a href="../multi-user/"><code>multi-user.md §6.1</code></a>).</li>
+<li><strong>Savings counterfactual</strong> (<code>actual_repriced_usd</code> / <code>baseline_repriced_usd</code> per window) projected from the same trace store (<a href="../analytics-api/"><code>analytics-api.md §4.7</code></a>).</li>
+</ul>
+<p>Every candidate in §5 is measured against "does this compose with the primitives above without inventing new ones?" Models that require new metering surfaces lose the composability test.</p>
+<h3 id="44-the-first-paying-buyer-is-a-startup-cto-constraint-from-strategymd-62">4.4 The "first paying buyer is a startup-CTO" constraint (from STRATEGY.md §6.2)<a class="headerlink" href="#44-the-first-paying-buyer-is-a-startup-cto-constraint-from-strategymd-62" title="Permanent link">&para;</a></h3>
+<p>The default buyer profile is a 10–50-dev startup CTO, not a 200-dev enterprise eng leader. This profile:</p>
+<ul>
+<li>Has a credit card, not a procurement department. Wants a self-serve flow.</li>
+<li>Is price-sensitive in absolute dollars (sub-$5k/month total is the easy buy; $50k/year requires a conversation).</li>
+<li>Cares about <em>predictability over precision</em> — would rather pay a slightly higher fixed amount than a slightly lower variable amount that's hard to model.</li>
+<li>Does not yet need SOC2, audit log export, or RBAC; will need them later, at which point the price tier changes.</li>
+</ul>
+<p>A model that targets this profile will look different from one designed for the enterprise. The recommendation in §7 picks the startup-CTO target; the enterprise tier is a follow-on once buyer evidence accumulates.</p>
+<hr />
+<h2 id="5-pricing-model-survey">5. Pricing model survey<a class="headerlink" href="#5-pricing-model-survey" title="Permanent link">&para;</a></h2>
+<p>Each candidate is evaluated across six dimensions:</p>
+<ol>
+<li><strong>What it charges for</strong> — the unit of metering.</li>
+<li><strong>Incentive alignment</strong> — what the model rewards Metis for building and the buyer for doing.</li>
+<li><strong>Buyer friction at first contact</strong> — how hard is it to commit?</li>
+<li><strong>Buyer friction at scale</strong> — how predictable / defensible is the bill at $50k/yr?</li>
+<li><strong>Composability with shipped primitives</strong> — does the multi-user identity layer enforce it?</li>
+<li><strong>Billing complexity</strong> — how much non-product surface must Metis build to support it?</li>
+</ol>
+<h3 id="51-per-seat-developer-count-monthly-fee">5.1 Per-seat (developer count × monthly fee)<a class="headerlink" href="#51-per-seat-developer-count-monthly-fee" title="Permanent link">&para;</a></h3>
+<p><strong>Unit:</strong> active users per month. An "active user" is a <code>usr_&lt;ulid&gt;</code> whose keys made at least one <code>llm.call_completed</code> in the billing window (definition from <a href="../multi-user/"><code>multi-user.md §3.1</code></a>). The keystore already enumerates users.</p>
+<p><strong>Incentive alignment:</strong></p>
+<ul>
+<li><strong>Rewards Metis</strong> for adding seat-count over usage-per-seat. Metis is indifferent to whether a dev sends 10 or 10,000 requests/day.</li>
+<li><strong>Rewards buyer</strong> to use Metis heavily on the seats they've already bought — extracting more savings per seat compounds the ROI.</li>
+<li><strong>Punishes neither side</strong> for legitimate growth: more devs → more revenue is honest.</li>
+</ul>
+<p><strong>Buyer friction at first contact:</strong></p>
+<ul>
+<li><strong>Predictable</strong> — the buyer knows the bill the moment they count seats. This is the <em>most</em> friction-free model for a CTO in a procurement conversation.</li>
+<li><strong>Easy to model</strong> — same shape as Slack, Linear, GitHub, Cursor. Buyer has zero learning curve.</li>
+</ul>
+<p><strong>Buyer friction at scale:</strong></p>
+<ul>
+<li><strong>Decoupled from value.</strong> A team that goes from $1k/mo of LLM spend to $50k/mo of LLM spend (savings opportunity 50×) pays Metis the same dollar amount. The buyer's CFO will eventually notice that Metis is delivering 50× more savings for 1× the price — which is <em>good for Metis</em> but feels like leaving money on the table.</li>
+<li><strong>Conversely</strong> — the buyer might churn cheap seats (devs who don't use Metis heavily) to drive down the bill, even though those seats might still be netting savings the dashboard reports.</li>
+</ul>
+<p><strong>Composability:</strong> Excellent. The shipped <code>/analytics/by_user</code> rollup already counts active users per window; gating "active" on at least one event in the window is a single SQL predicate. The team / user records <em>are</em> the seat list.</p>
+<p><strong>Billing complexity:</strong> Lowest of the four. Monthly count + multiply by rate; the metering is already specced.</p>
+<p><strong>Net:</strong> Per-seat is the boring, defensible default. It is the model the buyer most easily accepts and the model the eng team least has to build for. Its weakness is that it does not visibly couple Metis's revenue to the savings Metis delivers — a problem only at the high-spend end.</p>
+<h3 id="52-per-call-api-surface-charge-per-llm-call-routed">5.2 Per-call (API surface charge per LLM call routed)<a class="headerlink" href="#52-per-call-api-surface-charge-per-llm-call-routed" title="Permanent link">&para;</a></h3>
+<p><strong>Unit:</strong> <code>llm.call_completed</code> events per billing window, optionally weighted by tokens. Anchored to the same event the analytics surface aggregates against; metering is the call count Metis already records.</p>
+<p><strong>Incentive alignment:</strong></p>
+<ul>
+<li><strong>Rewards Metis</strong> for every LLM call that passes through the gateway. Direct usage incentive: more devs → more calls → more revenue. Also rewards Metis for <em>not</em> aggressively caching, because cache hits reduce upstream calls but not gateway-hit count (cache hits still produce a <code>llm.call_completed</code>; cost is low but call still counted).</li>
+<li><strong>Rewards buyer</strong> to route fewer calls (the opposite of what we want — Metis wants more devs sending more requests).</li>
+<li><strong>Cross-cuts the savings story.</strong> Metis can save the buyer money on every call <em>and</em> charge them per call. The two are technically orthogonal.</li>
+</ul>
+<p><strong>Buyer friction at first contact:</strong></p>
+<ul>
+<li><strong>Optical problem.</strong> The buyer reads "$0.0001/call" and <em>immediately</em> thinks "I already pay Anthropic per call; now I pay you too?" Even if the math works out — Metis saves $0.01/call while charging $0.0001 — the buyer's intuition has been trained by twenty years of API-pricing wars to treat per-call fees as extractive.</li>
+<li><strong>Unpredictable.</strong> Buyer cannot bound the bill without modeling call volume, which they have not measured. The first month of a paid plan becomes an experiment, not a budget line.</li>
+</ul>
+<p><strong>Buyer friction at scale:</strong></p>
+<ul>
+<li><strong>Scales with usage in the <em>worst</em> way.</strong> As the team grows and integrates Metis more deeply, the bill climbs without any flattening. At $50k/yr the buyer is suspicious; at $500k/yr the buyer is shopping for an alternative.</li>
+<li><strong>Rewards finance-led optimization over engineering-led optimization</strong> — the CTO ends up writing a script to consolidate calls, which is the opposite of the "frictionless cost optimization" Metis is selling.</li>
+</ul>
+<p><strong>Composability:</strong> Excellent. <code>call_count</code> is already the headline metric on every analytics rollup. Per-key call counts already work; per-user / per-team counts ship with multi-user.md.</p>
+<p><strong>Billing complexity:</strong> Higher than per-seat — requires daily metering pipeline, idempotency on call retries, refund handling for failed-but-billed calls (do you bill a 5xx? a 429? edge cases multiply).</p>
+<p><strong>Net:</strong> Per-call is the model with the worst optics. It is technically the easiest to instrument (because Metis already counts calls) and the most usage-coupled, but it asks the buyer to swallow a tax shape they have learned to refuse. <strong>Not recommended</strong> as the primary surface, though it has a narrow role inside hybrid models (§5.5).</p>
+<h3 id="53-percentage-of-savings-x-of-baseline-minus-actual">5.3 Percentage of savings (X% of baseline-minus-actual)<a class="headerlink" href="#53-percentage-of-savings-x-of-baseline-minus-actual" title="Permanent link">&para;</a></h3>
+<p><strong>Unit:</strong> <code>(baseline_repriced_usd - actual_repriced_usd)</code> per billing window, where the two values are projected via <a href="../analytics-api/"><code>analytics-api.md §4.7</code></a>'s shipped savings endpoint. Metis charges Y% of that delta.</p>
+<p><strong>Incentive alignment:</strong></p>
+<ul>
+<li><strong>Rewards Metis</strong> for delivering real savings — and <em>only</em> for delivering real savings. If Metis fails to route correctly, the buyer pays nothing. This is the strongest alignment any model on this list achieves; it is the model an outcome-driven sales motion would <em>want</em>.</li>
+<li><strong>Rewards buyer</strong> for routing more traffic through Metis — the more they use it, the more they save, the more the savings deepen the relationship. There is no "save less to pay less" perverse incentive.</li>
+<li><strong>Aligns both sides on the analytics dashboard</strong> — the bill <em>is</em> the dashboard. The buyer doesn't need to be convinced the savings are real; they're reading the savings off the same page they're paying for.</li>
+</ul>
+<p><strong>Buyer friction at first contact:</strong></p>
+<ul>
+<li><strong>Auditability is the question.</strong> "Did Metis actually save me $X?" — every buyer asks this. The savings calculation depends on a counterfactual (the <code>baseline_repriced_usd</code> is what the buyer <em>would have</em> spent if every routed turn ran on the baseline model). The counterfactual is reproducible from the trace store, but the buyer has to <em>trust</em> it. This is the friction-at-contract-time analog of per-call's friction-at-pricing-time problem.</li>
+<li><strong>Dispute risk.</strong> What happens when the buyer says "your $5k savings number is actually $3k because some of those turns wouldn't have happened at all without Metis"? Now Metis is litigating the counterfactual instead of selling the next feature.</li>
+<li><strong>Low entry friction in the happy case</strong> — buyer flips the env var, watches the dashboard, sees savings, agrees to share Y% of them. The model is exactly aligned with the gateway-first GTM motion when audit happens.</li>
+</ul>
+<p><strong>Buyer friction at scale:</strong></p>
+<ul>
+<li><strong>Best alignment of any model.</strong> A buyer saving $50k/month gladly pays Metis $5k of that (10%) — the math is self-evident. The model gets <em>easier</em> to defend as the dollar amounts grow.</li>
+<li><strong>But:</strong> the buyer's CFO eventually notices the % shape and asks for a cap — "we don't want to pay you more than $X regardless of savings." This collapses the model toward a per-seat-with-cap hybrid (§5.5).</li>
+</ul>
+<p><strong>Composability:</strong> Strong but requires the counterfactual to be <em>contractually trusted</em>, not just technically computed. The <code>AnalyticsStore.savings()</code> method already produces the delta; the per-team filter from <code>multi-user.md §5.4</code> makes the cut sensible. What's <em>missing</em> in v1: an audit-export surface that captures the counterfactual in a tamper-evident form (specced as a follow-on in <a href="../multi-user/"><code>multi-user.md §7.3</code></a>). Without that surface, every percentage-of-savings billing dispute is a manual reconciliation.</p>
+<p><strong>Billing complexity:</strong> Highest. Requires (a) a contractually frozen counterfactual definition the buyer signed off on, (b) an export surface that produces the same number every time it's run (re-priceability per <a href="../canonical-message-format/"><code>canonical-message-format.md §6.4</code></a>'s <code>pricing_version</code> is load-bearing here), &copy; credit / dispute handling, (d) a way to apportion savings across teams when one buyer has multiple teams under one contract.</p>
+<p><strong>Net:</strong> Best alignment, highest auditability cost. Most viable as a <strong>secondary</strong> model (§5.5 hybrid) once a buyer trusts Metis's numbers from a primary per-seat relationship, or as the <em>enterprise</em> tier where contract velocity is slower and the audit overhead is acceptable.</p>
+<h3 id="54-free-paid-tiers-open-core">5.4 Free + paid tiers (open-core)<a class="headerlink" href="#54-free-paid-tiers-open-core" title="Permanent link">&para;</a></h3>
+<p><strong>Unit:</strong> binary — buyer is on the free tier (gateway + basic dashboard) or the paid tier (everything else). Within the paid tier, secondary pricing is one of the three models above.</p>
+<p><strong>Incentive alignment:</strong></p>
+<ul>
+<li><strong>Rewards Metis</strong> for distribution. A free OSS gateway is the strongest possible adoption signal — buyers do not need to be sold; they find Metis. Aligns with the gateway-first GTM motion from <a href="../deployment-shape/"><code>deployment-shape.md §5.2</code></a>.</li>
+<li><strong>Rewards buyer</strong> to try Metis with zero commitment, then upgrade only when they need the feature gate. This is the cleanest possible "trial without payment" path.</li>
+</ul>
+<p><strong>Buyer friction at first contact:</strong></p>
+<ul>
+<li><strong>Lowest of any model.</strong> The gateway is OSS; the buyer installs it without a credit card. By the time they're paying, they're already getting value.</li>
+<li><strong>Upgrade is opt-in</strong> — buyer chooses when to cross the line. The line itself becomes the marketing surface (which features are paid is the most important product decision in the company).</li>
+</ul>
+<p><strong>Buyer friction at scale:</strong></p>
+<ul>
+<li><strong>Depends entirely on the line.</strong> If the OSS surface is large enough to be useful but lacks the features a team actually needs (multi-user identity, audit, hosted dashboard, the agent tier), the upgrade is natural. If the OSS surface is <em>too</em> generous, no one upgrades and Metis has built a free product. If too thin, no one adopts and Metis has built nothing.</li>
+<li><strong>Drawing the line is the load-bearing decision.</strong> §7 proposes a specific cut.</li>
+</ul>
+<p><strong>Composability:</strong> Orthogonal — open-core composes with any of §5.1 / §5.2 / §5.3 as the paid-tier pricing model. It is <em>meta</em> to the others, not a competitor to them. The paid-tier model picks among the three.</p>
+<p><strong>Billing complexity:</strong> Adds the OSS-distribution surface (license, contributor docs, release engineering) but does not itself add billing surface; that's still whichever model §5.1–§5.3 the paid tier uses.</p>
+<p><strong>Net:</strong> Open-core is not a pricing model — it is the <em>shape</em> the model wraps around. The recommendation in §7 takes open-core as foundational and answers the "what does the paid tier charge for?" question separately.</p>
+<h3 id="55-hybrid-combinations">5.5 Hybrid combinations<a class="headerlink" href="#55-hybrid-combinations" title="Permanent link">&para;</a></h3>
+<p>The three primary models (§5.1 / §5.2 / §5.3) compose in three credible shapes:</p>
+<h4 id="551-per-seat-with-usage-cap-overage-per-seat-per-call">5.5.1 Per-seat with usage-cap overage (per-seat + per-call)<a class="headerlink" href="#551-per-seat-with-usage-cap-overage-per-seat-per-call" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Shape.</strong> $X/seat/month bundles N calls; over the bundle, $Y/1000 calls.</li>
+<li><strong>Pros.</strong> Predictable for the buyer's normal-use baseline; couples Metis revenue to the heavy-usage tail without the per-call friction at first contact.</li>
+<li><strong>Cons.</strong> Two-axis pricing is harder for the buyer to model. Asks the buyer to predict not just headcount but also usage-per-head. Bundle sizing is finicky.</li>
+<li><strong>Where it lands well.</strong> Enterprise tier where the contract negotiation can name the bundle. Not the right first-paid-plan shape for a startup CTO.</li>
+</ul>
+<h4 id="552-per-seat-with-savings-cap-per-seat-capped-of-savings">5.5.2 Per-seat with savings cap (per-seat + capped %-of-savings)<a class="headerlink" href="#552-per-seat-with-savings-cap-per-seat-capped-of-savings" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Shape.</strong> $X/seat/month for the platform; Metis additionally takes up to Y% of measurable savings, capped at $Z/month.</li>
+<li><strong>Pros.</strong> Captures the value-delivery story for heavy-savings teams while keeping the predictable per-seat shape as the floor.</li>
+<li><strong>Cons.</strong> Still requires the savings counterfactual to be contractually trusted. The cap protects the buyer from runaway billing but doesn't protect Metis from billing-dispute cycles.</li>
+<li><strong>Where it lands well.</strong> Mid-market — buyers who like the per-seat predictability but want their vendor's incentives aligned to outcomes.</li>
+</ul>
+<h4 id="553-open-core-gateway-paid-pro-features-open-core-per-seat-for-paid-tier">5.5.3 Open-core gateway + paid Pro features (open-core + per-seat for paid tier)<a class="headerlink" href="#553-open-core-gateway-paid-pro-features-open-core-per-seat-for-paid-tier" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Shape.</strong> Gateway (routing, dashboard basics) is OSS. The "Pro" tier (multi-user identity, hard caps, audit log export, hosted dashboard, the agent) is $X/seat/month.</li>
+<li><strong>Pros.</strong> Lowest possible adoption friction (OSS gateway); aligned with the deployment-shape hybrid; per-seat pricing for the paid tier is the predictable shape buyers prefer; the <em>thing being upgraded to</em> maps cleanly to the multi-user identity layer that's already shipped.</li>
+<li><strong>Cons.</strong> Demands a credible line between OSS and paid. The owner's commercial judgment on that line is the load-bearing decision.</li>
+<li><strong>Where it lands well.</strong> The startup-CTO default. The recommendation in §7 is this shape.</li>
+</ul>
+<h4 id="554-open-core-gateway-paid-pro-features-of-savings-enterprise-add-on">5.5.4 Open-core gateway + paid Pro features + %-of-savings enterprise add-on<a class="headerlink" href="#554-open-core-gateway-paid-pro-features-of-savings-enterprise-add-on" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Shape.</strong> §5.5.3 plus an enterprise tier that adds a %-of-savings line for buyers who want their bill scaled to outcomes (and have procurement to handle the contracting).</li>
+<li><strong>Pros.</strong> Future-proofs the model for the enterprise buyer the startup CTO becomes after a Series B. Doesn't force the audit surface to be built today; %-of-savings is gated behind "we have at least one enterprise prospect asking for it."</li>
+<li><strong>Cons.</strong> Marketing must explain three tiers (Free / Pro / Enterprise) without losing the "this is one product" message. Buyer-segment confusion is the failure mode.</li>
+</ul>
+<hr />
+<h2 id="6-comparison-matrix">6. Comparison matrix<a class="headerlink" href="#6-comparison-matrix" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>First-contact friction</th>
+<th>At-scale predictability</th>
+<th>Incentive alignment</th>
+<th>Composability</th>
+<th>Billing complexity</th>
+<th>Best fit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Per-seat (§5.1)</strong></td>
+<td>Very low</td>
+<td>High</td>
+<td>Medium (rewards seat-count, not usage-coupled)</td>
+<td>Excellent</td>
+<td>Low</td>
+<td>Default; startup CTO</td>
+</tr>
+<tr>
+<td><strong>Per-call (§5.2)</strong></td>
+<td>High (optical)</td>
+<td>Low</td>
+<td>Strong on usage, but punishes buyer for using more</td>
+<td>Excellent</td>
+<td>Medium</td>
+<td>Not recommended primary</td>
+</tr>
+<tr>
+<td><strong>% of savings (§5.3)</strong></td>
+<td>Medium (auditability)</td>
+<td>Medium (scales with savings; needs cap)</td>
+<td>Strongest (revenue iff value delivered)</td>
+<td>Strong w/ counterfactual</td>
+<td>Highest</td>
+<td>Secondary; enterprise tier</td>
+</tr>
+<tr>
+<td><strong>Open-core (§5.4)</strong></td>
+<td>Lowest possible (OSS)</td>
+<td>N/A (meta)</td>
+<td>High (distribution)</td>
+<td>Orthogonal</td>
+<td>Wraps the paid-tier model</td>
+<td>Foundational shape</td>
+</tr>
+<tr>
+<td><strong>Per-seat + per-call cap (§5.5.1)</strong></td>
+<td>Medium</td>
+<td>High</td>
+<td>Medium-high</td>
+<td>Excellent</td>
+<td>Medium</td>
+<td>Enterprise mid-market</td>
+</tr>
+<tr>
+<td><strong>Per-seat + capped %-of-savings (§5.5.2)</strong></td>
+<td>Medium</td>
+<td>High</td>
+<td>High</td>
+<td>Strong</td>
+<td>High</td>
+<td>Mid-market</td>
+</tr>
+<tr>
+<td><strong>Open-core + per-seat Pro (§5.5.3)</strong></td>
+<td>Very low</td>
+<td>High</td>
+<td>Medium-high</td>
+<td>Excellent</td>
+<td>Low–medium</td>
+<td><strong>Recommended — startup CTO default</strong></td>
+</tr>
+<tr>
+<td><strong>Open-core + per-seat Pro + % enterprise add-on (§5.5.4)</strong></td>
+<td>Very low</td>
+<td>High</td>
+<td>High</td>
+<td>Excellent</td>
+<td>Medium (Enterprise tier only)</td>
+<td>Recommended evolution</td>
+</tr>
+</tbody>
+</table>
+<p>The matrix's load-bearing rows are the bottom two: open-core + per-seat for the v1 commercial offer, with the enterprise %-of-savings add-on reserved for when the buyer evidence supports building the audit surface.</p>
+<hr />
+<h2 id="7-recommendation">7. Recommendation<a class="headerlink" href="#7-recommendation" title="Permanent link">&para;</a></h2>
+<p><strong>Adopt §5.5.3: open-core gateway + per-seat paid tier, with §5.5.4's enterprise add-on reserved as the upgrade path.</strong></p>
+<p>The proposed structure is:</p>
+<h3 id="71-free-tier-metis-community">7.1 Free tier — "Metis Community"<a class="headerlink" href="#71-free-tier-metis-community" title="Permanent link">&para;</a></h3>
+<p><strong>Price:</strong> $0.</p>
+<p><strong>What's included:</strong></p>
+<ul>
+<li>Self-hosted gateway (<code>apps/gateway/</code>) — full routing, lossless canonical IR, sync + SSE on both OpenAI- and Anthropic-shapes, all shipped per-key analytics.</li>
+<li>The shipped CLI / TUI agent surface (<code>metis chat</code>, <code>metis tui</code>) — self-hosted, single-user.</li>
+<li>Bounded memory, pattern store, evaluator (heuristic tier), single-user-mode analytics dashboard.</li>
+<li>Source code under a permissive license (the specific license is the owner's call; the spec assumes "open enough that a CTO does not need legal review to install").</li>
+</ul>
+<p><strong>What's not included:</strong></p>
+<ul>
+<li><strong>Multi-user identity</strong> (<code>User</code> / <code>Team</code> records, per-user analytics, per-team caps). This is the headline paid feature.</li>
+<li><strong>Hosted SaaS posture</strong> — buyers wanting Metis-as-SaaS upgrade to Pro.</li>
+<li><strong>LLM-judge evaluator tier</strong> — the heuristic judge ships free; the hybrid / LLM tiers are Pro.</li>
+<li><strong>Audit log export</strong> (the surface sketched in <a href="../multi-user/"><code>multi-user.md §7.3</code></a>) — Pro.</li>
+</ul>
+<p><strong>Why this slice:</strong> the free tier must be <em>usable</em> — a CTO running it on their laptop or a small VPC must see the savings dashboard work on their own data. A gateway without the dashboard is a curiosity, not a tool. But the free tier must not include the things teams <em>need</em> to deploy at team scale: identity, caps, audit, hosted operations. Drawing the line at "single-user works for free; team use upgrades" matches the startup-CTO conversion trigger from §4.1.</p>
+<h3 id="72-paid-tier-metis-pro">7.2 Paid tier — "Metis Pro"<a class="headerlink" href="#72-paid-tier-metis-pro" title="Permanent link">&para;</a></h3>
+<p><strong>Price:</strong> per-seat, $X/active-user/month. (Number is the commercial decision; spec frames the model.)</p>
+<p><strong>Definition of "active user":</strong> a <code>usr_&lt;ulid&gt;</code> whose gateway keys produced at least one <code>llm.call_completed</code> in the billing window. This composes with the shipped <code>/analytics/by_user</code> rollup directly — no new metering needed. Users with zero calls in the window are not billed; this protects the buyer from paying for stale accounts.</p>
+<p><strong>What's included beyond Free:</strong></p>
+<ul>
+<li><strong>Multi-user identity layer in full</strong> — <code>users.json</code> / <code>teams.json</code>, per-user / per-team analytics, hard caps, soft-cap routing predicates (<a href="../multi-user/"><code>multi-user.md §5</code> / §6</a>).</li>
+<li><strong>LLM-judge evaluator tier</strong> — hybrid and LLM judges, <code>/analytics/quality</code> dashboard.</li>
+<li><strong>Hosted SaaS option</strong> — Metis-operated deployment; the buyer brings their provider keys, Metis operates the gateway / dashboard.</li>
+<li><strong>Audit log export</strong> — when shipped per <a href="../multi-user/"><code>multi-user.md §7.3</code></a>; Pro-tier feature out of the gate.</li>
+<li><strong>Replacement agent tier</strong> — when shipped per <a href="../../STRATEGY/"><code>STRATEGY.md §7</code></a> "If hybrid"; the <code>metis chat</code>-and-beyond surface with skills, context-assembler, memory, learned routing.</li>
+</ul>
+<p><strong>Why per-seat for Pro:</strong></p>
+<ul>
+<li><strong>Aligns with the buyer's mental model.</strong> The buyer signs a SaaS-shaped contract with a SaaS-shaped bill.</li>
+<li><strong>Composes with shipped primitives.</strong> The user identity layer <em>is</em> the seat list. Adding new pricing surface is zero; the rollup endpoint is already specced.</li>
+<li><strong>Avoids the optical problem of §5.2.</strong> Buyer is not paying per call. Buyer is paying for <em>seats that get the value</em> of Metis.</li>
+<li><strong>Predictable at scale.</strong> Bill = seat count × rate. CFO can model it on a napkin.</li>
+<li><strong>Disconnect from usage is intentional.</strong> The free tier handles "I want to see if this works"; the paid tier handles "I want my team to be on this." Per-seat lets the buyer commit at the team boundary without re-negotiating per usage spike.</li>
+</ul>
+<p><strong>Why not per-call for Pro:</strong> §5.2's optical problem. Even at low rates, "you charge me per Anthropic call" is an objection the sales conversation should not have to win.</p>
+<p><strong>Why not %-of-savings as Pro default:</strong> §5.3's auditability burden is too heavy for the v1 paid relationship. The audit-export surface (<a href="../multi-user/"><code>multi-user.md §7.3</code></a>) is not yet built; building it on the <em>first</em> paying contract converts every billing question into a contract negotiation. Reserve it for the enterprise tier where the contract velocity supports the build.</p>
+<h3 id="73-enterprise-tier-metis-enterprise-future">7.3 Enterprise tier — "Metis Enterprise" (future)<a class="headerlink" href="#73-enterprise-tier-metis-enterprise-future" title="Permanent link">&para;</a></h3>
+<p><strong>Price:</strong> custom contract; baseline is per-seat from §7.2 plus optional %-of-savings add-on.</p>
+<p><strong>What's included beyond Pro:</strong></p>
+<ul>
+<li>SOC2 / SAML / OIDC / SCIM (the <a href="../multi-user/"><code>multi-user.md §8</code></a> explicit non-goals become goals at this tier).</li>
+<li>Multi-org tenancy.</li>
+<li>On-prem / VPC support with SLA.</li>
+<li>Reserved-capacity pricing for the savings line (the cap from §5.5.2).</li>
+<li>Custom routing policies, deployment support, dedicated success engineering.</li>
+</ul>
+<p><strong>Why save %-of-savings for here:</strong></p>
+<ul>
+<li>Audit-export surface is a Pro feature already; enterprise inherits it.</li>
+<li>Contract velocity is slower; the auditability conversation lands inside procurement, not at first contact.</li>
+<li>The CFO of an enterprise buyer <em>prefers</em> the outcome-coupled line (justifies the spend internally) — the opposite of the startup CTO who prefers predictability.</li>
+</ul>
+<p>This tier is deliberately under-specified in v1. Its existence is more important than its shape; the shape will be the second buyer conversation, not the first.</p>
+<h3 id="74-why-this-recommendation-in-one-sentence">7.4 Why this recommendation in one sentence<a class="headerlink" href="#74-why-this-recommendation-in-one-sentence" title="Permanent link">&para;</a></h3>
+<p><strong>Open-core gateway maximizes adoption (the deployment-shape gain), per-seat Pro pricing maps cleanly to the shipped multi-user identity layer (the composability gain), and reserving %-of-savings for the enterprise tier defers the audit-export surface buildout until a buyer is paying for the surface to exist.</strong></p>
+<h3 id="75-what-this-recommendation-deliberately-does-not-decide">7.5 What this recommendation deliberately does NOT decide<a class="headerlink" href="#75-what-this-recommendation-deliberately-does-not-decide" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>The dollar amount of $X/seat/month.</strong> That's market evidence.</li>
+<li><strong>Where exactly the OSS / Pro line falls feature-by-feature.</strong> §7.1 names the principle; the exact feature list will refine as features ship.</li>
+<li><strong>Annual vs. monthly billing.</strong> Standard SaaS default is annual-with-monthly-option; the spec inherits that default.</li>
+<li><strong>The OSS license.</strong> §2.2 named this as a non-goal.</li>
+<li><strong>Whether the agent tier is included in Pro at launch or is a Pro-plus add-on.</strong> Owner judgment; depends on agent maturity at the time the paid plan goes live.</li>
+</ul>
+<h3 id="76-surface-for-human-sign-off">7.6 Surface for human sign-off<a class="headerlink" href="#76-surface-for-human-sign-off" title="Permanent link">&para;</a></h3>
+<p>This is an <strong>owner-decision item</strong>. The spec frames the choice with rationale; the owner closes it. The two paths forward:</p>
+<ol>
+<li><strong>Accept §7</strong> — adopt open-core + per-seat-Pro + future enterprise-tier. Pricing.md becomes the contract; STRATEGY.md §6.8 closes with a pointer here.</li>
+<li><strong>Reject §7</strong> in favor of §5.1 / §5.2 / §5.3 / §5.5.1 / §5.5.2 / §5.5.4 — owner indicates which row of the matrix in §6 they prefer; pricing.md is revised; STRATEGY.md §6.8 closes when revised.</li>
+</ol>
+<p>In either case, <strong>STRATEGY.md §6.8 stays open until the owner closes it.</strong> This spec adds a pointer ("specced; awaiting commercial decision") but does not retire the question. The act of choosing among §5/§7 is the commercial decision the project does not yet have evidence to automate.</p>
+<hr />
+<h2 id="8-how-the-recommendation-composes-with-shipped-primitives">8. How the recommendation composes with shipped primitives<a class="headerlink" href="#8-how-the-recommendation-composes-with-shipped-primitives" title="Permanent link">&para;</a></h2>
+<p>Tracing through each pricing-relevant surface to confirm no new metering / event / endpoint is needed for §7.2:</p>
+<h3 id="81-seat-count">8.1 Seat count<a class="headerlink" href="#81-seat-count" title="Permanent link">&para;</a></h3>
+<p><strong>Source of truth:</strong> <code>users.json</code> enumerates <code>User</code> records; gateway keys carry <code>user_id</code> (<a href="../multi-user/"><code>multi-user.md §4.1</code></a>). The "active user in this window" predicate is <code>EXISTS (SELECT 1 FROM events WHERE payload.user_id = ? AND event_type = 'llm.call_completed' AND ts BETWEEN ? AND ?)</code> — same shape as the <code>/analytics/by_user</code> rollup already executes.</p>
+<p><strong>No new event type needed.</strong> No new HTTP endpoint needed for billing — the analytics surface already returns the user list with <code>call_count</code>; billing reads the count of users with <code>call_count &gt; 0</code>.</p>
+<h3 id="82-tier-gating">8.2 Tier gating<a class="headerlink" href="#82-tier-gating" title="Permanent link">&para;</a></h3>
+<p><strong>Source of truth:</strong> a tier flag on the deployment configuration. The simplest shape — out of scope for this spec, named for completeness — is a <code>pricing_tier</code> field on the deployment config (<code>free</code> / <code>pro</code> / <code>enterprise</code>) that the analytics-server reads at boot. Pro-gated endpoints return 402 <code>payment_required</code> (or 404, owner choice) on a free deployment.</p>
+<p>This is <strong>not</strong> a per-request enforcement — it is a deployment-level gate. A Pro deployment is a Pro deployment; a free deployment cannot opt into Pro endpoints without changing the config. This avoids per-call licensing checks (which would themselves be a metering surface).</p>
+<h3 id="83-hard-caps-composed-with-billing">8.3 Hard caps composed with billing<a class="headerlink" href="#83-hard-caps-composed-with-billing" title="Permanent link">&para;</a></h3>
+<p>The per-team hard caps from <a href="../multi-user/"><code>multi-user.md §6.3</code></a> are <strong>operational</strong>, not commercial. A buyer setting <code>Team.daily_cap_usd = $50</code> is constraining their <em>provider spend</em>, not their Metis bill. The two are independent dimensions: a team can hit its provider cap while still being under its Metis seat allotment, and vice versa.</p>
+<p>If the owner wants to add a <em>Metis-spend cap</em> (e.g. "auto-downgrade to Free tier if Pro seat count exceeds N"), that's a follow-on. The v1 recommendation keeps the two surfaces separate.</p>
+<h3 id="84-savings-rollup-as-a-pro-feature">8.4 Savings rollup as a Pro feature<a class="headerlink" href="#84-savings-rollup-as-a-pro-feature" title="Permanent link">&para;</a></h3>
+<p>The <code>actual_repriced_usd</code> / <code>baseline_repriced_usd</code> / <code>savings_pct</code> endpoint (<a href="../analytics-api/"><code>analytics-api.md §4.7</code></a>) ships in v1; whether it surfaces on the Free dashboard or only the Pro dashboard is a product decision the spec doesn't close.</p>
+<ul>
+<li><strong>Argument for Free:</strong> the savings number is the marketing message. Putting it behind a paywall hides Metis's own value prop from the buyer evaluating it.</li>
+<li><strong>Argument for Pro:</strong> the savings number is the most operationally useful metric for the buyer; reserving it for Pro is a strong upgrade reason.</li>
+</ul>
+<p><strong>Spec position:</strong> the savings counterfactual ships on Free at <em>per-deployment</em> granularity (one number for everything routed through this Metis instance). The Pro tier unlocks per-team / per-user / per-time-window slicing of the same number. This way Free buyers see "you saved $X" but cannot answer "who saved what" — which is the buyer question the multi-user identity layer answers.</p>
+<h3 id="85-future-of-savings-enterprise-tier">8.5 Future %-of-savings enterprise tier<a class="headerlink" href="#85-future-of-savings-enterprise-tier" title="Permanent link">&para;</a></h3>
+<p>When §7.3 is built, the surface needed is exactly the <a href="../multi-user/"><code>multi-user.md §7.3</code></a> audit-export surface plus a contractual freeze on the <code>pricing_version</code> field (<a href="../canonical-message-format/"><code>canonical-message-format.md §6.4</code></a>). The two together produce a re-priceable savings number the buyer can verify against their own records. <strong>No additional metering primitive is needed</strong> — the savings counterfactual already specced is the answer; what's missing is the <em>export surface and the contract language</em>, both of which are commercial concerns not engineering ones.</p>
+<hr />
+<h2 id="9-out-of-scope-for-v1">9. Out of scope for v1<a class="headerlink" href="#9-out-of-scope-for-v1" title="Permanent link">&para;</a></h2>
+<p>These are deliberately deferred. The list is what differentiates v1 from a complete commercial-operations playbook.</p>
+<ol>
+<li><strong>List prices.</strong> $/seat numbers across regions / tiers / annual-vs-monthly. The owner picks these from market evidence.</li>
+<li><strong>Discount / volume / partner pricing.</strong> Standard B2B contract knobs; owner negotiates per-deal until a public list emerges.</li>
+<li><strong>Billing-infrastructure choice.</strong> Stripe / Lago / Maxio / invoice-by-PDF.</li>
+<li><strong>Currency / tax handling.</strong> USD-only v1 is the assumed default; expansion is downstream.</li>
+<li><strong>OSS license selection.</strong> Apache-2.0 / BUSL / AGPL / dual-license.</li>
+<li><strong>Trial-to-paid conversion mechanics.</strong> Self-serve credit card vs. sales-touch; how long trials last; downgrade behavior.</li>
+<li><strong>Refund / SLA / credit policy.</strong> SaaS-standard terms — deferred behind the §6.3 SaaS-vs-VPC decision.</li>
+<li><strong>Marketplace listings.</strong> AWS / GCP / Azure marketplace pricing surfaces.</li>
+<li><strong>Right-to-delete and data-residency pricing implications.</strong> Tied to <a href="../multi-user/"><code>multi-user.md §7.4</code></a> audit posture; deferred.</li>
+<li><strong>Internal cost-of-revenue modeling.</strong> What does Metis's own infrastructure cost per seat, per call, per byte of trace data? Necessary for setting the dollar amount in §7.2; not a spec question.</li>
+</ol>
+<hr />
+<h2 id="10-open-questions">10. Open questions<a class="headerlink" href="#10-open-questions" title="Permanent link">&para;</a></h2>
+<p>These are <strong>live</strong>. AI agents working in the repo should surface them, not pick.</p>
+<ol>
+<li><strong>Where exactly does the OSS / Pro line fall?</strong> §7.1 names the principle ("single-user works free; team use upgrades"); §7.2 names the headline paid features. Each feature is a separate decision: should pattern-store data export be free or Pro? Should the hosted-SaaS path be Pro or its own line? Should the agent tier be Pro-baseline or Pro-plus? Owner makes the call as features ship.</li>
+<li><strong>Does the savings number show on the Free dashboard?</strong> §8.4 surfaces the trade-off. Defaulting to "yes, but only deployment-aggregate; Pro unlocks slicing" is the spec's position; owner can rule otherwise.</li>
+<li><strong>Is the agent tier (CLI / TUI / future desktop) in Free, Pro, or Pro-plus at launch?</strong> Today the agent is OSS; the question is whether the <em>upgrade-tier features</em> (skills v3, context-assembler v2/v3, evaluator hybrid/LLM tiers) are bundled into Pro, sold separately, or kept OSS as a long-tail acquisition channel.</li>
+<li><strong>What's the conversion trigger for the first paid plan?</strong> §4.1 enumerates four candidates (team-size threshold / quota threshold / paid-feature requirement / SaaS posture). §7.1's "single-user free, team use Pro" picks the first; the others remain available if §7's recommendation is rejected.</li>
+<li><strong>Does Pro pricing differentiate "active users this month" vs. "provisioned seats"?</strong> §7.2 picks the former ("active") to protect the buyer from paying for stale accounts. The trade-off: "active" pricing is harder to forecast (buyer doesn't know who will be active); "provisioned" pricing is easier to forecast but charges for empty seats. Owner ratifies.</li>
+<li><strong>What's the Enterprise add-on Y% rate range and where does the cap land?</strong> §5.5.4 / §7.3 reserve this; the dollar amounts come from enterprise-prospect evidence Metis does not yet have.</li>
+<li><strong>How does the buyer evaluate Pro without a Pro deployment?</strong> Standard B2B answer: a free trial of Pro features (time-bound). Spec position: the multi-user identity layer can be enabled on a free deployment with a "trial" flag for N days; after, the deployment downgrades to Free behavior or the buyer commits to Pro. Mechanics deferred.</li>
+<li><strong>Does the spec need to commit to "no provider-token markup, ever"?</strong> §3.1 names this as today's posture (Metis does not resell tokens). Codifying it as a forever commitment is a marketing-trust gain and a future-revenue-line constraint. Owner picks.</li>
+<li><strong>What happens to a deployment that has been on Pro and then lapses?</strong> Does the buyer's <code>users.json</code> / <code>teams.json</code> get archived? Does Pro tier soft-degrade to Free with rollups still visible? Standard SaaS handling — but the spec doesn't pin the policy.</li>
+<li><strong>Does the gateway emit <code>pricing.event</code> audit events on tier transitions?</strong> A future event-catalog addition; would let analytics show "deployment moved from Free to Pro on date X." Out of scope for v1 but flagged as a clean extension once the model is ratified.</li>
+</ol>
+<hr />
+<h2 id="11-invariants">11. Invariants<a class="headerlink" href="#11-invariants" title="Permanent link">&para;</a></h2>
+<p>Promises this spec makes that downstream specs and implementation must preserve.</p>
+<ol>
+<li><strong>Free tier remains usable single-user without a credit card.</strong> The gateway, the basic dashboard, and the single-user agent surface together must do something useful for a CTO running them on a laptop. If a future feature gate would render the free tier inert, the gate moves to Pro or the feature is rethought.</li>
+<li><strong>Pro pricing is per-active-user, not per-call.</strong> §7.2's optical-friction argument means per-call shapes don't sneak in as "small overage fees" later. Per-call is reserved for the enterprise tier's optional usage cap (§5.5.1), not the Pro baseline.</li>
+<li><strong>Metis does not resell provider tokens.</strong> §3.1's BYO-keys posture is the v1 commitment; pricing models that imply a transit margin are out of scope unless §10.8 is explicitly closed otherwise.</li>
+<li><strong>Pricing surfaces compose with shipped multi-user primitives.</strong> Any pricing change that would require new metering events, new keystore fields, or new HTTP endpoints needs to surface that cost in its rationale — composability isn't free, and the spec's recommendation is partly chosen because it requires zero new primitives.</li>
+<li><strong>No per-request licensing check.</strong> Tier gating is deployment-level (§8.2); a Pro feature is enabled or disabled at boot. Per-request "is this user paid?" checks would add latency to every gateway call and turn pricing into an availability dimension; the spec rejects that shape.</li>
+<li><strong>Savings counterfactual is reproducible.</strong> Whatever billing surface depends on <code>actual_repriced_usd</code> / <code>baseline_repriced_usd</code> must use the same <code>pricing_version</code>-stamped computation the analytics dashboard shows. Two different numbers for "did we save money" — one for the bill, one for the dashboard — is the failure mode the audit-export surface exists to prevent.</li>
+<li><strong>Pricing model choice is the owner's; pricing.md frames it.</strong> This spec does not unilaterally close <a href="../../STRATEGY/"><code>STRATEGY.md §6.8</code></a>. The spec is a recommendation; ratification is a separate act.</li>
+</ol>
+<hr />
+<h2 id="12-decision-log">12. Decision log<a class="headerlink" href="#12-decision-log" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Decision</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-05-14</td>
+<td>Open-core foundation (free OSS gateway + agent CLI/TUI; Pro for team-scale features)</td>
+<td>Maximizes adoption per <a href="../deployment-shape/"><code>deployment-shape.md</code></a> hybrid; matches the "trial without payment" floor in §4.1.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Per-seat as the Pro tier's pricing unit (not per-call, not %-of-savings)</td>
+<td>Per-seat is the buyer's expected SaaS shape (<a href="#44-the-first-paying-buyer-is-a-startup-cto-constraint-from-strategymd-62">§4.4</a>); per-call has the optical problem of §5.2; %-of-savings requires the audit-export surface (<a href="../multi-user/"><code>multi-user.md §7.3</code></a>) which is not yet built.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>"Active user" as the seat metering unit, not "provisioned seat"</td>
+<td>Protects the buyer from paying for stale accounts; composes directly with the shipped <code>/analytics/by_user</code> rollup. Trade-off: harder to forecast.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Enterprise tier reserves %-of-savings as an optional add-on, not the baseline</td>
+<td>Reserves auditability burden for contracts where procurement velocity supports it.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Multi-user identity layer is the headline Pro feature</td>
+<td>Maps the conversion trigger ("single-user works free; team use upgrades") directly to the most distinctive paid primitive.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Savings counterfactual visible on Free at deployment-aggregate; Pro unlocks slicing</td>
+<td>Free buyers see the savings story (marketing); Pro buyers can attribute it (operational). Owner can revisit per §10.2.</td>
+</tr>
+<tr>
+<td>2026-05-14</td>
+<td>Pricing.md does not close STRATEGY.md §6.8</td>
+<td>The spec frames the recommendation; the commercial decision is the owner's. §6.8 stays open with a pointer to this spec until the owner ratifies.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="13-references">13. References<a class="headerlink" href="#13-references" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../../STRATEGY/"><code>../STRATEGY.md §2</code></a> — buyer ≠ user; B2B framing; the budget owner is the buyer.</li>
+<li><a href="../../STRATEGY/"><code>../STRATEGY.md §6.2</code></a> — startup-CTO default for the v1 buyer profile.</li>
+<li><a href="../../STRATEGY/"><code>../STRATEGY.md §6.3</code></a> — local-first vs. SaaS deployment posture (still open).</li>
+<li><a href="../../STRATEGY/"><code>../STRATEGY.md §6.8</code></a> — the open question this spec exists to surface for closure (kept open until owner ratifies).</li>
+<li><a href="../../STRATEGY/"><code>../STRATEGY.md §7</code></a> — what changes about the build if §3 lands one way or the other; the "If hybrid" branch is the deployment substrate pricing assumes.</li>
+<li><a href="../deployment-shape/"><code>deployment-shape.md</code></a> — hybrid (gateway-first → agent-upgrade); the deployment posture pricing composes with.</li>
+<li><a href="../gateway/"><code>gateway.md</code></a> — the OSS gateway surface that is the free-tier foot-in-the-door.</li>
+<li><a href="../multi-user/"><code>multi-user.md</code></a> — the identity layer that enforces per-seat / per-team pricing.</li>
+<li><a href="../multi-user/"><code>multi-user.md §5</code></a> — the analytics surface that meters seats.</li>
+<li><a href="../multi-user/"><code>multi-user.md §6.3</code></a> — per-team hard caps; orthogonal to pricing but operationally adjacent.</li>
+<li><a href="../multi-user/"><code>multi-user.md §7.3</code></a> — audit-export surface; the missing precondition for an enterprise-tier %-of-savings line.</li>
+<li><a href="../multi-user/"><code>multi-user.md §8</code></a> — explicit non-goals (SSO / OIDC / SAML / SCIM / RBAC / multi-org) that the enterprise tier eventually inherits as goals.</li>
+<li><a href="../analytics-api/"><code>analytics-api.md §4.1</code></a> — per-user / per-team / per-key rollups; the metering substrate.</li>
+<li><a href="../analytics-api/"><code>analytics-api.md §4.7</code></a> — the savings counterfactual.</li>
+<li><a href="../analytics-api/"><code>analytics-api.md §4.9</code></a> — <code>/analytics/by_team</code>; the per-team rollup pricing composes with.</li>
+<li><a href="../canonical-message-format/"><code>canonical-message-format.md §6.4</code></a> — <code>pricing_version</code> stamping; load-bearing for re-priceable savings counterfactual.</li>
+<li><a href="../event-bus-and-trace-catalog/"><code>event-bus-and-trace-catalog.md §6</code></a> — the event catalog; pricing is read-only against this surface.</li>
+<li><a href="../benchmark/"><code>benchmark.md</code></a> — workload-suite methodology that backs the savings counterfactual's credibility.</li>
+</ul>
+<hr />
+<h2 id="14-sign-off">14. Sign-off<a class="headerlink" href="#14-sign-off" title="Permanent link">&para;</a></h2>
+<p>This spec is the recommendation only. It does not retire <a href="../../STRATEGY/"><code>STRATEGY.md §6.8</code></a> or land any STRATEGY.md edits beyond a pointer to this file. Those follow on owner ratification.</p>
+<p>When ratified (or revised-then-ratified), the STRATEGY.md edits queued are:</p>
+<ul>
+<li><strong>§5</strong> — new dated entry: <em>"2026-XX-XX — Adopt pricing model (open-core + per-seat Pro + reserved enterprise %-of-savings add-on, per <a href="specs/pricing.md"><code>pricing.md</code></a>)."</em></li>
+<li><strong>§6.8</strong> — retire the question; add: <em>"Resolved 2026-XX-XX: open-core + per-seat Pro. See <a href="specs/pricing.md"><code>pricing.md</code></a>."</em></li>
+</ul>
+<p>Until ratified, §6.8 reads: <em>"Specced; awaiting commercial decision. See <a href="specs/pricing.md"><code>pricing.md</code></a>."</em></p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../delegation/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Delegation">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Delegation
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../memory-store/" class="md-footer__link md-footer__link--next" aria-label="Next: Memory store">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Memory store
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/2sumAI/metis" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "navigation.footer", "search.highlight", "search.share", "search.suggest", "content.action.edit", "content.action.view", "content.code.copy", "content.code.annotate", "content.tabs.link", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

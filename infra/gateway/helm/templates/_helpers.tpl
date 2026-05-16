@@ -86,3 +86,37 @@ Name of the PersistentVolumeClaim for the trace DB.
 {{- define "metis-gateway.pvcName" -}}
 {{- printf "%s-data" (include "metis-gateway.fullname" .) -}}
 {{- end -}}
+
+{{/*
+Status-page (Uptime Kuma) addon helpers. The status page runs as a
+separate Deployment + Service alongside the gateway in the same release;
+it MUST carry a distinct `app.kubernetes.io/name` so the gateway
+Service's selector cannot accidentally match the Kuma pod. See
+docs/operations/status-page.md "Helm sidecar option".
+*/}}
+{{- define "metis-gateway.statusPage.name" -}}
+{{- printf "%s-status-page" (include "metis-gateway.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "metis-gateway.statusPage.fullname" -}}
+{{- printf "%s-status-page" (include "metis-gateway.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "metis-gateway.statusPage.pvcName" -}}
+{{- printf "%s-data" (include "metis-gateway.statusPage.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "metis-gateway.statusPage.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "metis-gateway.statusPage.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{- define "metis-gateway.statusPage.labels" -}}
+helm.sh/chart: {{ include "metis-gateway.chart" . }}
+{{ include "metis-gateway.statusPage.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/component: status-page
+{{- end -}}

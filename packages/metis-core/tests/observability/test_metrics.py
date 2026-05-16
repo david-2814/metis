@@ -23,6 +23,7 @@ from metis_core.events.bus import EventBus
 from metis_core.events.envelope import Actor
 from metis_core.events.payloads import (
     EvalCompleted,
+    GatewayAuthFailed,
     GatewayQuotaExceeded,
     LLMCallCompleted,
     LLMCallFailed,
@@ -30,6 +31,9 @@ from metis_core.events.payloads import (
     PolicyEvaluation,
     QuotaAlert,
     RouteDecided,
+    ToolCalled,
+    ToolCompleted,
+    ToolFailed,
     make_event,
 )
 from metis_core.observability import METRICS_CONTENT_TYPE, MetricsCollector
@@ -571,3 +575,293 @@ async def test_handler_exception_swallowed(bus: EventBus, collector, monkeypatch
     await bus.drain()
     # No exception bubbled out; bus dispatch task is still alive.
     assert bus._dispatch_task is not None and not bus._dispatch_task.done()
+
+
+# ---------------------------------------------------------------------------
+# Wave 14a — production-grade observability extensions (observability.md §3.2)
+# ---------------------------------------------------------------------------
+
+
+async def test_route_decided_observes_routing_latency(bus: EventBus, collector):
+    """`route.decided.elapsed_ms` drives `metis_routing_decision_latency_seconds`."""
+    _emit(
+        bus,
+        type="route.decided",
+        payload=RouteDecided(
+            chosen_model="anthropic:claude-haiku-4-5",
+            winner_index=0,
+            elapsed_ms=2.5,
+            chain=[PolicyEvaluation(policy="global_default", verdict="chose", reason="default")],
+        ),
+        turn_id=_new_turn_id(),
+    )
+    await bus.drain()
+
+    families = _families(collector.expose())
+    samples = families["metis_routing_decision_latency_seconds"]
+    sum_sample = next(s for s in samples if s.name.endswith("_sum"))
+    count_sample = next(s for s in samples if s.name.endswith("_count"))
+    assert count_sample.value == 1.0
+    # 2.5 ms → 0.0025 s
+    assert sum_sample.value == pytest.approx(0.0025)
+
+
+async def test_llm_failed_increments_dedicated_error_counter(bus: EventBus, collector):
+    """`llm.call_failed` bumps both `metis_llm_calls_total{status}` AND the
+    dedicated `metis_llm_call_errors_total{error_class}` so alerting can
+    rate() the error series without summing across status labels.
+    """
+    _emit(
+        bus,
+        type="llm.call_failed",
+        payload=LLMCallFailed(
+            model="anthropic:claude-haiku-4-5",
+            provider="anthropic",
+            error_class="server_error",
+            error_message_redacted="500",
+            retry_count=2,
+            latency_ms=180,
+        ),
+    )
+    await bus.drain()
+
+    families = _families(collector.expose())
+    errs = [s for s in families["metis_llm_call_errors"] if s.name == "metis_llm_call_errors_total"]
+    assert len(errs) == 1
+    assert errs[0].labels == {
+        "provider": "anthropic",
+        "model": "anthropic:claude-haiku-4-5",
+        "error_class": "server_error",
+    }
+    assert errs[0].value == 1.0
+
+    # The legacy mixed counter still picks the same row up — invariant for
+    # back-compat with dashboards built against the Wave-11 surface.
+    calls = [s for s in families["metis_llm_calls"] if s.name == "metis_llm_calls_total"]
+    assert any(s.labels["status"] == "server_error" for s in calls)
+
+
+async def test_tool_completed_observes_latency_under_tool_name(bus: EventBus, collector):
+    """`tool.called → tool.completed` correlation drives the tool latency
+    histogram with the right `tool_name` label, then drains the LRU.
+    """
+    _emit(
+        bus,
+        type="tool.called",
+        payload=ToolCalled(
+            tool_use_id="tu_abc",
+            tool_name="read_file",
+            input_hash="x",
+            input_size_bytes=100,
+            side_effects="read",
+        ),
+    )
+    _emit(
+        bus,
+        type="tool.completed",
+        payload=ToolCompleted(
+            tool_use_id="tu_abc",
+            success=True,
+            output_size_bytes=2048,
+            latency_ms=15,
+        ),
+    )
+    await bus.drain()
+
+    families = _families(collector.expose())
+    samples = families["metis_tool_call_latency_seconds"]
+    matching = [s for s in samples if s.labels.get("tool_name") == "read_file"]
+    sum_sample = next(s for s in matching if s.name.endswith("_sum"))
+    count_sample = next(s for s in matching if s.name.endswith("_count"))
+    assert count_sample.value == 1.0
+    assert sum_sample.value == pytest.approx(0.015)
+    # The mapping was drained off the LRU when completed fired.
+    assert "tu_abc" not in collector._tool_names
+
+
+async def test_tool_failed_increments_failure_counter_with_tool_name(bus: EventBus, collector):
+    _emit(
+        bus,
+        type="tool.called",
+        payload=ToolCalled(
+            tool_use_id="tu_fail",
+            tool_name="run_bash",
+            input_hash="y",
+            input_size_bytes=50,
+            side_effects="execute",
+        ),
+    )
+    _emit(
+        bus,
+        type="tool.failed",
+        payload=ToolFailed(
+            tool_use_id="tu_fail",
+            error_class="timeout",
+            error_message="exceeded 60s",
+            latency_ms=60_000,
+        ),
+    )
+    await bus.drain()
+
+    families = _families(collector.expose())
+    failures = [s for s in families["metis_tool_failures"] if s.name == "metis_tool_failures_total"]
+    assert len(failures) == 1
+    assert failures[0].labels == {"tool_name": "run_bash", "error_class": "timeout"}
+    assert failures[0].value == 1.0
+
+
+async def test_tool_completed_without_prior_call_collapses_to_unknown(bus: EventBus, collector):
+    """A `tool.completed` we never saw `tool.called` for must not mint a
+    new series — it falls into the `unknown` bucket. Real-world cause:
+    the collector started mid-turn after the dispatcher already emitted
+    the call event.
+    """
+    _emit(
+        bus,
+        type="tool.completed",
+        payload=ToolCompleted(
+            tool_use_id="tu_orphan",
+            success=True,
+            output_size_bytes=10,
+            latency_ms=5,
+        ),
+    )
+    await bus.drain()
+
+    families = _families(collector.expose())
+    samples = families["metis_tool_call_latency_seconds"]
+    matching = [s for s in samples if s.labels.get("tool_name") == "unknown"]
+    count_sample = next(s for s in matching if s.name.endswith("_count"))
+    assert count_sample.value == 1.0
+
+
+async def test_gateway_auth_failed_increments_counter_by_reason(bus: EventBus, collector):
+    """`gateway.auth_failed` drives `metis_gateway_auth_failures_total{reason}`.
+
+    Buckets exactly the three documented reasons from the spec — anything
+    else collapses to `unknown` via the same `_label()` fallback used by
+    the other event handlers.
+    """
+    for reason in ("missing_token", "invalid_token", "key_revoked"):
+        _emit(
+            bus,
+            type="gateway.auth_failed",
+            payload=GatewayAuthFailed(
+                reason=reason,
+                inbound_shape="openai",
+                token_hash_prefix="deadbeef" if reason != "missing_token" else None,
+            ),
+        )
+    await bus.drain()
+
+    families = _families(collector.expose())
+    rows = {
+        s.labels["reason"]: s.value
+        for s in families["metis_gateway_auth_failures"]
+        if s.name == "metis_gateway_auth_failures_total"
+    }
+    assert rows == {
+        "missing_token": 1.0,
+        "invalid_token": 1.0,
+        "key_revoked": 1.0,
+    }
+
+
+async def test_tool_name_cache_is_bounded(bus: EventBus, collector):
+    """LRU caps at `_TOOL_NAME_CACHE_MAX` so a never-completed tool
+    leak can't grow without bound. The oldest entries are evicted first.
+    """
+    from metis_core.observability.metrics import _TOOL_NAME_CACHE_MAX
+
+    # Emit cap + 5 tool.called events; the oldest 5 should be evicted.
+    for i in range(_TOOL_NAME_CACHE_MAX + 5):
+        _emit(
+            bus,
+            type="tool.called",
+            payload=ToolCalled(
+                tool_use_id=f"tu_leak_{i}",
+                tool_name=f"tool_{i % 3}",
+                input_hash="h",
+                input_size_bytes=1,
+                side_effects="read",
+            ),
+        )
+    await bus.drain()
+
+    assert len(collector._tool_names) == _TOOL_NAME_CACHE_MAX
+    assert "tu_leak_0" not in collector._tool_names
+    assert "tu_leak_4" not in collector._tool_names
+    assert "tu_leak_5" in collector._tool_names
+    assert f"tu_leak_{_TOOL_NAME_CACHE_MAX + 4}" in collector._tool_names
+
+
+async def test_llm_completed_attributes_cost_to_per_key_counter(bus: EventBus, collector):
+    """Wave 14a — per-key spend anomaly detection runs against
+    `metis_gateway_key_cost_usd_total{gateway_key_id}`. Calls with no key
+    (agent-loop) bucket under `null` so the metric is queryable in one
+    shot.
+    """
+    _emit(
+        bus,
+        type="llm.call_completed",
+        payload=LLMCallCompleted(
+            model="anthropic:claude-haiku-4-5",
+            provider="anthropic",
+            input_tokens=100,
+            output_tokens=50,
+            cached_input_tokens=0,
+            cache_creation_input_tokens=0,
+            cost_usd=0.0500,
+            pricing_version="v1",
+            latency_ms=200,
+            stop_reason="end_turn",
+            produced_tool_calls=0,
+            produced_thinking_blocks=0,
+            gateway_key_id="gk_metric_test",
+        ),
+    )
+    _emit(
+        bus,
+        type="llm.call_completed",
+        payload=LLMCallCompleted(
+            model="anthropic:claude-haiku-4-5",
+            provider="anthropic",
+            input_tokens=100,
+            output_tokens=50,
+            cached_input_tokens=0,
+            cache_creation_input_tokens=0,
+            cost_usd=0.0200,
+            pricing_version="v1",
+            latency_ms=200,
+            stop_reason="end_turn",
+            produced_tool_calls=0,
+            produced_thinking_blocks=0,
+            # No gateway_key_id — agent-loop traffic
+        ),
+    )
+    await bus.drain()
+
+    families = _families(collector.expose())
+    samples = {
+        s.labels["gateway_key_id"]: s.value
+        for s in families["metis_gateway_key_cost_usd"]
+        if s.name == "metis_gateway_key_cost_usd_total"
+    }
+    assert samples["gk_metric_test"] == pytest.approx(0.05)
+    assert samples["null"] == pytest.approx(0.02)
+
+
+async def test_llm_latency_buckets_cover_required_range(bus: EventBus, collector):
+    """Spec §3 requires the LLM latency histogram covers the 0.1-30s range.
+
+    Verify the registered bucket boundaries hit both ends of that span
+    (this is the gate on adopting the histogram for the production
+    p99 alert rule in `prometheus-rules.yaml`).
+    """
+    from metis_core.observability.metrics import _LATENCY_BUCKETS_SECONDS
+
+    assert 0.1 in _LATENCY_BUCKETS_SECONDS
+    assert 30.0 in _LATENCY_BUCKETS_SECONDS
+    # Edges of the alert-rule range have at least one bucket inside them.
+    inside = [b for b in _LATENCY_BUCKETS_SECONDS if 0.1 <= b <= 30.0]
+    assert len(inside) >= 5

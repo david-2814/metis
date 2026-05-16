@@ -11,6 +11,7 @@ from metis_gateway.app import (
     GatewayConfigError,
     run_gateway,
 )
+from metis_gateway.billing import BillingConfig
 from metis_gateway.runtime import (
     GatewaySetupError,
     default_keystore_path,
@@ -34,6 +35,12 @@ async def run_gateway_command(
     signup_enabled: bool = False,
     signup_dashboard_url: str | None = None,
     signup_accounts_path: str | None = None,
+    billing_enabled: bool = False,
+    billing_stripe_api_key: str | None = None,
+    billing_stripe_webhook_secret: str | None = None,
+    billing_store_path: str | None = None,
+    billing_pro_price_id: str | None = None,
+    billing_enterprise_metered_price_id: str | None = None,
 ) -> int:
     """Run `metis gateway` until shutdown.
 
@@ -60,6 +67,26 @@ async def run_gateway_command(
             ),
             dashboard_base_url=signup_dashboard_url or default_dashboard,
         )
+    billing_cfg: BillingConfig | None = None
+    if billing_enabled:
+        if not signup_enabled:
+            print(
+                "error: --enable-billing requires --enable-signup",
+                file=sys.stderr,
+            )
+            return 1
+        kwargs = {}
+        if billing_pro_price_id:
+            kwargs["pro_price_id"] = billing_pro_price_id
+        if billing_enterprise_metered_price_id:
+            kwargs["enterprise_metered_price_id"] = billing_enterprise_metered_price_id
+        billing_cfg = BillingConfig(
+            enabled=True,
+            stripe_api_key=billing_stripe_api_key,
+            stripe_webhook_secret=billing_stripe_webhook_secret,
+            store_path=Path(billing_store_path).expanduser() if billing_store_path else None,
+            **kwargs,
+        )
     try:
         config = GatewayConfig(
             host=host,
@@ -69,6 +96,7 @@ async def run_gateway_command(
             max_concurrent_connections=max_connections,
             reuse_port=reuse_port,
             signup=signup_cfg,
+            billing=billing_cfg,
         )
     except GatewayConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -200,10 +200,15 @@ Each scope has the same three states:
 | ≥5 consecutive failures on one `(provider, model)` within 2 minutes          | That `(provider, model)`  | Single-model issue (rate limit, deprecation). |
 | ≥3 distinct models from one provider hit Unavailable within 2 minutes        | The whole provider        | Pattern points to a provider-wide issue. |
 | Any auth error (401, 403) on any model from a provider                       | The whole provider        | Misconfigured key affects everything.    |
-| Any DNS or network error reaching a provider's host                          | The whole provider        | Connectivity, not model-specific.        |
+| ≥2 DNS / network errors reaching a provider's host within 30 seconds         | The whole provider        | Sustained connectivity loss, not model-specific. |
+| A single transient DNS / network error reaching a provider's host            | None (counts toward the per-`(provider, model)` 5-strike threshold below) | One-off SSL renegotiation or TCP RST is not an outage. |
 | Bounded exponential backoff exhausted inside a single adapter call           | No state change           | Per-call transient handling; not a signal of sustained outage. |
 
-A successful call against a `(provider, model)` clears that scope's Unavailable state immediately. A successful call against any model from a provider clears the provider-wide Unavailable state.
+A successful call against a `(provider, model)` clears that scope's Unavailable state immediately. A successful call against any model from a provider clears the provider-wide Unavailable state *and* the sliding NETWORK-failure window.
+
+**Why NETWORK is not immediate (refined 2026-05-16):** an earlier revision blacked the whole provider out on a single NETWORK error, on the theory that DNS / connectivity issues affect every model identically. In practice transient SSL handshake errors (`ssl.SSLError: SSLV3_ALERT_BAD_RECORD_MAC`, `httpx.ConnectError` mid-TLS-renegotiation, one-off TCP RST) reach the adapter as `ErrorClass.NETWORK` but represent a single failed connection rather than a sustained provider-side outage. The 5-minute auto-clear made one transient hiccup look like a 5-minute provider blackout. The 2-within-30-seconds threshold filters the one-off from the real outage: a genuine DNS / regional-network failure will produce a second NETWORK error well inside 30 seconds, while a one-off TLS glitch resolves on the next call.
+
+The thresholds (`_NETWORK_PROVIDER_ESCALATION_THRESHOLD`, `_NETWORK_PROVIDER_ESCALATION_WINDOW_SECONDS`) live in [`availability.py`](../../packages/metis-core/src/metis_core/routing/availability.py) as module constants; AUTH still escalates immediately because a misconfigured key cannot be a one-off.
 
 #### 4.5.2 Auto-clear
 
