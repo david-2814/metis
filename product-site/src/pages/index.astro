@@ -1,109 +1,153 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import Nav from "../components/Nav.astro";
+import Footer from "../components/Footer.astro";
 import TerminalDemo from "../components/TerminalDemo.astro";
 import DashboardShowcase from "../components/DashboardShowcase.astro";
+import ArchitectureDiagram from "../components/ArchitectureDiagram.astro";
 
-const pillars = [
+// Four-leg moat — verbatim from STRATEGY.md §4.
+const moat = [
   {
     n: "01",
-    title: "Context engineering",
-    body: "Prompt-cache discipline, history pruning, lazy skill loading, stable tool-def prefixes. Cache reads at 0.1× versus writes at 1.25× swing long-session bills by 5–10×. The largest lever, applied automatically.",
+    title: "Bounded, agent-curated memory",
+    body: "MEMORY.md and USER.md cap at ~2 KB and ~1.5 KB per workspace. The agent adds, replaces, and consolidates entries on its own. Unbounded vector stores destroy context quality with run-off; bounded memory keeps it surgical. Letta is the only Series-A peer with the same eviction-is-a-feature stance.",
   },
   {
     n: "02",
-    title: "Skills on demand",
-    body: "Focused expert instructions, loaded only when the task needs them. Progressive disclosure keeps the metadata cost near zero until activated. Smaller models do focused work when given a focused prompt. Compatible with the agentskills.io open standard.",
+    title: "Lossless canonical message format",
+    body: "One internal representation of messages, content blocks, tool calls, thinking blocks, cache_control. Provider adapters translate to and from each wire format. Mid-session model swaps work because the canonical state is provider-agnostic. LiteLLM ships a tool_use / cache_control / thinking-block bug roughly every release; Metis doesn't.",
   },
   {
     n: "03",
-    title: "Model selection",
-    body: "A layered routing chain picks the cheapest model that can do the task well, with capability validation before dispatch. Sticky per session, configurable per workload, learned from past patterns.",
+    title: "Task-fingerprint pattern learning",
+    body: "Every turn writes a structural fingerprint plus the actual outcome (quality, cost, latency) to a per-workspace SQLite store. The next turn that looks like one we've seen routes against a K-NN cluster of cross-model outcomes. No commodity router ships this. First end-to-end inversion demonstration in benchmarks/RESULTS.md §A3-rev3.",
+  },
+  {
+    n: "04",
+    title: "Auto-derived skill curation",
+    body: "Periodic auxiliary-model maintenance of agent-authored skills: pin, archive, consolidate, edit. Never auto-deletes (archive is reversible). Pinned bypasses every auto-transition. agentskills.io-compatible. Pattern lifted from hermes-agent; gated on Phase 2.5 skill_save. Composes with pattern learning — leg 3 picks the right model per task class, leg 4 keeps the skill library that informs those tasks pruned and current.",
   },
 ];
 
-const wedges = [
-  {
-    title: "Bounded, agent-curated memory",
-    body: "MEMORY.md and USER.md are intentionally small (∼2 KB and ∼1.5 KB). The agent adds, replaces, and consolidates entries on its own — the eviction is the feature. Unbounded vector stores destroy context quality; bounded memory keeps it surgical.",
-  },
-  {
-    title: "Lossless canonical message format",
-    body: "One internal representation of messages, content blocks, and tool calls. Provider adapters translate to and from each wire format. Mid-session model swaps work because the canonical state is provider-agnostic. Replays survive because content is preserved.",
-  },
-  {
-    title: "Pattern learning over your workload",
-    body: "Task fingerprints with outcomes drive cold-start routing recommendations and auto-derived skills. The longer you use it, the more it knows what worked on this codebase — and the cheaper the next turn gets.",
-  },
-];
-
+// "What's shipped" — post-Wave-13, scoped to what a buyer can verify.
 const shipped = [
+  "Transparent HTTP gateway (OpenAI + Anthropic shapes, sync + SSE)",
   "Three providers wired: Anthropic, OpenAI, OpenRouter",
-  "Canonical message format with mid-session provider swap",
-  "Bounded MEMORY.md / USER.md with agent self-edit tools",
-  "Workspace-scoped file and shell tools with path security",
-  "SQLite-backed session and trace store; full event catalog",
-  "Streaming over HTTP + WebSocket; CLI, TUI, and server",
+  "Per-user / per-team / per-key cost attribution + Prometheus /metrics",
+  "Pattern store with K-NN cluster routing (slot 4 of 7)",
+  "Hybrid evaluator: heuristic + LLM-as-judge with cost caps",
+  "Worker delegation: planner spawns workers for fan-out",
+  "Audit log + 90-day trace retention + GDPR export / forget",
+  "SOC2 Trust Service Criteria gap audit (Type 1 target Q3 2026)",
+  "Helm chart + Docker compose + < 1-hour buyer-trial recipe",
+  "1,678 tests passing",
 ];
 
 const inProgress = [
-  "Configured routing rules (yaml policy)",
-  "Skill format + skill store (agentskills.io compatible)",
-  "Pattern store + cold-start routing suggestions",
-  "Cost dashboard and evaluator",
-  "Cross-device sync (git remote)",
+  "Context-assembler v3: skill activation paths",
+  "Skill curator (gated on Phase 2.5 agent-authored skills)",
+  "Async / concurrent worker delegation",
+  "Pricing model ratification (see Wave 15)",
 ];
 ---
 
 <Layout>
   <!-- subtle dotted grid background, fades at edges -->
-  <div class="pointer-events-none fixed inset-0 grid-bg opacity-60 [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]"></div>
+  <div
+    class="pointer-events-none fixed inset-0 grid-bg opacity-60 [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]"
+  >
+  </div>
 
   <div class="relative">
-    <!-- NAV -->
-    <header class="border-b border-border">
-      <div class="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
-        <a href="/" class="flex items-baseline gap-2 text-fg">
-          <span class="text-accent">&gt;_</span>
-          <span class="text-base font-bold tracking-tight">metis</span>
-        </a>
-        <nav class="flex items-center gap-6 text-sm">
-          <a href="#thesis" class="text-fg-muted hover:text-fg">thesis</a>
-          <a href="#dashboard" class="text-fg-muted hover:text-fg">dashboard</a>
-          <a href="#status" class="text-fg-muted hover:text-fg">status</a>
-        </nav>
-      </div>
-    </header>
+    <Nav current="home" />
 
     <!-- HERO -->
     <section class="mx-auto max-w-6xl px-6 pb-20 pt-20 sm:pt-28">
-      <div class="mb-6 inline-flex items-center gap-2 rounded-full border border-border-strong bg-bg-card px-3 py-1 text-xs">
+      <div
+        class="mb-6 inline-flex items-center gap-2 rounded-full border border-border-strong bg-bg-card px-3 py-1 text-xs"
+      >
         <span class="relative flex h-2 w-2">
-          <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50"></span>
-          <span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span>
+          <span
+            class="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50"
+          ></span>
+          <span
+            class="relative inline-flex h-2 w-2 rounded-full bg-accent"
+          ></span>
         </span>
-        <span class="text-fg-muted">phase 1 shipped &middot; pre-launch</span>
+        <span class="text-fg-muted">
+          phase 3 in flight &middot; gateway GA-ready &middot; 1,678 tests
+          passing
+        </span>
       </div>
 
-      <h1 class="max-w-4xl text-4xl font-bold leading-[1.1] tracking-tight sm:text-5xl md:text-6xl">
-        The AI dev agent
+      <h1
+        class="max-w-4xl text-4xl font-bold leading-[1.1] tracking-tight sm:text-5xl md:text-6xl"
+      >
+        The AI dev agent that
         <br class="hidden sm:block" />
-        that gets <span class="text-accent">cheaper</span> the longer
+        <span class="text-accent">picks the model that succeeds</span>,
         <br class="hidden sm:block" />
-        you use it.
+        not just the cheap one.
       </h1>
 
-      <p class="mt-6 max-w-2xl text-base leading-relaxed text-fg-muted sm:text-lg">
-        Metis is a local-first agent that switches between Claude, OpenAI, and
-        OpenRouter mid-session. Bounded memory and curated skills keep prompts
-        lean. Pattern learning routes the right model for the job. Your costs
-        go down as the agent learns your workload.
+      <p
+        class="mt-6 max-w-2xl text-base leading-relaxed text-fg-muted sm:text-lg"
+      >
+        Metis is a transparent LLM gateway and agent runtime. Point Claude
+        Code, Cursor, or your own SDK at it; every turn is routed against a
+        learned task-fingerprint cluster, evaluated, and cost-stamped per
+        dev, per team. Devs change nothing.
       </p>
 
-      <div class="mt-10 flex flex-wrap items-center gap-3">
-        <div class="inline-flex items-center gap-3 rounded border border-border-strong bg-bg-card px-4 py-3 text-sm">
-          <span class="text-accent">[coming soon]</span>
-          <span class="text-fg-muted">macOS &middot; Linux &middot; binary releases in beta</span>
+      <!-- headline stat -->
+      <div class="mt-10 grid gap-4 sm:grid-cols-2">
+        <div
+          class="rounded-lg border border-accent/30 bg-bg-card p-5"
+        >
+          <p class="font-mono text-xs uppercase tracking-wider text-accent">
+            delegation, validated end-to-end
+          </p>
+          <p class="mt-3 text-3xl font-bold sm:text-4xl">
+            8.3% &ndash; 26.1%
+          </p>
+          <p class="mt-2 text-sm leading-relaxed text-fg-muted">
+            better cost-per-quality on a fan-out workload &mdash; sonnet
+            planner + haiku workers vs sonnet-only-no-delegation, across
+            two reproducible runs (§A3-rev5 + §A3-rev6).
+          </p>
         </div>
+        <div
+          class="rounded-lg border border-accent/30 bg-bg-card p-5"
+        >
+          <p class="font-mono text-xs uppercase tracking-wider text-accent">
+            differentiated model selection
+          </p>
+          <p class="mt-3 text-3xl font-bold sm:text-4xl">
+            $0.0477 / quality
+          </p>
+          <p class="mt-2 text-sm leading-relaxed text-fg-muted">
+            Pass C lands between haiku-only $0.0383 and sonnet-only
+            $0.1176, with the K-NN routing sonnet to the one hard turn
+            and haiku elsewhere (§A3-rev3).
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-10 flex flex-wrap items-center gap-3">
+        <a
+          href="/signup"
+          class="inline-flex items-center gap-2 rounded border border-accent bg-accent px-5 py-3 text-sm font-bold text-bg transition-colors hover:bg-accent/90"
+        >
+          sign up &mdash; private beta
+          <span aria-hidden="true">&rarr;</span>
+        </a>
+        <a
+          href="/compare"
+          class="inline-flex items-center gap-2 rounded border border-border-strong bg-bg-card px-5 py-3 text-sm font-bold text-fg transition-colors hover:border-accent"
+        >
+          metis vs LiteLLM / Portkey / Helicone
+        </a>
       </div>
 
       <!-- terminal demo -->
@@ -112,83 +156,112 @@ const inProgress = [
       </div>
     </section>
 
-    <!-- THESIS / PILLARS -->
-    <section id="thesis" class="border-t border-border bg-bg-elev/40">
+    <!-- HOW IT WORKS -->
+    <section
+      id="how-it-works"
+      class="border-t border-border bg-bg-elev/40"
+    >
       <div class="mx-auto max-w-6xl px-6 py-20">
-        <div class="mb-12 max-w-2xl">
+        <div class="mb-12 max-w-3xl">
           <p class="prompt-before mb-3 text-sm text-fg-muted">
-            <span class="text-fg">cat docs/thesis.md</span>
+            <span class="text-fg">cat docs/architecture.md</span>
           </p>
           <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">
-            Three levers. Applied together.
+            How it works.
           </h2>
           <p class="mt-4 text-fg-muted">
-            Cost optimization isn&apos;t one trick &mdash; it&apos;s the compounding
-            effect of getting all three right. The order of impact:
-            <span class="text-fg">context &gt; skills &gt; model selection.</span>
+            One canonical message format. One routing chain that runs the
+            same way whether you call it from the gateway or the agent
+            loop. Every turn writes to a trace store and a pattern store;
+            the next turn that looks like one we've seen routes against
+            what worked last time.
           </p>
         </div>
 
-        <div class="grid gap-6 md:grid-cols-3">
-          {pillars.map((p) => (
-            <div class="rounded-lg border border-border bg-bg-card p-6 transition-colors hover:border-border-strong">
-              <p class="font-mono text-xs text-accent">{p.n}</p>
-              <h3 class="mt-2 text-lg font-bold">{p.title}</h3>
-              <p class="mt-3 text-sm leading-relaxed text-fg-muted">{p.body}</p>
-            </div>
-          ))}
+        <ArchitectureDiagram />
+
+        <div class="mt-12 grid gap-6 md:grid-cols-2">
+          <div class="rounded-lg border border-border bg-bg-card p-6">
+            <p class="font-bold text-accent">Gateway-first deployment</p>
+            <p class="mt-2 text-sm leading-relaxed text-fg-muted">
+              The buyer flips one env var per dev tool. No client code
+              changes; no workflow change. The gateway is per-request
+              stateless &mdash; no session manager, no tool dispatcher,
+              no memory inside someone else's agent. Cost attribution
+              starts on call one.
+            </p>
+          </div>
+          <div class="rounded-lg border border-border bg-bg-card p-6">
+            <p class="font-bold text-accent">Agent upgrade path</p>
+            <p class="mt-2 text-sm leading-relaxed text-fg-muted">
+              When you want the deeper savings &mdash; context shaping,
+              skill activation, bounded memory, planner-worker
+              delegation &mdash; the same canonical IR powers the agent
+              loop via metis chat / tui / serve. Same routing engine,
+              same trace store. Buyer chooses the floor.
+            </p>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- WEDGE / DIFFERENTIATION -->
+    <!-- FOUR-LEG MOAT -->
     <section class="border-t border-border">
       <div class="mx-auto max-w-6xl px-6 py-20">
-        <div class="mb-12 max-w-2xl">
+        <div class="mb-12 max-w-3xl">
           <p class="prompt-before mb-3 text-sm text-fg-muted">
-            <span class="text-fg">grep -r &quot;moat&quot; .</span>
+            <span class="text-fg">grep -r "differentiator" docs/STRATEGY.md</span>
           </p>
           <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">
-            What everyone else doesn&apos;t ship.
+            What everyone else doesn't ship.
           </h2>
           <p class="mt-4 text-fg-muted">
-            Multi-provider support and cost tracking are table stakes now. The
-            defensible work is here:
+            Multi-provider routing and cost tracking are table stakes
+            now &mdash; OpenCode, Claude Code, Cline, Goose, Aider, and
+            the gateway crowd all do it. The defensible work is four
+            legs deep:
           </p>
         </div>
 
-        <div class="space-y-px overflow-hidden rounded-lg border border-border">
-          {wedges.map((w) => (
-            <div class="bg-bg-card p-6 sm:p-8">
-              <div class="flex items-start gap-4">
-                <span class="mt-1.5 text-accent" aria-hidden="true">&rarr;</span>
-                <div>
-                  <h3 class="text-lg font-bold sm:text-xl">{w.title}</h3>
-                  <p class="mt-2 text-sm leading-relaxed text-fg-muted sm:text-base">
-                    {w.body}
-                  </p>
-                </div>
+        <div class="grid gap-6 md:grid-cols-2">
+          {
+            moat.map((leg) => (
+              <div class="rounded-lg border border-border bg-bg-card p-6 transition-colors hover:border-border-strong">
+                <p class="font-mono text-xs text-accent">{leg.n}</p>
+                <h3 class="mt-2 text-lg font-bold">{leg.title}</h3>
+                <p class="mt-3 text-sm leading-relaxed text-fg-muted">
+                  {leg.body}
+                </p>
               </div>
-            </div>
-          ))}
+            ))
+          }
         </div>
+
+        <p class="mt-8 max-w-3xl text-sm text-fg-muted">
+          Legs 3 and 4 compose: pattern learning picks the right model
+          per task class; skill curation keeps the skill library that
+          informs those tasks pruned and current. Each makes the other
+          more valuable.
+        </p>
       </div>
     </section>
 
     <!-- DASHBOARD -->
-    <section id="dashboard" class="border-t border-border">
+    <section id="dashboard" class="border-t border-border bg-bg-elev/40">
       <div class="mx-auto max-w-6xl px-6 py-20">
         <div class="mb-12 max-w-2xl">
           <p class="prompt-before mb-3 text-sm text-fg-muted">
-            <span class="text-fg">open http://localhost:8421/dashboard</span>
+            <span class="text-fg">curl http://gateway/analytics/by_team</span>
           </p>
           <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">
             See where every cent goes.
           </h2>
           <p class="mt-4 text-fg-muted">
-            A local dashboard ships with the agent. Every turn, every model,
-            every dollar &mdash; measured against what it would have cost on
-            a single-model baseline. No SaaS, no telemetry.
+            Every turn, every model, every dollar &mdash; measured
+            against what it would have cost on a single-model baseline,
+            with per-user, per-team, and per-project rollups. The
+            counterfactual is the same one the gateway uses live; no
+            spreadsheet math.
           </p>
         </div>
 
@@ -196,27 +269,29 @@ const inProgress = [
 
         <div class="mt-10 grid gap-6 text-sm md:grid-cols-3">
           <div class="rounded-lg border border-border bg-bg-card p-5">
-            <p class="font-bold text-accent">Baseline comparison</p>
+            <p class="font-bold text-accent">Baseline counterfactual</p>
             <p class="mt-2 leading-relaxed text-fg-muted">
-              Every spend total is shown against what the same workload would
-              have cost on a single model (e.g. claude-sonnet-4-6). The savings
-              story stops being a guess.
+              Every spend total is shown against what the same turns
+              would have cost on a pinned baseline (e.g.
+              claude-sonnet-4-6). Savings stop being a guess and become
+              a number you can put in a board deck.
             </p>
           </div>
           <div class="rounded-lg border border-border bg-bg-card p-5">
-            <p class="font-bold text-accent">Cache effectiveness</p>
+            <p class="font-bold text-accent">Per-user / per-team</p>
             <p class="mt-2 leading-relaxed text-fg-muted">
-              Per-model breakdown of cache hits, writes, and uncached tokens.
-              Context-engineering work is visible immediately &mdash; not buried
-              in a provider invoice three weeks later.
+              /analytics/by_user · /analytics/by_team · /analytics/by_key
+              roll up cost, tokens, and call counts per identity. The
+              gateway stamps user_id / team_id on every llm.call_completed.
             </p>
           </div>
           <div class="rounded-lg border border-border bg-bg-card p-5">
-            <p class="font-bold text-accent">Routing &amp; reliability</p>
+            <p class="font-bold text-accent">Cost-per-quality</p>
             <p class="mt-2 leading-relaxed text-fg-muted">
-              Which decision slot picked which model, p50 / p95 latency per
-              model, failure classification, session-level cost attribution.
-              Every turn is auditable.
+              The evaluator scores every turn through a heuristic + LLM
+              hybrid judge. /analytics/quality joins to route.decided,
+              so the model attributed is the one judged &mdash; not the
+              judge's own model.
             </p>
           </div>
         </div>
@@ -224,7 +299,7 @@ const inProgress = [
     </section>
 
     <!-- STATUS -->
-    <section id="status" class="border-t border-border bg-bg-elev/40">
+    <section id="status" class="border-t border-border">
       <div class="mx-auto max-w-6xl px-6 py-20">
         <div class="mb-12 max-w-2xl">
           <p class="prompt-before mb-3 text-sm text-fg-muted">
@@ -234,75 +309,90 @@ const inProgress = [
             Where the build is, today.
           </h2>
           <p class="mt-4 text-fg-muted">
-            We&apos;d rather show you the actual state than the eventual one.
+            We'd rather show you the actual state than the eventual one.
+            Live runtime status at
+            <a
+              href="https://status.2sum.ai"
+              rel="noopener"
+              class="text-accent hover:underline"
+            >
+              status.2sum.ai
+            </a>.
           </p>
         </div>
 
         <div class="grid gap-8 md:grid-cols-2">
           <div>
-            <h3 class="mb-4 text-sm font-bold uppercase tracking-wider text-accent">
+            <h3
+              class="mb-4 text-sm font-bold uppercase tracking-wider text-accent"
+            >
               shipped
             </h3>
             <ul class="space-y-2.5">
-              {shipped.map((item) => (
-                <li class="flex items-start gap-3 text-sm">
-                  <span class="mt-0.5 text-accent" aria-hidden="true">[x]</span>
-                  <span class="text-fg">{item}</span>
-                </li>
-              ))}
+              {
+                shipped.map((item) => (
+                  <li class="flex items-start gap-3 text-sm">
+                    <span class="mt-0.5 text-accent" aria-hidden="true">
+                      [x]
+                    </span>
+                    <span class="text-fg">{item}</span>
+                  </li>
+                ))
+              }
             </ul>
           </div>
           <div>
-            <h3 class="mb-4 text-sm font-bold uppercase tracking-wider text-amber">
+            <h3
+              class="mb-4 text-sm font-bold uppercase tracking-wider text-amber"
+            >
               in progress
             </h3>
             <ul class="space-y-2.5">
-              {inProgress.map((item) => (
-                <li class="flex items-start gap-3 text-sm">
-                  <span class="mt-0.5 text-amber" aria-hidden="true">[ ]</span>
-                  <span class="text-fg-muted">{item}</span>
-                </li>
-              ))}
+              {
+                inProgress.map((item) => (
+                  <li class="flex items-start gap-3 text-sm">
+                    <span class="mt-0.5 text-amber" aria-hidden="true">
+                      [ ]
+                    </span>
+                    <span class="text-fg-muted">{item}</span>
+                  </li>
+                ))
+              }
             </ul>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- CTA / DOWNLOAD -->
-    <section class="border-t border-border">
-      <div class="mx-auto max-w-6xl px-6 py-24 text-center">
+    <!-- CTA -->
+    <section class="border-t border-border bg-bg-elev/40">
+      <div class="mx-auto max-w-3xl px-6 py-24 text-center">
         <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">
-          Ready when you are.
+          First savings number in under an hour.
         </h2>
         <p class="mx-auto mt-4 max-w-xl text-fg-muted">
-          Metis runs locally on your machine, against your API keys.
-          Binary releases for macOS and Linux are coming soon &mdash;
-          install with a single command, no infrastructure to manage.
+          Kind cluster + helm install + pre-baked workload + per-key cost
+          rollup, automated end-to-end. Smoke-phase real-API spend stays
+          under $1.
         </p>
-        <div class="mt-8">
-          <div class="inline-flex items-center gap-3 rounded border border-border-strong bg-bg-card px-5 py-3 text-sm">
-            <span class="relative flex h-2 w-2">
-              <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50"></span>
-              <span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span>
-            </span>
-            <span class="font-bold text-accent">launching soon</span>
-          </div>
+        <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
+          <a
+            href="/signup"
+            class="inline-flex items-center gap-2 rounded border border-accent bg-accent px-5 py-3 text-sm font-bold text-bg transition-colors hover:bg-accent/90"
+          >
+            sign up for the private beta
+            <span aria-hidden="true">&rarr;</span>
+          </a>
+          <a
+            href="/compare"
+            class="inline-flex items-center gap-2 rounded border border-border-strong bg-bg-card px-5 py-3 text-sm font-bold text-fg transition-colors hover:border-accent"
+          >
+            see the comparison sheet
+          </a>
         </div>
       </div>
     </section>
 
-    <!-- FOOTER -->
-    <footer class="border-t border-border">
-      <div class="mx-auto flex max-w-6xl flex-col items-start justify-between gap-4 px-6 py-8 text-xs text-fg-dim sm:flex-row sm:items-center">
-        <div class="flex items-center gap-2">
-          <span class="text-accent">&gt;_</span>
-          <span>metis &mdash; local-first AI dev agent</span>
-        </div>
-        <div class="flex items-center gap-6">
-          <span>&copy; 2026</span>
-        </div>
-      </div>
-    </footer>
+    <Footer />
   </div>
 </Layout>

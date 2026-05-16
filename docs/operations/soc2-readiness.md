@@ -173,7 +173,7 @@ export`, not an SRE manually running SQL.
 
 | Criterion | Status | Evidence | Buyer additions |
 |-----------|--------|----------|-----------------|
-| CC8.1 Authorize, design, develop, configure, document, test, approve, implement changes | **gap (honest)** | PR-based workflow + test suite (1486 tests passing); specs-first discipline ([`docs/specs/CHANGES.md`](../specs/CHANGES.md) cross-spec change log). No formal change-advisory board, no CAB approval workflow, no separated dev / test / prod environments at the *Metis project* level. | Buyer wraps deploys in their own change-management process; staging vs prod cluster split; CAB approvals if their compliance team requires. |
+| CC8.1 Authorize, design, develop, configure, document, test, approve, implement changes | **gap (honest)** | PR-based workflow + test suite (1678 tests passing); specs-first discipline ([`docs/specs/CHANGES.md`](../specs/CHANGES.md) cross-spec change log). No formal change-advisory board, no CAB approval workflow, no separated dev / test / prod environments at the *Metis project* level. | Buyer wraps deploys in their own change-management process; staging vs prod cluster split; CAB approvals if their compliance team requires. |
 
 **Honest framing.** Metis is one part-time engineer ([`STRATEGY.md "Solo, part-time owner"`](../STRATEGY.md)).
 A formal change-management process at the project layer would be
@@ -259,7 +259,7 @@ and [`server-api.md §3.1`](../specs/server-api.md).
 |-----------|--------|----------|-----------------|
 | PI1.1 Define processing requirements | implemented | Canonical message format ([`canonical-message-format.md`](../specs/canonical-message-format.md)) — load-bearing data contract; `msgspec`-validated, JSON-roundtrippable. | — |
 | PI1.2 Inputs are complete, valid, authorized | implemented | JSON-Schema validation on tool inputs ([`tool-dispatcher.md`](../specs/tool-dispatcher.md)); adapter capability gates ([`provider-adapter-contract.md`](../specs/provider-adapter-contract.md)); per-key `allowed_models` check ([`gateway.md §5.5`](../specs/gateway.md)). | — |
-| PI1.3 System processing produces complete, accurate outputs | implemented | Per-turn `route.decided` chain trace (every decision recorded); `Decimal` cost math with `pricing_version` stamped ([`AGENTS.md "Implementation conventions"`](../../AGENTS.md)); 1486-test suite covering canonical round-trips, role-content invariants, retry / cancellation, cross-provider continuity. | — |
+| PI1.3 System processing produces complete, accurate outputs | implemented | Per-turn `route.decided` chain trace (every decision recorded); `Decimal` cost math with `pricing_version` stamped ([`AGENTS.md "Implementation conventions"`](../../AGENTS.md)); 1678-test suite covering canonical round-trips, role-content invariants, retry / cancellation, cross-provider continuity. | — |
 | PI1.4 Outputs are complete, accurate, distributed | implemented | Append-only trace store (WAL); 31-event closed catalog ([`event-bus-and-trace-catalog.md §6`](../specs/event-bus-and-trace-catalog.md)); causal-chain integrity test (`tests/events/`). | — |
 | PI1.5 Stored data is complete, accurate, secured | partial | SQLite WAL + `synchronous=NORMAL`; schema-versioned restore ([`event-bus-and-trace-catalog.md §7.5`](../specs/event-bus-and-trace-catalog.md)); per-(provider, model) availability tracking surfaces error rates. | At-rest encryption (cloud-provider volume encryption); backup integrity verification. |
 
@@ -398,7 +398,7 @@ Walk through CC6 (access — multi-user identity + key rotation + audit
 events), CC7 (operations — incident runbooks + backup/restore + rolling
 upgrade), C1 (confidentiality — sensitivity classification +
 loopback-only + Wave 12 redaction), PI1 (processing integrity — the
-strongest TSC, backed by canonical-format + cost-attribution + 1486
+strongest TSC, backed by canonical-format + cost-attribution + 1678
 tests). Point at the evidence column.
 
 **Level 3 — "When can you commit to a Type 1 / Type 2?"**

@@ -57,4 +57,12 @@ expect:
   max_hard_failures: 0
 evaluate:
   rubric: heuristic
-  expect_substring_in_final_response: "PASS 16/16"
+  # Partial-credit replaces the pass/fail "PASS 16/16" substring check
+  # (evaluator.md §5.4 v1.2 / §A3-rev6 / 13a-1 follow-up). The runner.py
+  # prints `PASS N/16` or `FAIL N/16`; the heuristic parses the ratio and
+  # scores 0.0..1.0 linearly. Surfaces mid-range outcomes (haiku at 12/16,
+  # sonnet at 16/16) the prior pass/fail check collapsed to 0 or 1.
+  partial_credit:
+    enabled: true
+    criterion: test_pass_count_ratio
+    map: linear

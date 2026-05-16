@@ -56,4 +56,13 @@ expect:
   max_hard_failures: 0
 evaluate:
   rubric: heuristic
-  expect_substring_in_final_response: "4 passed"
+  # Partial-credit replaces the pass/fail "4 passed" substring check
+  # (evaluator.md §5.4 v1.2). The pytest summary reports
+  # `N passed[, M failed]` across 4 tests; ratio = passed/total.
+  # Symptom-only fixes pass test_integration but fail the three loader
+  # tests (1/4 = 0.25); root-cause fixes pass 4/4 = 1.0. The gradient
+  # is the haiku-vs-sonnet signal the boolean check erased.
+  partial_credit:
+    enabled: true
+    criterion: test_pass_count_ratio
+    map: linear

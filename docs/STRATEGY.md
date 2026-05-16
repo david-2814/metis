@@ -191,15 +191,77 @@ be the only place a stable gap exists). The savings posture on the
 model-selection lever stays at §A3-rev3's N=1 calibration. Total
 13a-1 smoke spend: $0.815.
 
-**GTM headline posture (post-§A3-rev6).** Unchanged from §A3-rev5
-for the model-selection lever (§A3-rev3 N=1 stands as the canonical
-proof-of-concept; generalization is gated on benchmark-suite signal
-strength, not routing). Delegation's headline number updates: §A3-rev6
+**§A3-rev7 follow-up (2026-05-15, partial / aborted on credits):**
+[`benchmarks/RESULTS.md §A3-rev7`](../benchmarks/RESULTS.md) tested
+**13b-1's path (a)** (finer-grained outcome scoring) end-to-end after
+Wave 14a-1 landed the v1.2 `partial_credit` rubric primitive on 5
+workloads. The run aborted partway through Pass B when the Anthropic
+account hit a credit-balance exhaustion (HTTP 400). Pass A completed
+across all 5 workloads; Pass B completed only on
+`subtle-bug-fix-with-test`; Pass C was not executed. **Preliminary
+result on the 2 workloads with complete haiku + sonnet partial-credit
+data:** `subtle-bug-fix-with-test` haiku 0.950 / sonnet 0.950
+(+0.000 gap); `recursive-data-structure-traversal` haiku 1.000 /
+sonnet 1.000 on N=1 sonnet (+0.000 gap). The partial-credit rubric
+is correctly active (`rubric_version=1.2.0` stamped on every workload
+verdict, test_pass_count_ratio parsing pytest summaries as designed)
+but produces zero discrimination on workloads where both models
+reliably arrive at `N passed / N total`. **Interpretation (c) — the
+prior judges had insufficient outcome resolution — is *largely
+refuted* on these two workloads.** Interpretation (a) — haiku-4.5 is
+genuinely strong on dev-loop coding at temperature=0 — now has
+*direct* evidence on the two complete data points. The one residual
+signal: `regex-with-edge-cases` Pass A haiku produced 0.63–0.75 across
+3 reps (the only workload where partial-credit surfaced mid-scores)
+but no Pass B sonnet data landed for direct comparison; if a
+topped-up Pass B sonnet lands at 0.95+ the gap clears the
+confidence gate easily, and §A3-rev3's regex turn 2 inversion would
+generalize. Total §A3-rev7 spend before abort: $1.08 of the budgeted
+$3-5. **The model-selection-routing differentiator's status after 7
+A3 iterations: mechanically proven end-to-end (§A3-rev3 N=1 stands),
+generalization is gated on workload-domain-side rate of producing
+measurable haiku-vs-sonnet gaps rather than on any routing-engine
+knob.**
+
+**Strategic pivot (2026-05-15, post-§A3-rev7 partial):** the
+positioning for the three levers in §1 should shift to reflect 7
+iterations of empirical evidence:
+1. **Delegation is the validated GTM lever for the routing surface.**
+   §A3-rev5 (8.3%) and §A3-rev6 (26.1%) bracket a real
+   cost-per-quality range on the `multi-step-with-delegation`
+   workload; the headline should quote that range as the
+   substantiated savings claim for slot-5 routing.
+2. **Model selection (slot 4) is a Phase-4 differentiator** pending
+   the second wedge from §13a-1: task domains where haiku-4.5 has
+   measurable weakness (math/symbolic, long-context multi-document
+   synthesis, rare API surfaces). The mechanism is built; the breadth
+   of workloads where it inverts is the bottleneck. §A3-rev3 stands
+   as the canonical proof-of-concept demo, not as a regime. The §1
+   "rate-card savings *given haiku succeeds*" framing remains
+   accurate; the breadth claim cannot be tightened with the current
+   benchmark suite.
+3. **Context engineering** retains its §1-top spot as the largest
+   typical cost lever (prompt-cache discipline, history pruning,
+   skill lazy-loading). The shipped 100% cache-hit measurement
+   (`benchmarks/RESULTS.md §Run 3`) is the load-bearing savings story
+   most buyers will see first.
+
+**GTM headline posture (post-§A3-rev7 partial).** Unchanged from
+§A3-rev5 for the model-selection lever (§A3-rev3 N=1 stands as the
+canonical proof-of-concept; generalization is gated on
+benchmark-suite signal strength + workload-domain selection, not
+routing-engine knobs). The §A3-rev7 partial data adds direct
+evidence on `subtle-bug-fix-with-test` and
+`recursive-data-structure-traversal` that the prior judges'
+pass/fail collapse was *not* the bottleneck on these workloads —
+both models converge to identical scores under continuous-ratio
+partial-credit. Delegation's headline number updates: §A3-rev6
 Pass D shows **26.1% better cost-per-quality** on the delegation
-workload (vs §A3-rev5's 8.3%); both numbers are reproducible, but
-they bracket a meaningful range — the headline should quote the
-range (8.3% – 26.1% across two runs) rather than the single newer
-number, because both runs reflect real workload variance.
+workload (vs §A3-rev5's 8.3%); §A3-rev7 did not re-measure (Pass D
+failed on credit exhaustion). Both numbers are reproducible; the
+8.3% – 26.1% range across two completed runs is the published
+delegation headline. **The delegation lever now sits ahead of
+model-selection in the GTM ordering.**
 
 ## 2. Buyer ≠ user
 
@@ -277,6 +339,7 @@ Implication: the moat is execution speed + opinionated defaults + the FTS5/finge
 | 2026-05-15 | §A3-rev4: v2 wiring partial, inversion didn't generalize; eval-to-store outcome bug closed | [`benchmarks/RESULTS.md §A3-rev4`](../benchmarks/RESULTS.md) — 4-pass protocol with `PatternConfig.fingerprint_version="v2"` + `embedding_provider="openai:text-embedding-3-small"` plus a 5th pass with `--delegation-policy sonnet-planner-haiku-worker` on `multi-turn-refactor`. **Pass C produced 0 pattern-slot sonnet picks** (vs §A3-rev3's 1 on regex turn 2). Root cause: v2 wiring stores STRUCTURAL fingerprints with the embedding cache warmed *out-of-band* after `store.record()`, so routing-time K-NN falls back to v1 weighted-Jaccard via mixed-version detection. The "v2 cluster-tightening A/B" deferred Wave-10 item remains the real Q1 gate. **Pass D (delegation)** didn't fire because slot 4 picked haiku (which lacks `can_delegate=True`); routing-then-delegate composition needs the planner forced via `--model sonnet` to test Q2 end-to-end. **Two correctness fixes landed alongside**: (i) `shutdown_runtime` now drains *before* detaching subscribers ([apps/cli/src/metis_cli/runtime.py](../apps/cli/src/metis_cli/runtime.py)), closing the long-standing §A3-rev3 `architectural-explanation-without-hallucination` `success_score_count=0` caveat (architectural now accumulates both haiku and sonnet samples cleanly); (ii) `EventBus.stop()` drains before setting `_stopping=True` ([packages/metis-core/src/metis_core/events/bus.py](../packages/metis-core/src/metis_core/events/bus.py)), eliminating a deadlock when unregister events sat in queue at stop time. New benchmark flags `--fingerprint-version`, `--embedding-provider`, `--delegation-policy` ship in [scripts/benchmark.py](../scripts/benchmark.py). The savings posture stays at §A3-rev3's calibration — v2 has not yet extended the differentiation. Total experiment spend: $1.30. |
 | 2026-05-15 | §A3-rev5: v2 HYBRID lands end-to-end, inversion still doesn't generalize; delegation Q2 improves cost-per-quality 8.3% | [`benchmarks/RESULTS.md §A3-rev5`](../benchmarks/RESULTS.md) — 4-pass protocol re-run after Wave 11 closed both §A3-rev4 blockers. **11b-1** (recording-side HYBRID): turn-start `fingerprint_inputs_hook` precomputes the embedding so `compute_fingerprint` produces `kind='hybrid'` rows at `store.record()` ([apps/cli/src/metis_cli/runtime.py:284-318](../apps/cli/src/metis_cli/runtime.py#L284-L318), [packages/metis-core/tests/patterns/test_v2_recording_wiring.py](../packages/metis-core/tests/patterns/test_v2_recording_wiring.py)) — verified: 18 of 18 fingerprints in `a3rev5-patterns.db` are HYBRID (vs §A3-rev4's 70 of 70 STRUCTURAL). **11b-2** (delegation workload): [`benchmarks/workloads/multi-step-with-delegation/`](../benchmarks/workloads/multi-step-with-delegation/) ships with `--model sonnet` forcing the planner non-None + `min_delegate_calls: 3` assertion. **Q1: Pass C produces 0 pattern-slot sonnet picks across 17 routed turns** — v2 K-NN actually fires at routing time (every `pattern.matched` reports `fingerprint_kind="hybrid"`, no v1 fallback) but per-fingerprint clusters are dominated by haiku's 2-3× sample-size advantage under `cost_weight=0.1`. Cross-pass aggregate has the right signal (sonnet ahead on 2 of 7 workloads, including regex +0.117) but K-NN sees larger haiku populations per cluster. The §A3-rev3 regex inversion did not reproduce. Pass C quality sum 5.20 (haiku-only Pass A 5.72, sonnet-only Pass B 5.98); regex Pass C 0.19 (rubric fail under haiku) where Pass B sonnet scored 1.00. v2 HYBRID embeddings are a *necessary* foundation for further cluster-tightening (per-prompt fingerprint partitioning, or `cost_weight` reduction below 0.1) but not sufficient. **Q2: delegation produces 8.3% better cost-per-quality on a workload designed to exercise it.** Pass D: 3 `delegate.started` events fire reliably; sonnet planner + haiku workers at $0.221 / quality 0.91 = **$0.243/quality-unit**, vs sonnet-only-no-delegation at $0.183 / quality 0.69 = $0.265/quality-unit. The 23.9% "savings_pct" headline is the analytics counterfactual (worker tokens repriced at sonnet rates); absolute delegation cost is higher than sonnet-only-no-delegation but quality is higher too. First end-to-end demonstration of delegation moving cost-per-quality in any A3 series. The savings posture stays at §A3-rev3 for the model-selection lever; delegation now has its own validated GTM datapoint. Total experiment spend: $1.45. |
 | 2026-05-15 | §A3-rev6: cost_weight=0.05 mechanically correct, inversion still doesn't generalize; delegation Q2 widens to 26.1% | [`benchmarks/RESULTS.md §A3-rev6`](../benchmarks/RESULTS.md) — 4-pass protocol re-run after Wave 12 dropped the `PatternConfig.cost_weight` default from `0.1` → `0.05` ([`packages/metis-core/src/metis_core/routing/policy.py:76`](../packages/metis-core/src/metis_core/routing/policy.py#L76)). **Q1: Pass C produces 0 pattern-slot sonnet picks across 18 routed turns.** The cluster math behaves *exactly* as the §A3-rev5 brief's direct simulation predicted: cw=0.05 flips the cluster aggregate haiku → sonnet on two specific turns where sonnet has a tiny quality edge (multi-file-refactor turn 2: haiku 0.810 / sonnet 0.817; regex turn 2: haiku 0.921 / sonnet 0.926). But the resulting confidence values (0.009 and 0.006 respectively) sit *below* the `min_confidence=0.05` gate, so slot 4 gates off → slot 7 → haiku. The §A3-rev3 inversion did not reproduce. **The diagnosis at six A3 iterations:** all previously-identified routing-engine mechanical blockers (workload-tag partitioning, cost_weight floor, grounding-check rubric, min_confidence reduction, v2 HYBRID recording) are live and verified at both the per-unit-test and live-run layers. The remaining bottleneck is benchmark-suite signal strength — when sonnet outperforms haiku on a workload, the per-turn quality delta is typically 0.05–0.15, narrowing to 0.01–0.05 after K-NN aggregation across same-workload neighbors, producing confidence right at the noise-protective gate's edge. Pass A regex haiku 0.75 vs Pass B sonnet 0.74 means there's effectively no signal to invert on for regex; Pass A multi-turn-refactor haiku 1.00 vs Pass B sonnet 0.85 actively rewards haiku, the *opposite* of §A3-rev3's direction. Next-move candidates named in §A3-rev6 Q1 finding: (1) workload signal strengthening (replace marginal workloads with ones where haiku stably fails 0.3–0.5 / sonnet stably passes 0.9+); (2) N-shot per workload to reduce the variance the K-NN has to overcome; (3) per-turn-text fingerprinting on top of workload-tag (ruled out under cw=0.1, may be worth reconsidering at cw=0.05). **§A3-rev6 ruled out:** the cost_weight halving as a sufficient unblock for generalized inversion. The model-selection savings posture stays at §A3-rev3's N=1 calibration; §A3-rev6 confirms the mechanical chain is fully wired and reframes the remaining work as benchmark-suite, not routing-knob. **Q2: delegation widens to 26.1% better cost-per-quality** (vs §A3-rev5's 8.3%) on the same `multi-step-with-delegation` workload — sonnet planner + haiku workers at $0.227 / quality 0.91 = **$0.249/quality-unit**, vs sonnet-only-no-delegation at $0.233 / quality 0.69 = $0.338/quality-unit. The widening is dominated by Pass D workers running fewer/shorter calls this run (6 calls vs §A3-rev5's 9) while the baseline stays flat at 0.69 (`min_delegate_calls=3` assertion failing). The 12.7% "savings_pct" headline is the analytics counterfactual (smaller than §A3-rev5's 23.9%); the cost-per-quality story is the load-bearing one. GTM headline for delegation should quote the 8.3% – 26.1% range across two reproducible runs, not a single point. Total experiment spend: $1.5647. |
+| 2026-05-15 | §A3-rev7: finer-grained outcome scoring tested (partial run, aborted on credits); preliminary evidence rules out interpretation (c) on 2 of 5 partial-credit workloads | [`benchmarks/RESULTS.md §A3-rev7`](../benchmarks/RESULTS.md) — 4-pass protocol designed against the 5 partial-credit-enabled workloads after Wave 14a-1 landed the v1.2 `partial_credit` rubric primitive (evaluator.md §5.4). The run aborted partway through Pass B when the Anthropic account hit a credit-balance exhaustion (HTTP 400). Pass A completed across all 5 workloads × 3 seed-passes; Pass B completed only on `subtle-bug-fix-with-test` (3 reps) + `recursive-data-structure-traversal` (1 of 3 reps before the credit error); Pass C was not executed (no point: 3 of 5 workloads had zero sonnet samples in the patterns DB). **Preliminary Q1 outcome on the 2 workloads with complete haiku + sonnet partial-credit data:** `subtle` haiku 0.950 / sonnet 0.950 (+0.000 gap); `recursive` haiku 1.000 / sonnet 1.000 (+0.000 gap on N=1 sonnet sample). The partial-credit rubric is correctly active end-to-end (`rubric_version=1.2.0` stamped on every workload verdict, pytest summary parsing extracting test_pass_count_ratio as designed) but produces zero discrimination on workloads where both models reliably hit `N passed / N total` at temperature=0. **Interpretation (c) from §A3-rev6 / 13a-1 (finer-grained scoring would surface the gap) is *largely refuted* on these two workloads.** Interpretation (a) (haiku-4.5 is genuinely strong on dev-loop coding at temp=0) now has direct positive evidence. **Residual signal:** `regex-with-edge-cases` Pass A haiku produced 0.63-0.75 across 3 reps (the only workload where partial-credit surfaced mid-scores); the missing Pass B sonnet samples would directly test whether the gap is large enough to clear the confidence gate post-K-NN aggregation. Total §A3-rev7 spend: $1.08 (of budgeted $3-5; the run never reached Pass C). **Strategic pivot:** after 7 A3 iterations the model-selection-routing differentiator's posture stabilizes — mechanism proven (§A3-rev3 N=1), generalization gated on the workload-domain-side rate of measurable haiku-vs-sonnet gaps rather than any routing-engine knob. §1 framing pivots: delegation (slot 5) is the validated GTM lever for the routing surface (8.3-26.1% cost-per-quality range across §A3-rev5 / §A3-rev6); model-selection (slot 4) becomes a Phase-4 differentiator pending §13a-1's path-2 wedge — task domains where haiku has known weakness (math/symbolic, long-context multi-document, rare API surfaces); context engineering retains §1-top spot as the largest typical lever (Run 3's 100% cache-hit demo). |
 
 ## 6. Open questions (decisions deferred)
 
@@ -284,7 +347,7 @@ These are **live**. AI agents working in the repo should not unilaterally close 
 
 1. ~~**Replacement agent vs. gateway** (or both). See §3.~~ **Resolved 2026-05-13 — hybrid (gateway first → agent upgrade).** See [`docs/specs/deployment-shape.md`](specs/deployment-shape.md). The gateway lands as the Phase 2 wedge; the agent stays alive as the upgrade tier. Both deployments compose the same `metis-core` substrate so the engineering does not double-cost.
 2. **Buyer profile.** 20-dev startup CTO vs. 200-dev enterprise eng leader want very different products (the latter wants SOC2/governance/audit). Anchoring on one narrows the build. Current default lean: startup-CTO first.
-3. **Local-first vs. SaaS deployment.** Local-first is a feature for individuals; many B2B buyers actively prefer SaaS (one bill, one vendor relationship, no infra). The commitment costs the easiest GTM path. Worth deciding consciously. **Narrowed by §6.1 (resolved 2026-05-13):** the hybrid's gateway-first GTM implies a deployed-instance posture (in-VPC or SaaS), not strict laptop-local. Local-first remains a *deployment* property (BYO keys, BYO infra) but the v1 gateway product is "a Metis instance the buyer can point clients at." **Further narrowed 2026-05-14:** the Wave 6 gateway Docker image + helm chart ([`infra/gateway/helm/`](../infra/gateway/helm/), [`docs/gateway-deployment.md`](../gateway-deployment.md)) make the in-VPC posture production-supported on the same artifacts a SaaS deploy would use — local-first, in-VPC, and SaaS now compose from one runtime container. The remaining choice — which posture to default to in GTM positioning — stays open pending buyer-conversation evidence; this is no longer an engineering-shape question. See [`docs/specs/deployment-shape.md §6`](specs/deployment-shape.md).
+3. **Local-first vs. SaaS deployment.** Local-first is a feature for individuals; many B2B buyers actively prefer SaaS (one bill, one vendor relationship, no infra). The commitment costs the easiest GTM path. Worth deciding consciously. **Narrowed by §6.1 (resolved 2026-05-13):** the hybrid's gateway-first GTM implies a deployed-instance posture (in-VPC or SaaS), not strict laptop-local. Local-first remains a *deployment* property (BYO keys, BYO infra) but the v1 gateway product is "a Metis instance the buyer can point clients at." **Further narrowed 2026-05-14:** the Wave 6 gateway Docker image + helm chart ([`infra/gateway/helm/`](../infra/gateway/helm/), [`docs/gateway-deployment.md`](gateway-deployment.md)) make the in-VPC posture production-supported on the same artifacts a SaaS deploy would use — local-first, in-VPC, and SaaS now compose from one runtime container. The remaining choice — which posture to default to in GTM positioning — stays open pending buyer-conversation evidence; this is no longer an engineering-shape question. See [`docs/specs/deployment-shape.md §6`](specs/deployment-shape.md).
 4. ~~**Savings benchmark.**~~ **Resolved 2026-05-13** — see [`docs/specs/benchmark.md`](specs/benchmark.md). Three-workload suite under `benchmarks/workloads/`; `scripts/benchmark.py` drives the loop end-to-end against real APIs, writes to a benchmark-only trace DB, and prints `actual_repriced_usd` / `baseline_repriced_usd` / `savings_pct` via the same `AnalyticsStore.savings()` method that backs the `/analytics/savings` HTTP handler. Determinism is approximate, not strict (LLM variance even at `temperature=0`); v1 documents the tolerance window. Open follow-ups (golden reports, per-provider suites) tracked in benchmark.md §11.
 5. **Context-assembler design.** The biggest cost lever (per §1) has no spec. What's the algorithm for: skill loading (description-match vs activation), history compression vs drop, prompt-cache breakpoint placement, behavior near the context window? Each has direct $$ consequences.
 6. ~~**Pattern store mechanics.**~~ **Resolved 2026-05-14** — see [`docs/specs/pattern-store.md`](specs/pattern-store.md). Per-workspace bounded SQLite store powering routing slot 4 (`PATTERN_RECOMMENDATION`) per [`routing-engine.md §5.5`](specs/routing-engine.md); structural-only v1 fingerprint, sample-size-weighted K-NN aggregation, three new `pattern.*` event types pending catalog addition at Phase 2.5 implementation. Embedding-provider-abstract for v2 hybrid mode. §5 dated decision entry added in the same change.

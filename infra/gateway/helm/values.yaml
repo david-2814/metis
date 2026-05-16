@@ -397,6 +397,33 @@ traceVacuum:
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
 
+# Self-serve signup (gateway.md §Self-serve signup, Wave 14). OFF by
+# default — appropriate for in-VPC / self-hosted deployments where the
+# operator provisions keys out-of-band via `metis gateway issue-key`.
+# Flip on for SaaS-style deployments where buyers should be able to
+# arrive at the gateway, create an account, get a key, and point their
+# client at it without operator involvement.
+#
+# Magic links are logged to stdout in v1 (no email transport — Wave 15
+# wires SES/SendGrid). Production deployments that flip `enabled: true`
+# MUST swap in a real email sender before the gateway faces the open
+# internet; the logged URL is a development affordance, not a security
+# feature. The accounts file (`accountsPath`) holds plaintext email and
+# the SHA-256-hashed magic-link / session tokens — back it with the same
+# Secret store as the keystore for production deployments.
+signup:
+  enabled: false
+  # -- Base URL embedded in magic-link emails / responses. Leave empty
+  # to derive from the gateway's own bind URL inside the cluster; set
+  # to the public hostname (e.g. https://gateway.example.com) when
+  # running behind an Ingress so the verification links resolve from
+  # the public internet.
+  dashboardUrl: ""
+  # -- Path inside the container for the accounts JSON file. The chart
+  # mounts an emptyDir at the parent directory; for durable accounts
+  # across pod restarts mount a PVC or Secret here instead.
+  accountsPath: /var/lib/metis/accounts.json
+
 # Global default model — slot 7 of the routing chain, only consulted when
 # clients omit `model` (rare; SDKs always pass one — see gateway.md §V).
 globalDefaultModel: anthropic:claude-sonnet-4-6

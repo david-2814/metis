@@ -2,7 +2,7 @@
 
 A local-first AI dev agent — provider-agnostic, self-improving, and cost-aware.
 
-> **Status:** Phase 1 + Phase 2 + Phase 2.5 shipped; Phase 3 in flight — **ready for review whether to promote to "Phase 3 shipped"** ([proposal](docs/operations/phase-claim-proposal.md)). The three Phase-3 wedges (transparent HTTP gateway, multi-user identity / per-team cost attribution, evaluator) are live; Wave 12 closes the SOC2/GDPR compliance gap (audit log + trace retention + redaction layer + GDPR data export/forget + SOC2 readiness audit); Wave 13 lifts the gateway's loopback-only constraint behind a documented hardening checklist. The model-selection differentiator inverted on its first end-to-end demonstration ([`benchmarks/RESULTS.md §A3-rev3`](benchmarks/RESULTS.md): Pass C picks sonnet on the one hard turn of `regex-with-edge-cases`, quality 5.55 vs Pass A 5.16 at $0.0477/quality between haiku-only $0.0383 and sonnet-only $0.1176); §A3-rev4..rev6 confirmed the mechanical chain is fully wired and the remaining bottleneck is benchmark-suite signal strength, not routing-knob tuning (13a-1 ruled out workload-signal-strengthening as a sufficient single-knob fix). The delegation differentiator was validated end-to-end at 8.3% – 26.1% better cost-per-quality on a delegation-suited workload (§A3-rev5 + §A3-rev6). Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), `metis serve` (HTTP/WebSocket), `metis gateway` (transparent provider-shape proxy) all run. 1678 tests passing.
+> **Status:** Phase 1 + Phase 2 + Phase 2.5 shipped; Phase 3 in flight — **ready for review whether to promote to "Phase 3 shipped"** ([proposal](docs/operations/phase-claim-proposal.md)). The three Phase-3 wedges (transparent HTTP gateway, multi-user identity / per-team cost attribution, evaluator) are live; Wave 12 closes the SOC2/GDPR compliance gap (audit log + trace retention + redaction layer + GDPR data export/forget + SOC2 readiness audit); Wave 13 lifts the gateway's loopback-only constraint behind a documented hardening checklist; Wave 14 lands the v1.2 partial-credit rubric primitive, self-serve `/signup` + `/account/keys` endpoint, mkdocs-material doc site, sales toolkit, and a [GA-readiness audit](docs/operations/ga-readiness-audit.md) (which surfaced two owner-triage GA blockers — NETWORK error class trips provider-wide on a single SSL hiccup, and the gateway over-reports cost ~6× when SDK clients strip the `anthropic:` prefix). The model-selection differentiator inverted on its first end-to-end demonstration ([`benchmarks/RESULTS.md §A3-rev3`](benchmarks/RESULTS.md): Pass C picks sonnet on the one hard turn of `regex-with-edge-cases`, quality 5.55 vs Pass A 5.16 at $0.0477/quality between haiku-only $0.0383 and sonnet-only $0.1176); §A3-rev4..rev6 confirmed the mechanical chain is fully wired and the remaining bottleneck is benchmark-suite signal strength, not routing-knob tuning. §A3-rev7 (Wave 14a-7) tested the finer-grained-outcome-scoring wedge end-to-end but **aborted partway through Pass B on Anthropic-credit exhaustion** (~$1.08); the 2 workloads with complete haiku + sonnet partial-credit data show a +0.000 gap (direct evidence that haiku-4.5 is genuinely strong on dev-loop coding at temperature=0), with `regex-with-edge-cases` mid-scores 0.63-0.75 as the residual signal. The delegation differentiator was validated end-to-end at 8.3% – 26.1% better cost-per-quality on a delegation-suited workload (§A3-rev5 + §A3-rev6); delegation now leads the GTM ordering for routing-surface levers. Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), `metis serve` (HTTP/WebSocket), `metis gateway` (transparent provider-shape proxy with optional `/signup`) all run. 1722 tests passing.
 
 ---
 
@@ -84,6 +84,17 @@ Cursor, raw curl/SDK) at [`docs/gateway-client-quickstart.md`](docs/gateway-clie
 > detection) are documented in
 > [`docs/specs/gateway-hardening.md`](docs/specs/gateway-hardening.md).
 
+## Sales toolkit
+
+The docs a salesperson reads before a buyer conversation. All sit
+under [`docs/sales/`](docs/sales/):
+
+- [`one-pager.md`](docs/sales/one-pager.md) — single-page pitch with the headline numbers, honest caveats, and a deployment-shape grid.
+- [`competitive-comparison.md`](docs/sales/competitive-comparison.md) — Metis vs LiteLLM / Portkey / Helicone: canonical-IR fidelity, learned routing, per-user / per-team attribution, where each competitor wins.
+- [`objection-handling.md`](docs/sales/objection-handling.md) — common buyer objections (Vercel AI SDK, Cursor / Claude Code, LiteLLM-is-good-enough, unproven-savings, operational-load, SOC2, "are you going to be around") with honest responses.
+- [`faq.md`](docs/sales/faq.md) — buyer FAQ: how it works, how it compares, how to evaluate, what's the savings number, what's the SOC2 story, where does data go, what's the roadmap.
+- [`case-study-template.md`](docs/sales/case-study-template.md) — slot to be filled in by the first GA customer; honest framing with reproducible numbers.
+
 ## Operations
 
 The operational docs a buyer's SRE will read before signing. All sit
@@ -159,7 +170,7 @@ Key design choices:
 - **HTTP/WebSocket server.** Starlette + uvicorn ASGI app. REST for sessions/turns/messages/models/health; WebSocket `/sessions/{id}/stream` with single-use attach tokens, snapshot+live replay, filter presets, cancel-via-WS, ping/pong. Loopback-only bind in v1.
 - **Three client surfaces.** `metis chat` (line REPL), `metis tui` (Textual app), `metis serve` (HTTP/WS server for external clients). Slash commands `/model`, `/cost`, `/models`, `/help`. Per-message `@alias` syntax.
 - **Cost in real time.** Per-turn input/output/cached token costs computed by core (not parroted from provider), `Decimal` math, versioned for retroactive re-pricing. OpenRouter prices overlaid at session start.
-- **1678 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations, pattern store v1 + v2 + concurrency hardening, evaluator heuristic + LLM + hybrid + budget, gateway auth + per-key/user/team identity + rate limiting + TLS + bind hardening, audit log + trace retention + redaction layer + GDPR export/forget.
+- **1722 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations, pattern store v1 + v2 + concurrency hardening, evaluator heuristic + LLM + hybrid + budget + partial-credit primitive, gateway auth + per-key/user/team identity + rate limiting + TLS + bind hardening + self-serve signup, audit log + trace retention + redaction layer + GDPR export/forget.
 
 ## What's NOT built yet (next-up)
 
@@ -186,6 +197,24 @@ See [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) for spec/impl gaps that are t
 (Calendar time roughly doubles at part-time pace.)
 
 ## Documentation
+
+The full documentation site is built from [`docs/`](docs/) with
+[mkdocs-material](https://squidfunk.github.io/mkdocs-material/). Four
+top-level sections — **Getting Started**, **Specs**, **Operations**,
+**Strategy** — with full-text search and per-page GitHub edit links.
+
+```bash
+# Local preview (mkdocs-material installed on demand):
+uv run --with mkdocs-material mkdocs serve
+
+# Or via Docker (mirrors the gateway shape; serves on 127.0.0.1:8423):
+docker compose --profile docs up docs
+```
+
+The nav config and theme are in [`mkdocs.yml`](mkdocs.yml); the
+container build lives at [`infra/docs/`](infra/docs/). The site is pure
+static once built (`mkdocs build` writes to `site/`) so any static host
+works for production.
 
 The design is specified before code lands. Start here:
 

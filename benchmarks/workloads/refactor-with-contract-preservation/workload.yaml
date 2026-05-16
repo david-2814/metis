@@ -55,4 +55,12 @@ expect:
   max_hard_failures: 0
 evaluate:
   rubric: heuristic
-  expect_substring_in_final_response: "9 passed"
+  # Partial-credit replaces the pass/fail "9 passed" substring check
+  # (evaluator.md §5.4 v1.2). The pytest summary reports
+  # `N passed[, M failed]` across 9 tests. Smaller models tend to miss
+  # at least one caller (typically functools.partial); 8/9 = 0.89 now
+  # scores 0.89 rather than the prior 0 the boolean check produced.
+  partial_credit:
+    enabled: true
+    criterion: test_pass_count_ratio
+    map: linear

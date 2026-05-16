@@ -62,4 +62,14 @@ expect:
   max_hard_failures: 0
 evaluate:
   rubric: heuristic
-  expect_substring_in_final_response: "3 passed"
+  # Partial-credit replaces the pass/fail "3 passed" substring check
+  # (evaluator.md §5.4 v1.2). The pytest summary reports
+  # `N passed[, M failed]` across 3 tests. A naive grep-and-replace
+  # pass that misses the `import UserId as UID` line in legacy.py
+  # produces an ImportError at collection time (0/3 = 0.0); a complete
+  # rename passes 3/3 = 1.0. Partial rename outcomes (e.g. one missed
+  # call site) score in between rather than collapsing to 0.
+  partial_credit:
+    enabled: true
+    criterion: test_pass_count_ratio
+    map: linear

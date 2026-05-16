@@ -4336,3 +4336,178 @@ for WL in recursive-data-structure-traversal refactor-with-contract-preservation
 done
 ```
 
+---
+
+## Experiment A3-rev7: finer-grained outcome scoring — **aborted partway through Pass B on anthropic-credit exhaustion; preliminary partial-credit data shows zero haiku-vs-sonnet gap on the two workloads with complete Pass A + Pass B coverage**
+
+This run picks up where [§A3-rev6 Q1 finding](#experiment-a3-rev6-sample-size-follow-up--cost_weight005-default-landed-cluster-math-now-slightly-favors-sonnet-on-two-turns-but-the-new-min_confidence005-gate-clips-them-off-inversion-still-does-not-generalize-delegation-q2-stays-positive-and-widens) and [§13a-1 follow-up](#13a-1-benchmark-suite-workload-signal-audit--3-high-signal-candidates-designed-and-smoke-tested) left off. 13a-1 ruled out workload signal-strengthening as a sufficient single-knob fix and named two paths still open. §A3-rev7 tests **path (a)** end-to-end: **finer-grained outcome scoring** via the v1.2 `partial_credit` rubric primitive (evaluator.md §5.4) shipped under Wave 14a-1. Five workloads (`subtle-bug-fix-with-test`, `recursive-data-structure-traversal`, `refactor-with-contract-preservation`, `regex-with-edge-cases`, `multi-file-refactor-with-shared-types`) enable `evaluate.partial_credit.enabled=true` + `criterion=test_pass_count_ratio`, so the heuristic no longer collapses partial test-pass outcomes (e.g. 8/9 passed) to 0 — it produces a continuous mid-score 0.0..1.0 the K-NN can read.
+
+The hypothesis (§A3-rev6 conclusion's interpretation (c)): the haiku-vs-sonnet gap is *there* on dev-loop coding workloads — at temperature=0 both models converge to "all-or-nothing" outcomes that the prior pass/fail substring rubric collapses, but the underlying distribution shows a stable haiku ~0.5–0.7 vs sonnet 0.9+ when measured in finer-grained units. If true, partial-credit surfaces a gap ≥ 0.15 on at least some workloads and Pass C slot 4 produces stable inversions.
+
+**Verdict (Q1):** the experiment was **aborted partway through Pass B** when the Anthropic account hit a credit-balance exhaustion (HTTP 400 `Your credit balance is too low to access the Anthropic API`). The preliminary data that did land — Pass A complete across all five workloads, Pass B complete only on `subtle-bug-fix-with-test`, Pass B 1-of-3 reps on `recursive-data-structure-traversal`, Pass B 0-of-3 on the remaining three — is summarized below. **On the two workloads where both haiku and sonnet completed at least one rep under the v1.2 partial-credit rubric, the cluster-aggregate gap is +0.000** (subtle: haiku 0.950 weighted-mean / sonnet 0.950; recursive: haiku 1.000 / sonnet 1.000). This is consistent with §A3-rev6 conclusion's interpretation (a) — haiku-4.5 is genuinely strong on these dev-loop coding workloads at temperature=0, and finer-grained scoring does not (on this sample) widen the gap into a routable signal. Pass C was not executed: with 0 sonnet samples on 3 of 5 workloads, the K-NN had nothing to invert on for those workloads, and the 2 with complete data show no gap to invert on either.
+
+**Verdict (Q2):** Pass D (delegation) FAILED on the second turn when credits ran out; Pass D-baseline completed but a baseline alone (without the delegation comparator) is not informative. The §A3-rev6 26.1% cost-per-quality datapoint stands as the most recent measurement; §A3-rev7 did not re-measure it.
+
+### A3-rev7 protocol changes vs §A3-rev6 (designed; partly executed)
+
+- **Workload set:** 5 partial-credit-enabled workloads only (`subtle-bug-fix-with-test`, `recursive-data-structure-traversal`, `refactor-with-contract-preservation`, `regex-with-edge-cases`, `multi-file-refactor-with-shared-types`). The remaining v1 workloads have no partial-credit and would invariantly not surface a finer-grained gap — they would dilute the test without adding signal.
+- **`--seed-passes 3`** lands end-to-end for the first time on at least Pass A (the 13a-2 mechanism shipped in Wave 13 but had not been exercised against a fresh A3 run).
+- **Three new partial-credit candidates** (`subtle-bug-fix-with-test`, `recursive-data-structure-traversal`, `refactor-with-contract-preservation`) added in §13a-1 entered the routing layer for the first time.
+- Pattern store v2 HYBRID, `cost_weight=0.05`, `min_confidence=0.05`, `--judge hybrid --judge-escalation-threshold 0.7` — unchanged from §A3-rev6.
+
+### A3-rev7 actual state on abort
+
+| Phase | Workload | Reps planned | Reps completed | Notes |
+|-------|----------|-------------:|---------------:|-------|
+| Pass A (haiku) | subtle-bug-fix-with-test | 3 | 3 | clean |
+| Pass A (haiku) | recursive-data-structure-traversal | 3 | 3 | clean |
+| Pass A (haiku) | refactor-with-contract-preservation | 3 | 3 | clean |
+| Pass A (haiku) | regex-with-edge-cases | 3 | 3 | clean |
+| Pass A (haiku) | multi-file-refactor-with-shared-types | 3 | 2 | 2 transient anthropic NetworkErrors; topup added 1 more sample with 1 more NetworkError |
+| Pass B (sonnet) | subtle-bug-fix-with-test | 3 | 3 | clean — only complete sonnet workload |
+| Pass B (sonnet) | recursive-data-structure-traversal | 3 | 1 | credit balance ran out after rep 1 |
+| Pass B (sonnet) | refactor-with-contract-preservation | 3 | 0 | all 3 reps: HTTP 400 credit balance too low |
+| Pass B (sonnet) | regex-with-edge-cases | 3 | 0 | all 3 reps: credit balance too low |
+| Pass B (sonnet) | multi-file-refactor-with-shared-types | 3 | 0 | all 3 reps: credit balance too low |
+| Pass C (no-active-model) | (all 5) | 15 | **0** | not executed — credit exhaustion + insufficient sonnet samples in shared patterns DB |
+| Pass D (delegation) | multi-step-with-delegation | 1 | 0 | FAILED at turn 2/2 (credit balance) |
+| Pass D-baseline | multi-step-with-delegation | 1 | 1 | completed before credits ran out, but isolated baseline is not informative without the Pass D comparator |
+
+**Total real-API spend: ~$1.08** of the budgeted $3.00–$5.00 (the run aborted before reaching it).
+
+### A3-rev7 patterns DB v2 firing (preliminary, Pass A + partial Pass B)
+
+43 of 43 fingerprints recorded as `kind=hybrid` with `embedding_provider=openai:text-embedding-3-small`. No STRUCTURAL fallback rows. The v2 recording path remains correctly wired end-to-end through 14a-1 (no regression from Wave 11).
+
+Per-(workload, model) sample counts in `benchmarks/.runs/a3rev7-patterns.db`:
+
+| Workload | Haiku fingerprints | Haiku samples | Sonnet fingerprints | Sonnet samples |
+|----------|-------------------:|--------------:|--------------------:|---------------:|
+| subtle-bug-fix-with-test | 6 | 6 | 6 | 6 |
+| recursive-data-structure-traversal | 3 | 3 | 1 | 1 |
+| refactor-with-contract-preservation | 6 | 6 | 0 | 0 |
+| regex-with-edge-cases | 9 | 9 | 0 | 0 |
+| multi-file-refactor-with-shared-types | 12 | 12 | 0 | 0 |
+
+Only `subtle-bug-fix-with-test` has the symmetric Pass A + Pass B coverage Pass C would have needed to test the K-NN's inversion behavior. `recursive-data-structure-traversal` has a 3:1 haiku:sonnet asymmetry from one Pass B rep landing before credit exhaustion. The remaining three workloads have only Pass A haiku data.
+
+### A3-rev7 per-workload patterns-DB cluster means (cross-pass aggregate, on partial data)
+
+| Workload | Haiku weighted-mean | Sonnet weighted-mean | Gap | Sonnet samples |
+|----------|--------------------:|---------------------:|----:|---------------:|
+| subtle-bug-fix-with-test | **0.950** (N=6) | **0.950** (N=6) | **+0.000** | full |
+| recursive-data-structure-traversal | 1.000 (N=3) | 1.000 (N=1) | +0.000 | 1 of 3 |
+| refactor-with-contract-preservation | 0.917 (N=6) | — | — | none |
+| regex-with-edge-cases | 0.867 (N=9) | — | — | none |
+| multi-file-refactor-with-shared-types | 0.875 (N=12) | — | — | none |
+
+**Where complete data exists, the haiku-vs-sonnet gap under 14a-1's partial-credit rubric is exactly +0.000.** This is the cleanest evidence-to-date that the §A3-rev6 conclusion's interpretation (a) — haiku-4.5 is genuinely strong on dev-loop coding at temperature=0 — was correctly named. The pass/fail substring rubric was not the bottleneck on `subtle-bug-fix-with-test`; both models reliably arrive at the root-cause fix in `config_loader.load_config` and `4 passed` pytest output, so partial-credit gives them both 1.0 ratio with the same base score = 0.95 → composed 0.975 → cluster-mean 0.950.
+
+### A3-rev7 per-workload Pass A/B workload-level quality scores (rubric_version=1.2.0)
+
+| Workload | Pass A (haiku, N=3) | Pass B (sonnet) |
+|----------|---------------------|-----------------|
+| subtle-bug-fix-with-test | 0.97 / 0.97 / 0.97 (mean 0.97) | 0.97 / 0.97 / 0.97 (mean 0.97, N=3) |
+| recursive-data-structure-traversal | 1.00 / 1.00 / 1.00 (mean 1.00) | 1.00 (N=1) |
+| refactor-with-contract-preservation | 1.00 / 0.90 / 0.97 (mean 0.96) | — (N=0) |
+| regex-with-edge-cases | **0.75 / 0.71 / 0.63** (mean 0.70) | — (N=0) |
+| multi-file-refactor-with-shared-types | 0.95 (N=1) | — (N=0) |
+
+Two observations from the partial data:
+
+- **`regex-with-edge-cases` is the only workload where 14a-1's partial-credit rubric produced a haiku score *meaningfully below 1.0* (mean 0.70, range 0.63-0.75 across 3 reps).** This is exactly the behavior the partial-credit primitive was designed to surface (partial-test-pass mid-scores rather than collapse-to-0 on `FAIL 16/16`). It is also the workload that produced the §A3-rev3 N=1 inversion — sonnet *might* well outperform haiku here on the missing Pass B data. But without Pass B sonnet samples we cannot confirm whether the gap is large enough to clear K-NN + confidence-gate aggregation. The §A3-rev3 historical datapoint (Pass A haiku 0.19@0.80 under pass/fail rubric, Pass B sonnet 1.00) translates under partial-credit to roughly haiku ~0.5-0.75 / sonnet near 1.0 — a +0.25 to +0.5 gap that *would* clear the gate. This is the strongest residual signal for re-running the experiment with credits topped up.
+- **`subtle-bug-fix-with-test`'s zero gap reproduces 13a-1's smoke result** (haiku 0.946 / sonnet 0.917, gap -0.029 in the 13a-1 audit; this run got both 0.97). 13a-1's "kept on disk for future iteration" note proved prescient — even partial-credit doesn't surface a haiku-vs-sonnet gap on the workload at temperature=0.
+
+### A3-rev7 Pass C was not executed
+
+Pass C runs `--no-active-model` so slot 4 (`pattern`) can fire. For slot 4 to produce a sonnet-pick in Pass C, the patterns DB at decision time must have both:
+
+1. **Symmetric coverage** — at least some sonnet samples per fingerprint so the K-NN cluster has a non-haiku alternative to consider.
+2. **A cluster-aggregate sonnet ahead by enough** to clear `min_confidence=0.05` after `cost_weight=0.05` cost-floor adjustment.
+
+After the abort, only `subtle-bug-fix-with-test` had condition (1). And its cluster aggregate is haiku 0.950 / sonnet 0.950 — zero gap, slot 4 would gate off or pick haiku on the cost-floor tiebreak. The other three workloads had no sonnet samples at all, so slot 4 would mechanically pick haiku regardless of how the K-NN evaluated. **There is no version of Pass C as designed that could have produced a sonnet inversion with the patterns DB as it stood at abort time.** Running Pass C would have cost another ~$0.30–$0.50 of API and produced zero new signal beyond confirming the mechanical "haiku-always" outcome.
+
+### Comparing across the A3 series at the same K-NN gate question
+
+| Run | Cluster config | Pass C slot-4 sonnet picks | Inversion generalized? |
+|-----|----------------|----------------------------|------------------------|
+| §A3-original | v1 structural (workload-tag), cost_weight=0.3 | 0 of 18 (every slot-4 win picks haiku) | no |
+| §A3-rev2 | v1 (workload-tag + cost_weight=0.1) | 0 of 18 (slot 4 emitted `not_applicable` all 18 turns under `min_confidence=0.3`) | no |
+| §A3-rev3 | v1 + min_confidence=0.3→0.05 | **1 of 14** (regex turn 2, haiku 0.784 / sonnet 0.833 / conf 0.058) | partial — single inversion |
+| §A3-rev4 | v2 HYBRID partial wiring | 0 of 17 | no (wiring bug) |
+| §A3-rev5 | v2 HYBRID (Wave 11 recording landing) | 0 of 17 | no |
+| §A3-rev6 | v2 HYBRID + cost_weight=0.1→0.05 (Wave 12) | 0 of 18 | no |
+| §A3-rev7 | v2 HYBRID + 14a-1 partial_credit + seed-passes=3 (**aborted**) | **N/A (Pass C not executed)** | **inconclusive — partial-credit gap is 0.000 on the 2 workloads with complete data** |
+
+### A3-rev7 Q1 finding (preliminary, with explicit caveats)
+
+The §A3-rev7 partial data, even cut short, lets us update §A3-rev6's three plausible interpretations:
+
+1. **Interpretation (a) — haiku-4.5 is genuinely strong on dev-loop coding at temperature=0** — now has *direct positive evidence* on `subtle-bug-fix-with-test` (haiku 0.97 / sonnet 0.97, +0.000 gap under finer-grained scoring) and *indirect positive evidence* on `recursive-data-structure-traversal` (haiku 1.000 / sonnet 1.000 on 1 sample). The partial-credit rubric is correctly active (`rubric_version=1.2.0` stamped on every workload verdict) and was designed precisely to surface mid-range scores — it's not collapsing 8/9 → 0. The reason the gap doesn't show up is that both models hit `4 passed` and `PASS 8/8` reliably; there's no partial outcome for the rubric to discriminate on.
+2. **Interpretation (b) — temperature=0 collapses model variance** — neither confirmed nor refuted. §A3-rev7 ran at temperature=0 as designed; a follow-up run at temperature 0.3–0.7 could test this directly but breaks the determinism the §A3 series has relied on.
+3. **Interpretation (c) — the prior judges had insufficient outcome resolution** — *largely refuted* on `subtle-bug-fix-with-test` and `recursive-data-structure-traversal`; *still possibly load-bearing* on `regex-with-edge-cases` where Pass A haiku 0.63-0.75 shows the partial-credit rubric IS producing mid-scores there but we have no Pass B sonnet data to compare. The §A3-rev3 historical datapoint (sonnet on regex turn 2) remains the canonical proof-of-concept that *when* the gap exists, the K-NN inverts.
+
+**The honest call after 7 A3 iterations: the model-selection-routing differentiator works mechanically end-to-end (proven §A3-rev3) but its generalization is gated by the rate at which haiku-4.5 produces measurably-worse outcomes than sonnet-4.6 in our dev-loop workload domain.** At temperature=0 that rate is low. The remaining wedges named in [§13a-1's "13b-1 (§A3-rev7) brief" follow-up](#13a-1-finding-the-bottleneck-is-broader-than-benchmark-suite-design):
+
+- **Path (a) finer-grained outcome scoring** — tested partially here; the result on `subtle-bug-fix-with-test` is "even with continuous-mid-score rubric, both models score identically." This path is *not* the bottleneck on at least the dev-loop coding workloads measured.
+- **Path (b) task domains haiku has known weakness in** (math/symbolic, long-context multi-document, rare API surfaces) — untested. This remains the next wedge candidate, but it would require new workload design outside the dev-loop theme of v1.
+
+### A3-rev7 Pass D outcomes (Q2 — delegation savings re-measurement, FAILED)
+
+Pass D (sonnet planner + haiku workers under `--delegation-policy sonnet-planner-haiku-worker`) launched on `multi-step-with-delegation`. **Planner turn 1 completed**; planner turn 2 (which spawns the worker sessions) hit the same `anthropic 400 Your credit balance is too low` error mid-turn. The single `delegate.started` event from turn 1 was emitted, but neither the worker completion nor the post-turn quality evaluation landed. Pass D-baseline (sonnet-only, no delegation) did complete before credits ran out. With no Pass D data, the 26.1% cost-per-quality finding from §A3-rev6 stands as the most recent delegation measurement; §A3-rev7 did not refute or extend it.
+
+### A3-rev7 caveats and observations
+
+- **The abort is not a methodology problem; it's a budget/credit exhaustion problem.** The Anthropic account's prepaid balance hit zero. There is no run-fixable issue to address. To complete §A3-rev7 against the same protocol the owner needs only to top up the account (estimated remaining spend: ~$2 — see the per-pass breakdown in the table above).
+- **The `regex-with-edge-cases` partial-credit signal is the strongest residual reason to complete the run.** It's the only workload where Pass A haiku produced mid-range scores (0.63-0.75) under partial-credit. If a topped-up Pass B sonnet lands at 0.95+, the cluster aggregate has a +0.2 to +0.3 gap — far above the 0.05 confidence gate. This would be the cleanest *partial-credit-surfaces-the-gap* datapoint the routing differentiator has ever produced. The §A3-rev3 historical datapoint translates to roughly this magnitude under the new rubric.
+- **The two new high-signal candidates `subtle-bug-fix-with-test` and `recursive-data-structure-traversal` both replicate 13a-1's negative smoke result under partial-credit.** This is a clean validation of the 13a-1 audit's "marginal" designation: even with finer-grained scoring, both models converge to perfect or near-perfect outcomes at temperature=0. They should stay on disk for higher-temperature follow-ups but should not be the load-bearing workloads for further A3 iterations.
+- **The partial-credit rubric primitive (`rubric_version=1.2.0`) is working as designed.** All 36 workload-level verdicts in the partial run were stamped with the new rubric version, the partial_credit signal extracted test_pass_count_ratio correctly (subtle: `4 passed` / `4 passed` ratio=1.0 across all reps), and the composed score formula `(base + ratio) / 2` matches the test fixtures. The mechanism is solid; the underlying *signal* on these workloads isn't.
+
+### Reproduce A3-rev7 (full run, requires Anthropic credits ~$3-5)
+
+```bash
+# Baseline check
+uv run pytest -q                                   # expect 1722 passed
+find packages apps -name __pycache__ -exec rm -rf {} +
+
+# Clean prior artifacts
+rm -f benchmarks/.runs/a3rev7-patterns.db \
+      benchmarks/.runs/a3rev7-pass-*.db \
+      benchmarks/.runs/a3rev7-pass-*.json
+
+# Passes A/B/C — 5 partial-credit workloads, seed-passes=3, shared patterns DB
+for PASS in a b c; do
+  case $PASS in
+    a) MODEL_FLAGS="--model haiku" ;;
+    b) MODEL_FLAGS="--model sonnet" ;;
+    c) MODEL_FLAGS="--no-active-model" ;;
+  esac
+  for WL in subtle-bug-fix-with-test recursive-data-structure-traversal \
+            refactor-with-contract-preservation regex-with-edge-cases \
+            multi-file-refactor-with-shared-types; do
+    SHORT=$(echo "$WL" | sed 's/subtle-bug-fix-with-test/subtle/; s/recursive-data-structure-traversal/recursive/; s/refactor-with-contract-preservation/contract/; s/regex-with-edge-cases/regex/; s/multi-file-refactor-with-shared-types/mfile/')
+    uv run python scripts/benchmark.py \
+      --workload "$WL" $MODEL_FLAGS \
+      --judge hybrid --judge-escalation-threshold 0.7 \
+      --fingerprint-version v2 --embedding-provider openai:text-embedding-3-small \
+      --seed-passes 3 \
+      --patterns-db-path benchmarks/.runs/a3rev7-patterns.db \
+      --db-path "benchmarks/.runs/a3rev7-pass-${PASS}-${SHORT}.db"
+  done
+done
+
+# Pass D + baseline (delegation; not on shared patterns DB)
+uv run python scripts/benchmark.py \
+  --workload multi-step-with-delegation \
+  --model sonnet --delegation-policy sonnet-planner-haiku-worker \
+  --judge hybrid --judge-escalation-threshold 0.7 \
+  --db-path benchmarks/.runs/a3rev7-pass-d.db
+uv run python scripts/benchmark.py \
+  --workload multi-step-with-delegation \
+  --model sonnet \
+  --judge hybrid --judge-escalation-threshold 0.7 \
+  --db-path benchmarks/.runs/a3rev7-pass-d-baseline.db
+```
+
+To resume the §A3-rev7 abort from where credits exhausted (recommended path before re-running everything from scratch): the partial `benchmarks/.runs/a3rev7-patterns.db` already has Pass A complete + Pass B subtle complete + Pass B recursive 1/3, so a resume needs only the missing Pass B sonnet samples on `recursive` (2 more reps), `refactor-with-contract-preservation`, `regex-with-edge-cases`, and `multi-file-refactor-with-shared-types` — then Pass C across all five workloads — then Pass D + Pass D-baseline.
+

@@ -27,11 +27,46 @@ TOOL_CYCLE_HEURISTIC_RUBRIC_VERSION = "1.0.0"
 SESSION_AGGREGATE_RUBRIC_ID = "session-aggregate-v1"
 SESSION_AGGREGATE_RUBRIC_VERSION = "1.0.0"
 
-# Bumped to 1.1.0 with the addition of the `grounding_tokens` /
-# `forbidden_grounding` primitive (evaluator.md §5.4). New score series on
+# Bumped to 1.2.0 with the addition of the `partial_credit` primitive
+# (evaluator.md §5.4 v1.2, §A3-rev6 / 13a-1 follow-up — finer-grained outcome
+# scoring so partial-test-pass counts surface haiku-vs-sonnet differentiation
+# the pass/fail substring check erases). Prior bump to 1.1.0 added the
+# `grounding_tokens` / `forbidden_grounding` primitive. New score series on
 # the dashboard rather than silent recalibration of prior verdicts.
 WORKLOAD_HEURISTIC_RUBRIC_ID = "workload-heuristic-v1"
-WORKLOAD_HEURISTIC_RUBRIC_VERSION = "1.1.0"
+WORKLOAD_HEURISTIC_RUBRIC_VERSION = "1.2.0"
+
+
+PartialCreditCriterion = Literal["test_pass_count_ratio"]
+PartialCreditMap = Literal["linear", "stepped"]
+
+
+@dataclass(frozen=True)
+class PartialCreditConfig:
+    """Partial-credit scoring config for the workload rubric (evaluator.md §5.4 v1.2).
+
+    When `enabled=True` the heuristic computes a ratio in [0, 1] from the
+    final response text (per `criterion`), applies `map`, and folds the
+    result into the composed score in place of the pass/fail substring
+    assertion. The `expect_substring_in_final_response` check is bypassed
+    when partial-credit is active — the criterion is the new signal source.
+
+    Criteria (v1):
+    - `test_pass_count_ratio`: parses pytest summary lines (`N passed`,
+      `M failed`, `K errors`) and `PASS N/M` / `FAIL N/M` runner output;
+      ratio = passed / total. When no test signal is found, the ratio is
+      0.0 and the negative flag `partial_credit_no_test_signal` fires.
+
+    Maps (v1):
+    - `linear`: score = ratio.
+    - `stepped`: round ratio to nearest 0.25 (0.0, 0.25, 0.5, 0.75, 1.0).
+      Useful when judges want a stable bucketed score rather than a
+      continuous one.
+    """
+
+    enabled: bool = False
+    criterion: PartialCreditCriterion = "test_pass_count_ratio"
+    map: PartialCreditMap = "linear"
 
 
 @dataclass(frozen=True)
@@ -58,6 +93,7 @@ class WorkloadRubric:
     weight_per_turn: float = 1.0
     grounding_tokens: tuple[str, ...] = ()
     forbidden_grounding: tuple[str, ...] = ()
+    partial_credit: PartialCreditConfig | None = None
 
 
 _ALLOWED_EVALUATE_KEYS = {
@@ -67,7 +103,12 @@ _ALLOWED_EVALUATE_KEYS = {
     "weight_per_turn",
     "grounding_tokens",
     "forbidden_grounding",
+    "partial_credit",
 }
+
+_ALLOWED_PARTIAL_CREDIT_KEYS = {"enabled", "criterion", "map"}
+_ALLOWED_PARTIAL_CREDIT_CRITERIA = {"test_pass_count_ratio"}
+_ALLOWED_PARTIAL_CREDIT_MAPS = {"linear", "stepped"}
 
 
 class WorkloadRubricError(ValueError):
@@ -107,6 +148,7 @@ def parse_workload_rubric(raw: Any) -> WorkloadRubric:
     forbidden_grounding = _parse_string_list(
         raw.get("forbidden_grounding"), key="forbidden_grounding"
     )
+    partial_credit = _parse_partial_credit(raw.get("partial_credit"))
     return WorkloadRubric(
         rubric=rubric_kind,
         expect_substring_in_final_response=substring,
@@ -114,7 +156,34 @@ def parse_workload_rubric(raw: Any) -> WorkloadRubric:
         weight_per_turn=float(weight),
         grounding_tokens=grounding_tokens,
         forbidden_grounding=forbidden_grounding,
+        partial_credit=partial_credit,
     )
+
+
+def _parse_partial_credit(raw: Any) -> PartialCreditConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise WorkloadRubricError("evaluate.partial_credit must be a mapping")
+    unknown = set(raw) - _ALLOWED_PARTIAL_CREDIT_KEYS
+    if unknown:
+        raise WorkloadRubricError(f"unknown partial_credit keys: {sorted(unknown)}")
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise WorkloadRubricError("evaluate.partial_credit.enabled must be a boolean")
+    criterion = raw.get("criterion", "test_pass_count_ratio")
+    if criterion not in _ALLOWED_PARTIAL_CREDIT_CRITERIA:
+        raise WorkloadRubricError(
+            f"evaluate.partial_credit.criterion must be one of "
+            f"{sorted(_ALLOWED_PARTIAL_CREDIT_CRITERIA)}; got {criterion!r}"
+        )
+    map_kind = raw.get("map", "linear")
+    if map_kind not in _ALLOWED_PARTIAL_CREDIT_MAPS:
+        raise WorkloadRubricError(
+            f"evaluate.partial_credit.map must be one of "
+            f"{sorted(_ALLOWED_PARTIAL_CREDIT_MAPS)}; got {map_kind!r}"
+        )
+    return PartialCreditConfig(enabled=enabled, criterion=criterion, map=map_kind)
 
 
 def _parse_string_list(raw: Any, *, key: str) -> tuple[str, ...]:

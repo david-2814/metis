@@ -7,6 +7,7 @@ from decimal import Decimal
 from metis_core.eval import (
     TURN_HEURISTIC_RUBRIC_ID,
     HeuristicJudge,
+    PartialCreditConfig,
     SubjectContext,
     WorkloadRubric,
 )
@@ -787,3 +788,266 @@ async def test_architectural_explanation_workload_fixture_uses_grounding_primiti
     assert "PATTERN_LOOKUP" in rubric.forbidden_grounding
     # The misleading substring assertion is dropped per §A3-rev fix.
     assert rubric.expect_substring_in_final_response is None
+
+
+# ---------------------------------------------------------------------------
+# Partial-credit primitive (evaluator.md §5.4 v1.2; §A3-rev6 / 13a-1 follow-up)
+# ---------------------------------------------------------------------------
+
+
+_PC_LINEAR_RUBRIC = WorkloadRubric(
+    rubric="heuristic",
+    expect_substring_in_final_response="PASS 4/4",
+    partial_credit=PartialCreditConfig(
+        enabled=True, criterion="test_pass_count_ratio", map="linear"
+    ),
+)
+
+
+async def _score_with_partial_credit(text: str, rubric: WorkloadRubric = _PC_LINEAR_RUBRIC):
+    judge = HeuristicJudge()
+    return await judge.evaluate(
+        SubjectContext(
+            subject_kind="workload",
+            subject_id="wl_pc",
+            events=[],
+            workload_rubric=rubric,
+            signals_extra={
+                "per_turn_scores": [1.0],
+                "final_response_text": text,
+                "assertion_failures": [],
+                "assertions_checked": True,
+                "workload_name": "pc-test",
+            },
+        )
+    )
+
+
+async def test_partial_credit_half_tests_pass_scores_near_0_5():
+    """Half tests passing → partial-credit ratio = 0.5; composed score
+    lands between the full-pass and full-fail values (specifically the
+    midpoint between base and 0.5)."""
+    verdict = await _score_with_partial_credit("Final summary: PASS 2/4")
+    # base=1.0 → (1.0 + 0.5) / 2 = 0.75. Substring check is bypassed.
+    assert verdict.score == 0.75
+    assert verdict.signals["partial_credit_ratio"] == 0.5
+    assert verdict.signals["partial_credit_passed"] == 2
+    assert verdict.signals["partial_credit_total"] == 4
+    assert verdict.signals["partial_credit_test_signal_found"] is True
+    assert verdict.signals["substring_present"] is None  # substring path bypassed
+    # The boolean expected_substring_present/missing flags are NOT in the
+    # flag lists when partial-credit is active.
+    assert "expected_substring_present" not in verdict.signals["flags"]
+    assert "expected_substring_missing" not in verdict.signals["flags_negative"]
+
+
+async def test_partial_credit_full_pass_recovers_pass_substring_score():
+    """All tests pass → ratio = 1.0; composed score equals the value the
+    pass/fail substring path produces on a clean pass."""
+    verdict = await _score_with_partial_credit("PASS 4/4")
+    # base=1.0 → (1.0 + 1.0) / 2 = 1.0 — same as old substring-present=True.
+    assert verdict.score == 1.0
+    assert verdict.signals["partial_credit_ratio"] == 1.0
+    assert "partial_credit_full" in verdict.signals["flags"]
+
+
+async def test_partial_credit_zero_pass_recovers_fail_substring_score():
+    """No tests pass → ratio = 0.0; composed score equals the value the
+    pass/fail substring path produces on a missing substring."""
+    verdict = await _score_with_partial_credit("Final: FAIL 0/4")
+    # base=1.0 → (1.0 + 0.0) / 2 = 0.5 — same as old substring-present=False.
+    assert verdict.score == 0.5
+    assert verdict.signals["partial_credit_ratio"] == 0.0
+    assert "partial_credit_zero" in verdict.signals["flags_negative"]
+
+
+async def test_partial_credit_pytest_summary_parses_mixed_result():
+    """Pytest summary `1 passed, 3 failed` → 1/4 = 0.25 ratio."""
+    verdict = await _score_with_partial_credit(
+        "============= 1 passed, 3 failed in 0.45s ============="
+    )
+    # base=1.0 → (1.0 + 0.25) / 2 = 0.625
+    assert verdict.score == 0.625
+    assert verdict.signals["partial_credit_ratio"] == 0.25
+    assert verdict.signals["partial_credit_passed"] == 1
+    assert verdict.signals["partial_credit_total"] == 4
+
+
+async def test_partial_credit_pytest_summary_with_errors_counts_total():
+    """Pytest summary `2 passed, 1 failed, 1 error` → total = 4, ratio 0.5."""
+    verdict = await _score_with_partial_credit(
+        "============ 2 passed, 1 failed, 1 error in 0.10s ============"
+    )
+    assert verdict.signals["partial_credit_ratio"] == 0.5
+    assert verdict.signals["partial_credit_total"] == 4
+
+
+async def test_partial_credit_runner_format_takes_priority_over_pytest_pattern():
+    """When both `PASS N/M` and pytest summary appear, the runner shape wins
+    (it carries the explicit total). Iterative agents that print interim
+    pytest lines followed by a runner.py PASS line still grade correctly."""
+    verdict = await _score_with_partial_credit(
+        "earlier intermediate: 1 passed, 3 failed\nfinal summary: PASS 4/4"
+    )
+    assert verdict.signals["partial_credit_ratio"] == 1.0
+    assert verdict.signals["partial_credit_total"] == 4
+
+
+async def test_partial_credit_no_test_signal_treated_as_failure():
+    """A response with no parseable test output scores 0 from the partial-
+    credit path; combined with base=1.0 the composed score is 0.5."""
+    verdict = await _score_with_partial_credit(
+        "I think the code is correct but I did not run the tests."
+    )
+    assert verdict.score == 0.5
+    assert verdict.signals["partial_credit_test_signal_found"] is False
+    assert "partial_credit_no_test_signal" in verdict.signals["flags_negative"]
+
+
+async def test_partial_credit_last_runner_line_wins():
+    """Multiple `PASS N/M` lines (per-case + final summary) → the LAST one
+    is the grade."""
+    verdict = await _score_with_partial_credit("PASS 1/1\nPASS 1/1\nfinal: FAIL 14/16")
+    # 14/16 = 0.875
+    assert verdict.signals["partial_credit_passed"] == 14
+    assert verdict.signals["partial_credit_total"] == 16
+    assert abs(verdict.signals["partial_credit_ratio"] - 0.875) < 1e-9
+
+
+async def test_partial_credit_stepped_map_rounds_to_quarters():
+    """Stepped map rounds the ratio to the nearest 0.25."""
+    rubric = WorkloadRubric(
+        rubric="heuristic",
+        partial_credit=PartialCreditConfig(
+            enabled=True, criterion="test_pass_count_ratio", map="stepped"
+        ),
+    )
+    # 3/8 = 0.375 → stepped to 0.5 (nearest quarter).
+    verdict = await _score_with_partial_credit("PASS 3/8", rubric=rubric)
+    assert verdict.signals["partial_credit_ratio"] == 0.375
+    assert verdict.signals["partial_credit_score"] == 0.5
+    # base=1.0 → (1.0 + 0.5) / 2 = 0.75
+    assert verdict.score == 0.75
+
+
+async def test_partial_credit_stepped_map_preserves_endpoints():
+    """Stepped map at 0/N and N/N preserves 0.0 and 1.0 exactly."""
+    rubric = WorkloadRubric(
+        rubric="heuristic",
+        partial_credit=PartialCreditConfig(
+            enabled=True, criterion="test_pass_count_ratio", map="stepped"
+        ),
+    )
+    full = await _score_with_partial_credit("PASS 4/4", rubric=rubric)
+    assert full.signals["partial_credit_score"] == 1.0
+    zero = await _score_with_partial_credit("FAIL 0/4", rubric=rubric)
+    assert zero.signals["partial_credit_score"] == 0.0
+
+
+async def test_partial_credit_linear_vs_stepped_disagree_in_mid_range():
+    """Linear and stepped maps produce different verdicts at 5/8."""
+    linear_rubric = WorkloadRubric(
+        rubric="heuristic",
+        partial_credit=PartialCreditConfig(
+            enabled=True, criterion="test_pass_count_ratio", map="linear"
+        ),
+    )
+    stepped_rubric = WorkloadRubric(
+        rubric="heuristic",
+        partial_credit=PartialCreditConfig(
+            enabled=True, criterion="test_pass_count_ratio", map="stepped"
+        ),
+    )
+    # 5/8 = 0.625 → stepped rounds to 0.5 (closer than 0.75).
+    linear_v = await _score_with_partial_credit("PASS 5/8", rubric=linear_rubric)
+    stepped_v = await _score_with_partial_credit("PASS 5/8", rubric=stepped_rubric)
+    assert linear_v.signals["partial_credit_score"] == 0.625
+    assert stepped_v.signals["partial_credit_score"] == 0.5
+
+
+async def test_partial_credit_disabled_falls_back_to_substring_check():
+    """When partial_credit.enabled=False, the rubric behaves like the pre-v1.2
+    substring path — existing pass/fail rubrics unchanged."""
+    rubric = WorkloadRubric(
+        rubric="heuristic",
+        expect_substring_in_final_response="PASS 4/4",
+        partial_credit=PartialCreditConfig(enabled=False),
+    )
+    pass_v = await _score_with_partial_credit("Final: PASS 4/4", rubric=rubric)
+    fail_v = await _score_with_partial_credit("Final: PASS 2/4", rubric=rubric)
+    # Boolean check fires: pass = (1.0 + 1.0)/2 = 1.0; fail = 1.0 * 0.5 = 0.5.
+    assert pass_v.score == 1.0
+    assert fail_v.score == 0.5
+    assert pass_v.signals["substring_present"] is True
+    assert fail_v.signals["substring_present"] is False
+
+
+async def test_partial_credit_no_block_is_pre_v1_2_compatible():
+    """When no partial_credit block is set, behavior is exactly the pre-v1.2
+    workload rubric (existing pass/fail rubrics unchanged)."""
+    rubric = WorkloadRubric(rubric="heuristic", expect_substring_in_final_response="PASS 4/4")
+    pass_v = await _score_with_partial_credit("Result: PASS 4/4", rubric=rubric)
+    fail_v = await _score_with_partial_credit("Result: PASS 2/4", rubric=rubric)
+    assert pass_v.score == 1.0
+    assert fail_v.score == 0.5
+    # Partial-credit signals are absent.
+    assert "partial_credit_ratio" not in pass_v.signals
+
+
+async def test_partial_credit_pytest_skipped_excluded_from_total():
+    """Pytest `1 passed, 0 failed, 5 skipped` → total excludes skipped; ratio = 1.0.
+
+    Skipped tests aren't a pass or a fail — counting them in the denominator
+    would penalize workloads with conditional skips. The runner's own
+    `PASS N/M` line is the authoritative shape for explicit totals; pytest
+    summaries fall back to passed+failed+errors only.
+    """
+    verdict = await _score_with_partial_credit(
+        "============= 1 passed, 5 skipped in 0.10s ============="
+    )
+    assert verdict.signals["partial_credit_ratio"] == 1.0
+    assert verdict.signals["partial_credit_passed"] == 1
+    assert verdict.signals["partial_credit_total"] == 1
+
+
+async def test_partial_credit_smoke_against_regex_workload_fixture():
+    """Load the regex-with-edge-cases fixture and verify partial-credit
+    is wired: a `PASS 12/16` runner line scores 0.75 ratio (vs the prior
+    boolean `PASS 16/16` substring check that would score this 0)."""
+    import pathlib
+
+    import yaml
+    from metis_core.eval.rubric import parse_workload_rubric
+
+    repo_root = pathlib.Path(__file__).resolve().parents[4]
+    workload_path = repo_root / "benchmarks/workloads/regex-with-edge-cases/workload.yaml"
+    raw = yaml.safe_load(workload_path.read_text())
+    rubric = parse_workload_rubric(raw.get("evaluate"))
+    assert rubric.partial_credit is not None
+    assert rubric.partial_credit.enabled is True
+    assert rubric.partial_credit.criterion == "test_pass_count_ratio"
+    assert rubric.partial_credit.map == "linear"
+    # Workload no longer carries a pass/fail substring assertion — the
+    # partial-credit path is the only signal source.
+    assert rubric.expect_substring_in_final_response is None
+
+    judge = HeuristicJudge()
+    verdict = await judge.evaluate(
+        SubjectContext(
+            subject_kind="workload",
+            subject_id="wl_regex",
+            events=[],
+            workload_rubric=rubric,
+            signals_extra={
+                "per_turn_scores": [1.0, 1.0, 1.0],
+                "final_response_text": "FAIL 12/16",
+                "assertion_failures": [],
+                "assertions_checked": True,
+                "workload_name": "regex-with-edge-cases",
+            },
+        )
+    )
+    assert verdict.signals["partial_credit_ratio"] == 0.75
+    # 12/16 surfaces between 0 and 1; the pre-v1.2 substring check would
+    # have collapsed this to score=0.5 (substring missing branch).
+    assert verdict.score > 0.5

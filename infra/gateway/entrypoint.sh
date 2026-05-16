@@ -48,5 +48,14 @@ fi
 if [ -n "${METIS_GATEWAY_TLS_KEY:-}" ]; then
     set -- --tls-key "$METIS_GATEWAY_TLS_KEY" "$@"
 fi
+if [ -n "${METIS_GATEWAY_SIGNUP_ENABLED:-}" ]; then
+    set -- --enable-signup "$@"
+fi
+if [ -n "${METIS_GATEWAY_SIGNUP_DASHBOARD_URL:-}" ]; then
+    set -- --signup-dashboard-url "$METIS_GATEWAY_SIGNUP_DASHBOARD_URL" "$@"
+fi
+if [ -n "${METIS_GATEWAY_SIGNUP_ACCOUNTS_PATH:-}" ]; then
+    set -- --signup-accounts-path "$METIS_GATEWAY_SIGNUP_ACCOUNTS_PATH" "$@"
+fi
 
 exec metis gateway "$@"

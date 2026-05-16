@@ -59,6 +59,18 @@ from metis_gateway.quotas import (
     enforce_quotas,
 )
 from metis_gateway.runtime import GatewayRuntime
+from metis_gateway.signup import (
+    SignupConfig,
+    SignupError,
+    SignupState,
+    account_keys_create_handler,
+    account_keys_list_handler,
+    account_keys_revoke_handler,
+    build_signup_state,
+    signup_error_response,
+    signup_handler,
+    signup_verify_handler,
+)
 from metis_gateway.translators import (
     InboundTranslationError,
     parse_openai_request,
@@ -140,6 +152,8 @@ class GatewayConfig:
     reuse_port: bool = False
     tls_cert: Path | None = None
     tls_key: Path | None = None
+    # Wave 14 — self-serve signup. Off by default; SaaS deployments opt in.
+    signup: SignupConfig | None = None
 
     def __post_init__(self) -> None:
         if (self.tls_cert is None) != (self.tls_key is None):
@@ -167,18 +181,27 @@ class _AppState:
     runtime: GatewayRuntime
     started_at: datetime
     metrics: MetricsCollector
+    signup: SignupState | None = None
 
 
 def build_app(
     runtime: GatewayRuntime,
     *,
     rate_limit: RateLimitConfig | None = None,
+    signup: SignupConfig | None = None,
 ) -> Starlette:
     """Build the Starlette ASGI app bound to a fully-wired GatewayRuntime.
 
     `rate_limit` follows gateway-hardening.md §3 — off by default; pass
     `RateLimitConfig(enabled=True, ...)` to engage the per-key / per-IP
     buckets in front of the provider-shape paths.
+
+    `signup` follows gateway.md §"Self-serve signup" (Wave 14) — off by
+    default; passing a `SignupConfig(enabled=True, ...)` mounts the
+    ``/signup``, ``/signup/verify``, and ``/account/keys`` routes. Magic
+    links are logged to stdout in v1 (no real email transport); flipping
+    this on in production requires the operator to swap in a real email
+    sender before the endpoints face the open internet.
     """
     metrics = MetricsCollector(
         bus=runtime.bus,
@@ -189,13 +212,28 @@ def build_app(
         trace_wal_bytes_getter=lambda: runtime.trace.wal_size_bytes(),
     )
     metrics.attach()
-    state = _AppState(runtime=runtime, started_at=datetime.now(UTC), metrics=metrics)
+    # Resolve signup paths against the runtime's db_path / keystore so a
+    # caller that only passes `enabled=True` still gets the right wiring.
+    signup_config = _resolve_signup_config(signup, runtime)
+    signup_state = build_signup_state(signup_config)
+    state = _AppState(
+        runtime=runtime,
+        started_at=datetime.now(UTC),
+        metrics=metrics,
+        signup=signup_state,
+    )
 
     async def _err_handler(_request: Request, exc: Exception) -> Response:
+        if isinstance(exc, SignupError):
+            return signup_error_response(exc)
         if isinstance(exc, HTTPException):
             return _error_response(exc.detail or "request rejected", status=exc.status_code)
         logger.exception("unhandled error in gateway endpoint")
         return _error_response("internal server error", status=500, code="internal_error")
+
+    async def _signup_err_handler(_request: Request, exc: Exception) -> Response:
+        assert isinstance(exc, SignupError)
+        return signup_error_response(exc)
 
     routes = [
         Route("/healthz", _health, methods=["GET"]),
@@ -203,16 +241,49 @@ def build_app(
         Route("/v1/chat/completions", chat_completions, methods=["POST"]),
         Route("/v1/messages", messages, methods=["POST"]),
     ]
+    if signup_state is not None:
+        routes.extend(
+            [
+                Route("/signup", signup_handler, methods=["POST"]),
+                Route("/signup/verify", signup_verify_handler, methods=["POST"]),
+                Route("/account/keys", account_keys_list_handler, methods=["GET"]),
+                Route("/account/keys", account_keys_create_handler, methods=["POST"]),
+                Route(
+                    "/account/keys/{key_id}",
+                    account_keys_revoke_handler,
+                    methods=["DELETE"],
+                ),
+            ]
+        )
     middleware_stack: list[Middleware] = [Middleware(VersioningMiddleware)]
     if rate_limit is not None and rate_limit.enabled:
         middleware_stack.append(Middleware(RateLimitMiddleware, config=rate_limit))
     app = Starlette(
         routes=routes,
-        exception_handlers={Exception: _err_handler},
+        exception_handlers={
+            SignupError: _signup_err_handler,
+            Exception: _err_handler,
+        },
         middleware=middleware_stack,
     )
     app.state.app_state = state
     return app
+
+
+def _resolve_signup_config(
+    config: SignupConfig | None, runtime: GatewayRuntime
+) -> SignupConfig | None:
+    """Fill defaults that depend on the runtime (db path, keystore path).
+
+    The signup module ships with home-relative fallbacks for both, but a
+    caller that wires the runtime against a non-default DB / keystore
+    expects signup to honor those without restating them.
+    """
+    if config is None or not config.enabled:
+        return config
+    if config.db_path is None:
+        config.db_path = runtime.db_file
+    return config
 
 
 def _state(request: Request) -> _AppState:
@@ -732,7 +803,7 @@ async def run_gateway(runtime: GatewayRuntime, config: GatewayConfig | None = No
     if not _is_loopback_host(cfg.host):
         _log_non_loopback_warning(cfg)
 
-    app = build_app(runtime, rate_limit=cfg.rate_limit)
+    app = build_app(runtime, rate_limit=cfg.rate_limit, signup=cfg.signup)
     uvicorn_config = _build_uvicorn_config(app, cfg)
     server = uvicorn.Server(uvicorn_config)
 

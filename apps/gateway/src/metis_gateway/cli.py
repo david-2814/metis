@@ -17,6 +17,7 @@ from metis_gateway.runtime import (
     setup_gateway_runtime,
     shutdown_gateway_runtime,
 )
+from metis_gateway.signup import SignupConfig
 
 
 async def run_gateway_command(
@@ -30,6 +31,9 @@ async def run_gateway_command(
     tls_key: str | None = None,
     max_connections: int = DEFAULT_MAX_CONCURRENT_CONNECTIONS,
     reuse_port: bool = False,
+    signup_enabled: bool = False,
+    signup_dashboard_url: str | None = None,
+    signup_accounts_path: str | None = None,
 ) -> int:
     """Run `metis gateway` until shutdown.
 
@@ -44,6 +48,18 @@ async def run_gateway_command(
         Path(keystore_path).expanduser() if keystore_path else default_keystore_path()
     )
     resolved_db = Path(db_path).expanduser() if db_path else None
+    signup_cfg: SignupConfig | None = None
+    if signup_enabled:
+        scheme = "https" if tls_cert else "http"
+        default_dashboard = f"{scheme}://{host}:{port}"
+        signup_cfg = SignupConfig(
+            enabled=True,
+            keystore_path=Path(keystore_path).expanduser() if keystore_path else None,
+            accounts_path=(
+                Path(signup_accounts_path).expanduser() if signup_accounts_path else None
+            ),
+            dashboard_base_url=signup_dashboard_url or default_dashboard,
+        )
     try:
         config = GatewayConfig(
             host=host,
@@ -52,6 +68,7 @@ async def run_gateway_command(
             tls_key=Path(tls_key).expanduser() if tls_key else None,
             max_concurrent_connections=max_connections,
             reuse_port=reuse_port,
+            signup=signup_cfg,
         )
     except GatewayConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)

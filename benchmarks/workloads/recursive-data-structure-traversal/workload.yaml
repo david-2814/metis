@@ -45,4 +45,13 @@ expect:
   max_hard_failures: 0
 evaluate:
   rubric: heuristic
-  expect_substring_in_final_response: "PASS 8/8"
+  # Partial-credit replaces the pass/fail "PASS 8/8" substring check
+  # (evaluator.md §5.4 v1.2). The runner.py prints `PASS N/8` /
+  # `FAIL N/8` across 8 objective test cases including
+  # duplicate-at-different-depths, tombstoned-subtree-pruning, and
+  # not-found. Models that miss the tombstoned constraint typically
+  # land 4-6/8; the linear map produces 0.5-0.75 instead of 0.
+  partial_credit:
+    enabled: true
+    criterion: test_pass_count_ratio
+    map: linear

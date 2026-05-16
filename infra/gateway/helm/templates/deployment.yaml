@@ -43,11 +43,14 @@ spec:
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
-            - name: gateway
+            # When the proxy sidecar is enabled (default), the gateway binds
+            # 127.0.0.1 and this containerPort name (`gateway`) is just
+            # documentation — the Service targets the sidecar's `http` port.
+            # When proxy.enabled is false, the gateway binds the pod IP
+            # directly, so its port must be named `http` for the Service to
+            # match it.
+            - name: {{ ternary "gateway" "http" .Values.proxy.enabled }}
               containerPort: {{ .Values.gatewayPort }}
-              # Note: the gateway binds 127.0.0.1 inside the pod; this
-              # containerPort is documentation. The proxy sidecar (below)
-              # is what actually accepts traffic on the pod IP.
           env:
             - name: METIS_GATEWAY_HOST
               value: {{ default "127.0.0.1" .Values.gatewayHost | quote }}
@@ -70,6 +73,16 @@ spec:
               value: {{ printf "%s/cert.pem" .Values.tls.mountPath | quote }}
             - name: METIS_GATEWAY_TLS_KEY
               value: {{ printf "%s/key.pem" .Values.tls.mountPath | quote }}
+            {{- end }}
+            {{- if .Values.signup.enabled }}
+            - name: METIS_GATEWAY_SIGNUP_ENABLED
+              value: "1"
+            {{- if .Values.signup.dashboardUrl }}
+            - name: METIS_GATEWAY_SIGNUP_DASHBOARD_URL
+              value: {{ .Values.signup.dashboardUrl | quote }}
+            {{- end }}
+            - name: METIS_GATEWAY_SIGNUP_ACCOUNTS_PATH
+              value: {{ .Values.signup.accountsPath | quote }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

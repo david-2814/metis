@@ -155,6 +155,34 @@ def build_parser() -> argparse.ArgumentParser:
             "single-process operation does not need it."
         ),
     )
+    gateway.add_argument(
+        "--enable-signup",
+        action="store_true",
+        default=False,
+        help=(
+            "Mount the self-serve `/signup` + `/account/keys` endpoints "
+            "(gateway.md §Self-serve signup). Off by default — flip on for "
+            "SaaS deployments. Magic links are logged to stdout in v1 (no "
+            "real email transport); operators MUST swap in an email sender "
+            "before exposing /signup on the open internet."
+        ),
+    )
+    gateway.add_argument(
+        "--signup-dashboard-url",
+        default=None,
+        help=(
+            "Base URL embedded in magic-link emails / responses. Default: "
+            "the gateway's own bind URL. Override to a public hostname when "
+            "running behind a reverse proxy."
+        ),
+    )
+    gateway.add_argument(
+        "--signup-accounts-path",
+        default=None,
+        help=(
+            "Path to the accounts JSON store. Default: ~/.metis/gateway/accounts.json (mode 0o600)."
+        ),
+    )
 
     issue = gateway_sub.add_parser(
         "issue-key",
@@ -726,6 +754,9 @@ def main(argv: list[str] | None = None) -> int:
                     tls_key=args.tls_key,
                     max_connections=args.max_connections,
                     reuse_port=args.reuse_port,
+                    signup_enabled=args.enable_signup,
+                    signup_dashboard_url=args.signup_dashboard_url,
+                    signup_accounts_path=args.signup_accounts_path,
                 )
             )
     except KeyboardInterrupt:

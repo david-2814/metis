@@ -1,0 +1,44 @@
+---
+interface Props {
+  current?: "home" | "compare" | "pricing";
+}
+const { current = "home" } = Astro.props;
+
+const link = (active: boolean) =>
+  active ? "text-fg" : "text-fg-muted hover:text-fg";
+---
+
+<header class="border-b border-border">
+  <div class="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
+    <a href="/" class="flex items-baseline gap-2 text-fg">
+      <span class="text-accent">&gt;_</span>
+      <span class="text-base font-bold tracking-tight">metis</span>
+    </a>
+    <nav class="flex items-center gap-6 text-sm">
+      <a href="/#how-it-works" class={link(false)}>how it works</a>
+      <a href="/compare" class={link(current === "compare")}>compare</a>
+      <a href="/pricing" class={link(current === "pricing")}>pricing</a>
+      <a
+        href="https://status.2sum.ai"
+        rel="noopener"
+        class="text-fg-muted hover:text-fg"
+      >
+        <span class="relative mr-1.5 inline-flex h-2 w-2 align-middle">
+          <span
+            class="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50"
+          ></span>
+          <span
+            class="relative inline-flex h-2 w-2 rounded-full bg-accent"
+          ></span>
+        </span>
+        status
+      </a>
+      <a
+        href="/signup"
+        class="rounded border border-accent bg-accent/10 px-3 py-1.5 font-bold text-accent transition-colors hover:bg-accent hover:text-bg"
+      >
+        sign up
+      </a>
+    </nav>
+  </div>
+</header>

@@ -67,7 +67,7 @@ A user **may** belong to a team; teams are not required (a solo developer's key 
 
 ### 3.2 Canonical structs
 
-The three records, in [`msgspec`](https://jcristharif.com/msgspec/) idiom matching the existing keystore in [`apps/gateway/src/metis_gateway/keystore.py`](../../apps/gateway/src/metis_gateway/keystore.py). All persisted to disk; `frozen=True` everywhere.
+The three records, in [`msgspec`](https://jcristharif.com/msgspec/) idiom matching the existing keystore in [`apps/gateway/src/metis_gateway/auth.py`](../../apps/gateway/src/metis_gateway/auth.py). All persisted to disk; `frozen=True` everywhere.
 
 ```python
 class User(msgspec.Struct, frozen=True):

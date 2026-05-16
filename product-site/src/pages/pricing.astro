@@ -1,0 +1,212 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Nav from "../components/Nav.astro";
+import Footer from "../components/Footer.astro";
+
+// Pricing is unratified until Wave 15. docs/specs/pricing.md recommends
+// open-core gateway + per-seat Pro tier + reserved enterprise %-of-savings
+// add-on, but the owner has not signed off. Until then this page is an
+// honest placeholder + signup pull-through.
+
+const tentativeTiers = [
+  {
+    label: "Open-source gateway",
+    price: "free",
+    body: "metis gateway, metis chat, metis serve, the canonical IR, the routing engine, the trace store, the analytics surface. Self-host on your own infra, BYO API keys.",
+    cta: "github",
+  },
+  {
+    label: "Pro",
+    price: "TBD",
+    body: "Per-seat. Hosted control plane, managed gateway, multi-team rollups, the pattern store as a service, support SLAs.",
+    cta: "early access",
+  },
+  {
+    label: "Enterprise",
+    price: "TBD",
+    body: "Reserved enterprise %-of-savings add-on on top of Pro. SSO, audit-log retention, custom evaluator rubrics, dedicated support.",
+    cta: "talk to us",
+  },
+];
+---
+
+<Layout
+  title="Pricing — coming soon | Metis"
+  description="Metis pricing — open-core gateway is free; Pro and Enterprise tiers ratify in Wave 15."
+>
+  <div
+    class="pointer-events-none fixed inset-0 grid-bg opacity-60 [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]"
+  >
+  </div>
+
+  <div class="relative">
+    <Nav current="pricing" />
+
+    <!-- HERO -->
+    <section class="mx-auto max-w-6xl px-6 pb-12 pt-20">
+      <div
+        class="mb-6 inline-flex items-center gap-2 rounded-full border border-amber/40 bg-bg-card px-3 py-1 text-xs"
+      >
+        <span class="relative flex h-2 w-2">
+          <span
+            class="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber opacity-50"
+          ></span>
+          <span
+            class="relative inline-flex h-2 w-2 rounded-full bg-amber"
+          ></span>
+        </span>
+        <span class="text-amber">coming soon &middot; ratifies in Wave 15</span>
+      </div>
+
+      <h1
+        class="max-w-4xl text-3xl font-bold leading-[1.15] tracking-tight sm:text-4xl md:text-5xl"
+      >
+        Pricing.
+      </h1>
+      <p
+        class="mt-6 max-w-3xl text-base leading-relaxed text-fg-muted sm:text-lg"
+      >
+        The open-source gateway is and will remain free to self-host. The
+        Pro and Enterprise tiers below are <span class="text-fg">indicative,
+        not committed</span> &mdash; the commercial model ratifies in Wave 15.
+        Sign up for the private beta and you'll get the final pricing
+        sheet plus a 90-day grandfathered rate at GA.
+      </p>
+
+      <div class="mt-8">
+        <a
+          href="/signup"
+          class="inline-flex items-center gap-2 rounded border border-accent bg-accent px-5 py-3 text-sm font-bold text-bg transition-colors hover:bg-accent/90"
+        >
+          reserve a beta seat
+          <span aria-hidden="true">&rarr;</span>
+        </a>
+      </div>
+    </section>
+
+    <!-- TENTATIVE TIER GRID -->
+    <section class="mx-auto max-w-6xl px-6 pb-20">
+      <div class="grid gap-6 md:grid-cols-3">
+        {
+          tentativeTiers.map((tier) => (
+            <div class="flex flex-col rounded-lg border border-border bg-bg-card p-6">
+              <p class="font-mono text-xs uppercase tracking-wider text-accent">
+                {tier.label}
+              </p>
+              <p class="mt-3 text-3xl font-bold tracking-tight">
+                {tier.price}
+              </p>
+              <p class="mt-3 flex-1 text-sm leading-relaxed text-fg-muted">
+                {tier.body}
+              </p>
+              <div class="mt-6">
+                <a
+                  href={tier.cta === "github"
+                    ? "https://github.com/2sumAI/metis"
+                    : "/signup"}
+                  rel={tier.cta === "github" ? "noopener" : undefined}
+                  class="inline-flex w-full items-center justify-center gap-2 rounded border border-border-strong bg-bg px-4 py-2 text-sm font-bold text-fg transition-colors hover:border-accent"
+                >
+                  {tier.cta}
+                  <span aria-hidden="true">&rarr;</span>
+                </a>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+
+      <p class="mt-6 text-xs text-fg-dim">
+        Pricing model survey and trade-off analysis at
+        docs/specs/pricing.md; the recommended shape is open-core gateway
+        + per-seat Pro + reserved enterprise %-of-savings add-on. Final
+        numbers await owner ratification (STRATEGY.md §6.8).
+      </p>
+    </section>
+
+    <!-- FAQ -->
+    <section class="border-t border-border bg-bg-elev/40">
+      <div class="mx-auto max-w-3xl px-6 py-20">
+        <h2 class="text-2xl font-bold tracking-tight sm:text-3xl">
+          Questions we keep getting.
+        </h2>
+
+        <div class="mt-10 space-y-8 text-sm leading-relaxed">
+          <div>
+            <p class="font-bold text-fg">
+              Will the open-source gateway stay free?
+            </p>
+            <p class="mt-2 text-fg-muted">
+              Yes. The gateway, the agent loop, the canonical IR, the
+              routing engine, the trace store, the pattern store, and
+              the evaluator ship under an open-source license. Self-host
+              forever; we never see your traffic.
+            </p>
+          </div>
+
+          <div>
+            <p class="font-bold text-fg">
+              What's in the paid tiers, then?
+            </p>
+            <p class="mt-2 text-fg-muted">
+              A managed control plane: hosted gateway, multi-team
+              rollups, SSO, longer audit-log retention, the pattern
+              store as a service, custom evaluator rubrics, support
+              SLAs, and an enterprise %-of-savings add-on for buyers
+              who want their bill tied to the savings curve.
+            </p>
+          </div>
+
+          <div>
+            <p class="font-bold text-fg">
+              Why "coming soon"?
+            </p>
+            <p class="mt-2 text-fg-muted">
+              We'd rather ship a price we'll honor than a price we'll
+              walk back. Wave 15 is when the commercial model gets
+              owner ratification; until then, beta seats are free and
+              the trial recipe is a single helm command.
+            </p>
+          </div>
+
+          <div>
+            <p class="font-bold text-fg">
+              What does a beta seat get me?
+            </p>
+            <p class="mt-2 text-fg-muted">
+              Direct access to the team, a 60-90 minute setup against
+              your own workload, the savings-demo evidence pack
+              (benchmarks/RESULTS.md §A3-rev3 + §A3-rev5 + §A3-rev6),
+              and a 90-day grandfathered rate against whatever pricing
+              ratifies in Wave 15.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="border-t border-border">
+      <div class="mx-auto max-w-3xl px-6 py-20 text-center">
+        <h2 class="text-2xl font-bold tracking-tight sm:text-3xl">
+          Save the rate before it lands.
+        </h2>
+        <p class="mx-auto mt-4 max-w-xl text-fg-muted">
+          Beta seats get the final pricing sheet first plus a 90-day
+          grandfathered rate at GA.
+        </p>
+        <div class="mt-8">
+          <a
+            href="/signup"
+            class="inline-flex items-center gap-2 rounded border border-accent bg-accent px-5 py-3 text-sm font-bold text-bg transition-colors hover:bg-accent/90"
+          >
+            sign up
+            <span aria-hidden="true">&rarr;</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <Footer />
+  </div>
+</Layout>
