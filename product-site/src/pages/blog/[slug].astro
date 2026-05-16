@@ -1,0 +1,61 @@
+---
+import { getCollection, render } from "astro:content";
+import Layout from "../../layouts/Layout.astro";
+import Nav from "../../components/Nav.astro";
+import Footer from "../../components/Footer.astro";
+
+export async function getStaticPaths() {
+  const posts = await getCollection("blog");
+  return posts.map((post) => ({
+    params: { slug: post.id.replace(/\.mdx?$/, "") },
+    props: { post },
+  }));
+}
+
+const { post } = Astro.props;
+const { Content } = await render(post);
+const slug = post.id.replace(/\.mdx?$/, "");
+const published = post.data.publishDate.toLocaleDateString("en-US", {
+  month: "long",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
+---
+
+<Layout
+  title={`${post.data.title} | Metis by 2sum AI`}
+  description={post.data.description}
+>
+  <div
+    class="pointer-events-none fixed inset-0 grid-bg opacity-60 [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]"
+  >
+  </div>
+
+  <div class="relative">
+    <Nav current="blog" />
+
+    <main class="mx-auto max-w-3xl px-6 py-20">
+      <p class="prompt-before mb-3 text-sm text-fg-muted">
+        <span class="text-fg">cat product-site/src/content/blog/{slug}.md</span>
+      </p>
+      <p class="font-mono text-xs uppercase tracking-wider text-accent">
+        {published} &middot; {post.data.author}
+      </p>
+      <h1
+        class="mt-4 text-3xl font-bold leading-[1.15] tracking-tight sm:text-4xl md:text-5xl"
+      >
+        {post.data.title}
+      </h1>
+      <p class="mt-6 text-base leading-relaxed text-fg-muted sm:text-lg">
+        {post.data.description}
+      </p>
+
+      <article class="blog-content mt-12">
+        <Content />
+      </article>
+    </main>
+
+    <Footer />
+  </div>
+</Layout>

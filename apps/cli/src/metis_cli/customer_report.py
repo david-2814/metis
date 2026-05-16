@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import sys
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -41,6 +43,10 @@ from metis_core.pricing import DEFAULT_PRICE_TABLE
 ReportFormat = Literal["html", "json"]
 DEFAULT_BASELINE_MODEL = "anthropic:claude-sonnet-4-6"
 DEFAULT_LOOKBACK_DAYS = 7
+ANONYMIZED_CUSTOMER_LABEL = "Anonymous customer"
+ANONYMIZED_WORKSPACE_PATH = "/workspace/anonymous-customer"
+ANONYMIZED_DB_PATH = "anonymized-trace.db"
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 
 
 @dataclass(frozen=True)
@@ -213,6 +219,102 @@ def render_json(report: CustomerReport) -> str:
         "rows_missing_from_price_table": report.rows_missing_from_price_table,
     }
     return json.dumps(obj, indent=2, sort_keys=True, default=_json_default)
+
+
+def anonymize_report(report: CustomerReport) -> CustomerReport:
+    """Return a report safe to share as a public customer artifact.
+
+    Customer-specific labels, paths, gateway key ids, user ids, and team ids
+    are replaced with deterministic placeholders. Numeric aggregates, model ids,
+    timestamps, and tier badges are preserved so the report remains useful as a
+    case-study source without leaking the buyer's internal identifiers.
+    """
+    key_map = _placeholder_map(report.by_gateway_key, "gateway_key_id", "gateway_key")
+    user_map = _placeholder_map(report.by_user, "user_id", "user")
+    team_map = _placeholder_map(report.by_team, "team_id", "team")
+
+    return replace(
+        report,
+        workspace_path=ANONYMIZED_WORKSPACE_PATH,
+        customer_label=ANONYMIZED_CUSTOMER_LABEL,
+        by_gateway_key=[
+            _anonymize_row(row, "gateway_key_id", key_map) for row in report.by_gateway_key
+        ],
+        by_user=[_anonymize_row(row, "user_id", user_map) for row in report.by_user],
+        by_team=[_anonymize_row(row, "team_id", team_map) for row in report.by_team],
+        db_path=ANONYMIZED_DB_PATH,
+    )
+
+
+def template_values(report: CustomerReport) -> dict[str, str]:
+    """Build stable string values for customer-report markdown templates."""
+    return {
+        "baseline_model": report.baseline_model,
+        "baseline_short": _short_model(report.baseline_model),
+        "baseline_repriced_usd": f"{report.baseline_repriced_usd:.4f}",
+        "cost_per_quality": _format_cost_per_quality(report.cost_per_quality_usd),
+        "customer_label": report.customer_label,
+        "customer_tier": report.customer_tier or "",
+        "generated_at": report.generated_at.isoformat(),
+        "llm_calls": str(report.rows_total),
+        "quality_count": str(report.quality_count),
+        "quality_line": _format_quality_sub(report.quality_mean, report.quality_count),
+        "quality_mean": "" if report.quality_mean is None else f"{report.quality_mean:.2f}",
+        "savings_pct": _format_savings_pct(report.savings_pct),
+        "savings_usd": f"{report.savings_usd:.4f}",
+        "total_spend_usd": f"{report.total_spend_usd:.4f}",
+        "window_end": report.window_end.isoformat(),
+        "window_start": report.window_start.isoformat(),
+        "workspace_path": report.workspace_path,
+    }
+
+
+def render_report_template(
+    template: str,
+    report: CustomerReport,
+    *,
+    extra_values: Mapping[str, Any] | None = None,
+) -> str:
+    """Substitute `{{placeholder}}` tokens from a report-derived value map.
+
+    The helper intentionally supports a tiny syntax: alphanumeric, `_`, `.`, and
+    `-` placeholder names wrapped in double braces. Missing placeholders raise
+    `KeyError` so customer-facing artifacts fail closed instead of shipping
+    unresolved template strings.
+    """
+    values: dict[str, str] = template_values(report)
+    if extra_values:
+        values.update({key: str(value) for key, value in extra_values.items()})
+
+    def replace_match(match: re.Match[str]) -> str:
+        key = match.group(1)
+        try:
+            return values[key]
+        except KeyError as exc:
+            raise KeyError(f"missing report template placeholder: {key}") from exc
+
+    return _PLACEHOLDER_RE.sub(replace_match, template)
+
+
+def _placeholder_map(
+    rows: list[dict[str, Any]],
+    field: str,
+    prefix: str,
+) -> dict[str, str]:
+    values = sorted({str(row[field]) for row in rows if row.get(field)})
+    return {value: f"{prefix}_{idx:03d}" for idx, value in enumerate(values, start=1)}
+
+
+def _anonymize_row(
+    row: dict[str, Any],
+    field: str,
+    mapping: Mapping[str, str],
+) -> dict[str, Any]:
+    anonymized = dict(row)
+    value = anonymized.get(field)
+    if value:
+        anonymized[field] = mapping[str(value)]
+    return anonymized
 
 
 def _json_default(value: Any) -> Any:
@@ -474,6 +576,7 @@ def run_customer_report_command(
     customer_label: str | None,
     customer_tier: str | None,
     baseline: str,
+    anonymize: bool = False,
 ) -> int:
     """CLI shim — assemble the report and write it to disk (or stdout)."""
     if format not in ("html", "json"):
@@ -511,6 +614,9 @@ def run_customer_report_command(
         print(f"customer-report failed: {exc}", file=sys.stderr)
         return 2
 
+    if anonymize:
+        report = anonymize_report(report)
+
     rendered = render_html(report) if format == "html" else render_json(report)
 
     if output:
@@ -527,6 +633,8 @@ def run_customer_report_command(
         print(f"  llm calls:      {report.rows_total}")
         if report.customer_tier:
             print(f"  customer_tier:  {report.customer_tier}")
+        if anonymize:
+            print("  anonymized:     true")
     else:
         sys.stdout.write(rendered)
         if not rendered.endswith("\n"):
@@ -538,8 +646,11 @@ __all__ = [
     "DEFAULT_BASELINE_MODEL",
     "DEFAULT_LOOKBACK_DAYS",
     "CustomerReport",
+    "anonymize_report",
     "build_report",
     "render_html",
     "render_json",
+    "render_report_template",
     "run_customer_report_command",
+    "template_values",
 ]

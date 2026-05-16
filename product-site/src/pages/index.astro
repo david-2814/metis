@@ -30,7 +30,7 @@ const moat = [
   },
 ];
 
-// "What's shipped" — post-Wave-13, scoped to what a buyer can verify.
+// "What's shipped" — post-Wave-15, scoped to what a buyer can verify.
 const shipped = [
   "Transparent HTTP gateway (OpenAI + Anthropic shapes, sync + SSE)",
   "Three providers wired: Anthropic, OpenAI, OpenRouter",
@@ -39,16 +39,19 @@ const shipped = [
   "Hybrid evaluator: heuristic + LLM-as-judge with cost caps",
   "Worker delegation: planner spawns workers for fan-out",
   "Audit log + 90-day trace retention + GDPR export / forget",
+  "Stripe-backed billing module (opt-in) for Pro seats + Enterprise savings meter",
+  "GA blocker fixes: NETWORK escalation refinement + bare-model normalization",
+  "Concierge trial CLIs: metis customer-report + metis trial-status",
   "SOC2 Trust Service Criteria gap audit (Type 1 target Q3 2026)",
   "Helm chart + Docker compose + < 1-hour buyer-trial recipe",
-  "1,678 tests passing",
+  "1,829 tests passing",
 ];
 
 const inProgress = [
   "Context-assembler v3: skill activation paths",
   "Skill curator (gated on Phase 2.5 agent-authored skills)",
   "Async / concurrent worker delegation",
-  "Pricing model ratification (see Wave 15)",
+  "Phase 3 promotion decision (owner sign-off on the proposal)",
 ];
 ---
 
@@ -76,7 +79,7 @@ const inProgress = [
           ></span>
         </span>
         <span class="text-fg-muted">
-          phase 3 in flight &middot; gateway GA-ready
+          launch-ready gateway &middot; Phase 3 ready for review
         </span>
       </div>
 
@@ -89,28 +92,27 @@ const inProgress = [
       <h1
         class="max-w-4xl text-4xl font-bold leading-[1.1] tracking-tight sm:text-5xl md:text-6xl"
       >
-        Metis picks the model that
+        Metis makes AI-agent spend
         <br class="hidden sm:block" />
-        <span class="text-accent">succeeds</span> &mdash; not just the
-        cheap one.
+        <span class="text-accent">visible</span>, governable, and cheaper.
       </h1>
 
       <p
         class="mt-6 max-w-2xl text-base leading-relaxed text-fg-muted sm:text-lg"
       >
-        Metis is a transparent LLM gateway and agent runtime. Point Claude
-        Code, Cursor, or your own SDK at it; every turn is routed against a
-        learned task-fingerprint cluster, evaluated, and cost-stamped per
-        dev, per team. Devs change nothing.
+        Metis is an open-core LLM gateway and agent runtime. Point Claude
+        Code, Cursor, or your own SDK at it; every turn is routed, evaluated,
+        and cost-stamped per dev and per team. Devs keep their tools. Buyers
+        finally get the bill broken down.
       </p>
 
       <!-- headline stat -->
-      <div class="mt-10 grid gap-4 sm:grid-cols-2">
+      <div class="mt-10 grid gap-4 lg:grid-cols-3">
         <div
           class="rounded-lg border border-accent/30 bg-bg-card p-5"
         >
           <p class="font-mono text-xs uppercase tracking-wider text-accent">
-            delegation, validated end-to-end
+            delegation, validated
           </p>
           <p class="mt-3 text-3xl font-bold sm:text-4xl">
             8.3% &ndash; 26.1%
@@ -118,14 +120,14 @@ const inProgress = [
           <p class="mt-2 text-sm leading-relaxed text-fg-muted">
             better cost-per-quality on a fan-out workload &mdash; sonnet
             planner + haiku workers vs sonnet-only-no-delegation, across
-            two reproducible runs (§A3-rev5 + §A3-rev6).
+            three independent runs with a 19.9% midpoint (§A3-rev5/6/7).
           </p>
         </div>
         <div
           class="rounded-lg border border-accent/30 bg-bg-card p-5"
         >
           <p class="font-mono text-xs uppercase tracking-wider text-accent">
-            differentiated model selection
+            model selection, honest
           </p>
           <p class="mt-3 text-3xl font-bold sm:text-4xl">
             $0.0477 / quality
@@ -133,7 +135,21 @@ const inProgress = [
           <p class="mt-2 text-sm leading-relaxed text-fg-muted">
             Pass C lands between haiku-only $0.0383 and sonnet-only
             $0.1176, with the K-NN routing sonnet to the one hard turn
-            and haiku elsewhere (§A3-rev3).
+            and haiku elsewhere. N=1 demo; §A3-rev7 did not generalize it.
+          </p>
+        </div>
+        <div
+          class="rounded-lg border border-accent/30 bg-bg-card p-5"
+        >
+          <p class="font-mono text-xs uppercase tracking-wider text-accent">
+            prompt caching
+          </p>
+          <p class="mt-3 text-3xl font-bold sm:text-4xl">
+            22.8%
+          </p>
+          <p class="mt-2 text-sm leading-relaxed text-fg-muted">
+            same-workload cost reduction in Run 3, with cache firing on
+            49 of 49 LLM calls after stable-prefix placement and padding.
           </p>
         </div>
       </div>
@@ -143,7 +159,7 @@ const inProgress = [
           href="/signup"
           class="inline-flex items-center gap-2 rounded border border-accent bg-accent px-5 py-3 text-sm font-bold text-bg transition-colors hover:bg-accent/90"
         >
-          sign up &mdash; private beta
+          start with the free gateway
           <span aria-hidden="true">&rarr;</span>
         </a>
         <a
@@ -151,6 +167,12 @@ const inProgress = [
           class="inline-flex items-center gap-2 rounded border border-border-strong bg-bg-card px-5 py-3 text-sm font-bold text-fg transition-colors hover:border-accent"
         >
           metis vs LiteLLM / Portkey / Helicone
+        </a>
+        <a
+          href="/blog/announcing-metis"
+          class="inline-flex items-center gap-2 rounded border border-border-strong bg-bg-card px-5 py-3 text-sm font-bold text-fg transition-colors hover:border-accent"
+        >
+          read the launch post
         </a>
       </div>
 
@@ -376,15 +398,16 @@ const inProgress = [
         </h2>
         <p class="mx-auto mt-4 max-w-xl text-fg-muted">
           Kind cluster + helm install + pre-baked workload + per-key cost
-          rollup, automated end-to-end. Smoke-phase real-API spend stays
-          under $1.
+          rollup, automated end-to-end. The open-core gateway is free to
+          self-host; Pro converts on active seats when a team needs identity,
+          caps, audit export, and the agent.
         </p>
         <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
           <a
             href="/signup"
             class="inline-flex items-center gap-2 rounded border border-accent bg-accent px-5 py-3 text-sm font-bold text-bg transition-colors hover:bg-accent/90"
           >
-            sign up for the private beta
+            start a buyer trial
             <span aria-hidden="true">&rarr;</span>
           </a>
           <a

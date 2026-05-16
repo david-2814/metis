@@ -58,15 +58,20 @@ Full spec: [`docs/specs/gateway.md`](../specs/gateway.md).
 
 ## How much does it cost?
 
-Pricing is open per [`docs/STRATEGY.md §6.8`](../STRATEGY.md);
-specced at [`docs/specs/pricing.md`](../specs/pricing.md) — open-core
-gateway + per-seat Pro tier + reserved enterprise %-of-savings add-on.
-The owner has not ratified the model yet.
+The pricing **shape** is ratified in
+[`docs/specs/pricing.md §5.5.4`](../specs/pricing.md):
 
-What's true today:
-- The gateway is open-source and BYO-infra.
-- Source is the deliverable.
-- Buyer trials don't have a price tag — talk to us.
+| Tier | Model | What the buyer is paying for |
+|---|---|---|
+| Community | $0 open-core gateway | Self-host gateway + single-user agent surfaces; BYO provider keys |
+| Pro | Per active user / month | Team identity, hard caps, per-user/team analytics, hosted operations, audit export, LLM judge tier, agent upgrade |
+| Enterprise | Custom Pro + capped %-of-savings add-on | Outcome-linked contract for buyers who want the invoice tied to verified savings |
+
+Dollar price points stay deferred to first-buyer triangulation. The Wave
+15 billing module is implemented and opt-in: Stripe-backed Pro
+subscriptions, Enterprise savings usage records, billing audit events,
+and tier-axis quotas. Metis does **not** resell provider tokens; your
+Anthropic / OpenAI / OpenRouter bill still comes from the provider.
 
 ---
 
@@ -148,23 +153,27 @@ A is the "is this saving money" sniff test.
 
 ## What's the savings number on your benchmark?
 
-§A3-rev3 (the canonical demo) on a 6-workload suite:
+§A3-rev3 (the canonical model-selection demo) on the benchmark suite:
 - haiku pinned: $0.0383 per quality unit.
 - sonnet pinned: $0.1176 per quality unit.
 - slot 4 routing: **$0.0477 per quality unit** (8% more quality than
   haiku-only at 40% of sonnet-only cost).
 
 Delegation (sonnet planner + haiku workers on a fan-out workload):
-**8.3% – 26.1% better cost-per-quality** across two reproducible runs
-(§A3-rev5 and §A3-rev6).
+**8.3% – 26.1% better cost-per-quality** across three reproducible runs
+(§A3-rev5 / §A3-rev6 / §A3-rev7 completion), with a **19.9%** midpoint
+in the completion run.
 
 Prompt caching: 100% cache-fire rate on the 49-call benchmark suite,
 22.8% same-workload cost reduction (`§Run 3`).
 
 **Caveats:** all numbers from [`benchmarks/RESULTS.md`](../../benchmarks/RESULTS.md).
-The routing inversion is N=1 in v1; magnitude on your workload depends
-on what fraction of turns are "hard." Three workload shapes where Metis
-won't move the needle on routing are listed in
+The model-selection inversion is N=1 in v1; §A3-rev7 completion tested
+the partial-credit hypothesis and still produced zero sonnet picks
+across 36 routing decisions. Magnitude on your workload depends on what
+fraction of turns are hard **and** whether the larger model succeeds
+reliably on those turns. Three workload shapes where Metis won't move
+the needle on routing are listed in
 [`customer-trial-recipe.md §6`](../customer-trial-recipe.md).
 
 ---
@@ -219,6 +228,8 @@ Both audit-flagged: `analytics.user_exported` / `analytics.user_forgotten`.
   tokens (`gw_…`) are SHA-256-hashed in the keystore; the plaintext
   token is printed once at issuance.
 - **Telemetry:** none. No phone-home, no usage reporting to us.
+- **Billing:** only mounted when enabled. The Stripe-backed module sends
+  subscription / invoice / savings-usage records, not prompts or traces.
 - **Embeddings (pattern store v2):** computed at the embedding provider
   you configure (`openai:text-embedding-3-small`, `cohere:embed-multilingual-v3.0`,
   or `local:sentence-transformers:all-MiniLM-L6-v2`). v1 fingerprint is
@@ -279,17 +290,20 @@ Realistic ongoing load: one engineer-day to deploy, ~zero ongoing.
 - **Key revocation:** `metis gateway revoke-key <key_id>`. Audit-flagged.
 - **Quotas:** budget enforcement is on the in-progress list. The
   evaluator's `BudgetTracker` primitive (per-session $0.10 / per-day
-  $1.00 defaults) is in place for LLM-judge calls; per-team quotas at
-  the gateway are spec-drafted but not yet shipped.
+  $1.00 defaults) is in place for LLM-judge calls. Wave 15 also ships
+  tier-axis quota composition for billing deployments: free tier has a
+  small monthly spend cap floor; Pro / Enterprise are unlimited at the
+  tier level unless the buyer configures team caps.
 
 ---
 
 ## What's the licensing posture?
 
-TBD per [`README.md`](../../README.md). The strategic intent is
-**open-core gateway + per-seat Pro tier + reserved enterprise %-of-
-savings add-on** per [`docs/specs/pricing.md`](../specs/pricing.md). Open
-question — see [`STRATEGY.md §6.8`](../STRATEGY.md).
+License text remains TBD per [`README.md`](../../README.md). The pricing
+model is no longer open: **open-core gateway + per-seat Pro tier +
+reserved Enterprise %-of-savings add-on** is ratified in
+[`docs/specs/pricing.md §5.5.4`](../specs/pricing.md). Price points are
+still a commercial decision.
 
 ---
 

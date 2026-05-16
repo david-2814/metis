@@ -3,10 +3,10 @@ import Layout from "../layouts/Layout.astro";
 import Nav from "../components/Nav.astro";
 import Footer from "../components/Footer.astro";
 
-// Comparison facts. Sourced from docs/market-research/03-routing-layers.md
-// (verified 2026-05-09) plus our own shipped feature inventory in
-// AGENTS.md. Every "no" is justified by a documented gap; every "yes"
-// is something we've live-validated.
+// Comparison facts. Sourced from docs/market-research/03-routing-layers.md,
+// a 2026-05-16 GitHub spot-check for public repo counts, plus our own
+// shipped feature inventory in AGENTS.md. Every "no" is justified by a
+// documented gap; every "yes" is something we've live-validated.
 
 const competitors = ["LiteLLM", "Portkey", "Helicone", "Metis"];
 
@@ -217,10 +217,10 @@ const tone = (cell: string) => {
         them.
       </p>
       <p class="mt-3 max-w-3xl text-xs text-fg-dim">
-        Sourced from docs/market-research/03-routing-layers.md (verified
-        2026-05-09) and the live LiteLLM issue tracker. Tracking
-        compiled against LiteLLM 11.7k stars, Portkey 11.7k, Helicone
-        5.6k.
+        Sourced from docs/market-research/03-routing-layers.md and a
+        2026-05-16 GitHub spot-check. Tracking compiled against LiteLLM
+        47.2k stars, Portkey 11.7k, and Helicone 5.7k; re-verify before
+        quoting externally.
       </p>
     </section>
 
@@ -405,7 +405,7 @@ const tone = (cell: string) => {
             href="/signup"
             class="inline-flex items-center gap-2 rounded border border-accent bg-accent px-5 py-3 text-sm font-bold text-bg transition-colors hover:bg-accent/90"
           >
-            sign up for the private beta
+            start a buyer trial
             <span aria-hidden="true">&rarr;</span>
           </a>
           <a

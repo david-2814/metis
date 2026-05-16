@@ -1,9 +1,8 @@
 # Metis — one-pager
 
-> The LLM gateway that picks the model that **succeeds** on each task,
-> attributes cost per developer / team / project, and runs in your VPC
-> on your provider keys. Drop-in for Claude Code, Cursor, and any
-> OpenAI- or Anthropic-shaped SDK.
+> The open-core LLM gateway that makes AI-agent spend visible,
+> governable, and cheaper. Drop-in for Claude Code, Cursor, and any
+> OpenAI- or Anthropic-shaped SDK; runs on your provider keys.
 
 ---
 
@@ -12,17 +11,30 @@
 A transparent HTTP gateway in front of Anthropic / OpenAI / OpenRouter.
 Your devs change one environment variable; their existing tools keep
 working. Every turn is cost-stamped per key, per user, per team, per
-inbound shape. A learned routing layer (slot 4 of the chain — see
-[`docs/specs/routing-engine.md`](../specs/routing-engine.md)) picks the
-cheapest model that has historically succeeded on the same task class.
+inbound shape, and per routing decision. The agent upgrade path adds
+context shaping, bounded memory, skills, and planner-worker delegation
+on the same canonical IR.
 
 ---
 
 ## The headline numbers
 
-From [`benchmarks/RESULTS.md §A3-rev3`](../../benchmarks/RESULTS.md) on
-our shipped 6-workload suite, three-pass protocol (haiku pinned / sonnet
-pinned / `--no-active-model` so slot 4 fires):
+**Delegation is the most reproduced routing-surface lever.** On the
+`multi-step-with-delegation` workload, sonnet planner + haiku workers
+beats sonnet-only-no-delegation by **8.3% – 26.1% better
+cost-per-quality** across three runs, with the A3-rev7 completion landing
+at **19.9%**:
+
+| Run | Delegation result |
+|---|---:|
+| §A3-rev5 | 8.3% better cost-per-quality |
+| §A3-rev6 | 26.1% better cost-per-quality |
+| §A3-rev7 completion | 19.9% better cost-per-quality |
+
+**Model selection has one canonical end-to-end inversion.** From
+[`benchmarks/RESULTS.md §A3-rev3`](../../benchmarks/RESULTS.md), the
+three-pass protocol (haiku pinned / sonnet pinned / `--no-active-model`
+so slot 4 fires):
 
 | Pass | Strategy | Quality sum | Real-API cost | $ / quality unit |
 |------|----------|------------:|--------------:|------------------:|
@@ -36,9 +48,10 @@ The one sonnet pick was on `regex-with-edge-cases` turn 2 — the hard
 0.74 in Pass C). See [`docs/savings-demo.md`](../savings-demo.md) for
 the full mechanism walkthrough.
 
-**Delegation** (sonnet planner + haiku workers on a fan-out workload):
-**8.3% – 26.1% better cost-per-quality** across two reproducible runs
-(§A3-rev5 and §A3-rev6).
+The A3-rev7 completion is the newest model-selection result: partial
+credit worked, but Pass C still picked haiku on every routed turn across
+5 workloads (zero sonnet picks across 36 decisions). The N=1 inversion
+stands as mechanism proof, not a broad regime.
 
 **Prompt caching:** 100% cache-fire rate on a 49-call benchmark suite
 (vs ~33% cold cache), 22.8% same-workload cost reduction
@@ -48,11 +61,11 @@ the full mechanism walkthrough.
 
 ## What this is honest about
 
-- **The routing inversion is N=1 in v1.** The mechanism is wired
-  end-to-end; the breadth across workloads is in progress. Quoting "save
-  62% on your bill" is not what the data supports. Quoting "we pick the
-  cheaper model on easy turns and the bigger model on the one hard turn"
-  is.
+- **The model-selection inversion is N=1 in v1.** The mechanism is wired
+  end-to-end, but §A3-rev7 completion did not generalize it. Quoting
+  "save 62% on your bill" is not what the data supports. Quoting
+  "delegation has a reproduced 8.3% – 26.1% cost-per-quality range, and
+  model selection has a clear proof-of-mechanism" is.
 - **The savings shape depends on your workload.** Three shapes where
   Metis won't move the needle on routing: single-model workloads (every
   turn needs the same model); very short sessions (< 6 turns; cache
@@ -90,13 +103,30 @@ curl 'http://your-server:8421/analytics/cost?group_by=user&window=7d' | jq
 
 | Lever | What it does | Status |
 |---|---|---|
-| Model selection (slot 4) | K-NN over learned task-fingerprint outcomes; picks cheaper model on easy turns, escalates on hard ones | shipped, N=1 inversion |
-| Delegation | Sonnet planner spawns haiku workers; cost attributed per role | shipped, 8.3–26.1% cost/quality improvement |
+| Model selection (slot 4) | K-NN over learned task-fingerprint outcomes; picks cheaper model on easy turns, escalates on hard ones | shipped, N=1 inversion; breadth not generalized in §A3-rev7 |
+| Delegation | Sonnet planner spawns haiku workers; cost attributed per role | shipped, 8.3–26.1% cost/quality improvement across 3 runs |
 | Prompt caching | Stable system+tools prefix with `cache_control`; padded to provider cache floor | shipped, 100% fire rate |
 | Per-key / per-user / per-team cost | Every event stamped with `gateway_key_id` / `user_id` / `team_id` | shipped |
 | Audit log + retention + GDPR forget | SOC2-aligned 12-event subset; `metis trace prune`; `metis user forget` | shipped |
+| Billing | Open-core gateway + per-seat Pro + Enterprise savings add-on; Stripe-backed, opt-in | shipped |
 | Skills | agentskills.io-compatible (35+ implementers including Anthropic, OpenAI Codex, Cursor, Goose) | shipped substrate; agent-side activation in flight |
 | Bounded memory (MEMORY.md / USER.md) | 2 KB / 1.5 KB caps; agent-curated; survives session restart | shipped (agent mode only — gateway is stateless per request) |
+
+---
+
+## Pricing shape
+
+Ratified in [`docs/specs/pricing.md §5.5.4`](../specs/pricing.md):
+
+| Tier | Model | Buyer-facing line |
+|---|---|---|
+| Community | $0 open-core gateway | Self-host gateway + single-user agent surfaces; BYO provider keys |
+| Pro | Per active user / month | Team identity, caps, per-user/team analytics, hosted operations, audit export, LLM judge tier, agent upgrade |
+| Enterprise | Custom Pro + capped %-of-savings | Outcome-linked add-on for procurement-led buyers |
+
+Metis does **not** resell provider tokens. Anthropic / OpenAI /
+OpenRouter still bill the buyer directly; Metis bills for the control
+plane and, on Enterprise, a separately contracted savings line.
 
 ---
 
@@ -125,6 +155,8 @@ curl 'http://your-server:8421/analytics/cost?group_by=user&window=7d' | jq
   [`docs/gateway-deployment.md`](../gateway-deployment.md).
 - **TLS** terminated upstream (Caddy / nginx-ingress / cloud LB) or
   in-process via `--tls-cert` / `--tls-key` (Wave 13).
+- **Billing** opt-in via gateway config; deployments without billing stay
+  on the free runtime path.
 
 ---
 

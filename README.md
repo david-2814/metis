@@ -2,13 +2,15 @@
 
 A local-first AI dev agent — provider-agnostic, self-improving, and cost-aware.
 
-> **Status:** Phase 1 + Phase 2 + Phase 2.5 shipped; Phase 3 in flight — **ready for review whether to promote to "Phase 3 shipped"** ([proposal](docs/operations/phase-claim-proposal.md)). The three Phase-3 wedges (transparent HTTP gateway, multi-user identity / per-team cost attribution, evaluator) are live; Wave 12 closes the SOC2/GDPR compliance gap (audit log + trace retention + redaction layer + GDPR data export/forget + SOC2 readiness audit); Wave 13 lifts the gateway's loopback-only constraint behind a documented hardening checklist; Wave 14 lands the v1.2 partial-credit rubric primitive, self-serve `/signup` + `/account/keys` endpoint, mkdocs-material doc site, sales toolkit, and a [GA-readiness audit](docs/operations/ga-readiness-audit.md) (which surfaced two owner-triage GA blockers — NETWORK error class trips provider-wide on a single SSL hiccup, and the gateway over-reports cost ~6× when SDK clients strip the `anthropic:` prefix). The model-selection differentiator inverted on its first end-to-end demonstration ([`benchmarks/RESULTS.md §A3-rev3`](benchmarks/RESULTS.md): Pass C picks sonnet on the one hard turn of `regex-with-edge-cases`, quality 5.55 vs Pass A 5.16 at $0.0477/quality between haiku-only $0.0383 and sonnet-only $0.1176); §A3-rev4..rev6 confirmed the mechanical chain is fully wired and the remaining bottleneck is benchmark-suite signal strength, not routing-knob tuning. §A3-rev7 (Wave 14a-7) tested the finer-grained-outcome-scoring wedge end-to-end but **aborted partway through Pass B on Anthropic-credit exhaustion** (~$1.08); the 2 workloads with complete haiku + sonnet partial-credit data show a +0.000 gap (direct evidence that haiku-4.5 is genuinely strong on dev-loop coding at temperature=0), with `regex-with-edge-cases` mid-scores 0.63-0.75 as the residual signal. The delegation differentiator was validated end-to-end at 8.3% – 26.1% better cost-per-quality on a delegation-suited workload (§A3-rev5 + §A3-rev6); delegation now leads the GTM ordering for routing-surface levers. Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), `metis serve` (HTTP/WebSocket), `metis gateway` (transparent provider-shape proxy with optional `/signup`) all run. Wave 14a closes the production-grade observability gap with latency-percentile histograms (routing + tool dispatch), dedicated LLM/tool error counters, the new `gateway.auth_failed` audit-flagged event + per-key cost counter, four `PrometheusRule` alert templates (LLM p99 latency, LLM error rate, gateway auth-failure rate, per-key spend anomaly), a Grafana dashboard JSON, and the [observability runbook](docs/operations/observability-runbook.md). Wave 15 closes both Wave-14 GA blockers (NETWORK error refinement — single SSL hiccup no longer blacks out the whole provider; gateway model normalization — SDK-canonical bare names like `claude-3-5-haiku-20241022` now resolve to the canonical provider id before routing instead of falling through to `global_default`), ships first-buyer concierge tools (`metis customer-report`, `metis trial-status`, [`concierge-onboarding.md`](docs/operations/concierge-onboarding.md), additive `customer_tier` keystore field), lands the Wave 15 [billing module](apps/gateway/src/metis_gateway/billing/) per the ratified [`pricing.md §5.5.4`](docs/specs/pricing.md) (Stripe-backed Pro per-seat + reserved enterprise %-of-savings metered add-on; six new `billing.*` audit events; opt-in via `--enable-billing`), and adds the [status-page live-deployment recipe](docs/operations/status-page.md) (helm Uptime Kuma sidecar + four monitoring probes + SEV-mapped templates; hosting account remains owner-side). The phase-claim bump remains owner-decision territory — the proposal is unchanged from Wave 13 and no sign-off is recorded. 1829 tests passing.
+> **Status:** Phase 1 + Phase 2 + Phase 2.5 + Phase 3 shipped; Wave 16 reaches the GA launch milestone for the first paid cohort. The transparent gateway, multi-user / per-team attribution, evaluator, compliance posture, billing, observability, and launch operations are live enough for buyer trials. The validated routing-surface headline is delegation at **8.3% / 19.9% / 26.1% better cost-per-quality** across three A3 runs. Slot-4 model selection remains a proof-of-mechanism from §A3-rev3; §A3-rev7 completion did not generalize it (zero sonnet picks across 36 routing decisions), so the optional task-domain A3 wedge is deferred post-GA. 1841 tests passing.
+
+> **Launch callout:** Metis is ready for buyer trials as an open-core LLM gateway: Community is free to self-host, Pro is per active user for team controls, and Enterprise reserves a capped savings add-on. The validated routing-surface headline is delegation at **8.3% – 26.1% better cost-per-quality across three runs** (19.9% midpoint in §A3-rev7 completion); model-selection remains an N=1 proof-of-mechanism from §A3-rev3.
 
 ---
 
 ## Why Metis
 
-Metis optimizes a buyer's LLM bill by composing three levers — context engineering (prompt-cache discipline, lean prompts), skills (focused expert instructions loaded on demand), and model selection (route each turn to the cheapest model that succeeds on the task class). The order of typical impact is context > skills > selection; the routing wedge is the one with the cleanest demonstration. On our shipped benchmark suite, slot 4 of the routing chain picked sonnet on the one hard turn of `regex-with-edge-cases` and haiku on every other turn — recovering 99% of sonnet-only's quality at roughly 25% above haiku-only's cost. See [`docs/savings-demo.md`](docs/savings-demo.md) for the evidence and [`docs/customer-trial-recipe.md`](docs/customer-trial-recipe.md) for how to reproduce on your own workload.
+Metis optimizes a buyer's LLM bill by composing three levers — context engineering (prompt-cache discipline, lean prompts), skills (focused expert instructions loaded on demand), and routing (delegation plus model selection). The order of typical impact is context > skills > routing. Prompt caching has the cleanest context proof (49/49 cache-fire, 22.8% same-workload cost reduction); delegation has the most reproduced routing proof (8.3% – 26.1% better cost-per-quality across three runs); slot-4 model selection has one end-to-end inversion on `regex-with-edge-cases` and remains a proof-of-mechanism, not a generalized savings regime. See [`docs/savings-demo.md`](docs/savings-demo.md) for the model-selection evidence and [`docs/customer-trial-recipe.md`](docs/customer-trial-recipe.md) for how to reproduce on your own workload.
 
 ---
 
@@ -16,7 +18,7 @@ Metis optimizes a buyer's LLM bill by composing three levers — context enginee
 
 ```bash
 # Python 3.13 + uv required.
-uv sync   # resolves the workspace (metis-core, metis-server, metis-cli)
+uv sync   # resolves the workspace (metis-core, metis-server, metis-gateway, metis-cli)
 
 # Put your Anthropic API key in a gitignored .env file
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
@@ -77,12 +79,22 @@ to the gateway URL, hand over a `gw_…` key, and every turn is cost-stamped per
 dev, per project — no client code changes. End-to-end recipe (Claude Code,
 Cursor, raw curl/SDK) at [`docs/gateway-client-quickstart.md`](docs/gateway-client-quickstart.md).
 
-> **v1 binds loopback-only.** The gateway refuses any non-`127.0.0.1` bind
-> per [`gateway.md §3.2`](docs/specs/gateway.md); do not expose it to the
-> public internet directly. Front it with Caddy / nginx-ingress / a cloud LB
-> that terminates TLS. The layered defenses (TLS, rate limiting, leak
-> detection) are documented in
-> [`docs/specs/gateway-hardening.md`](docs/specs/gateway-hardening.md).
+> **Gateway exposure:** the gateway defaults to loopback. Non-loopback binds
+> are allowed only behind the hardening checklist: TLS termination, rate
+> limits, audit logging, and key-leak handling. The layered defenses are
+> documented in [`docs/specs/gateway-hardening.md`](docs/specs/gateway-hardening.md).
+
+## Pricing shape
+
+The commercial model is ratified at [`docs/specs/pricing.md §5.5.4`](docs/specs/pricing.md):
+
+| Tier | Model | Included shape |
+|---|---|---|
+| Community | $0 open-core gateway | Self-hosted gateway and single-user agent surfaces; BYO provider keys |
+| Pro | Per active user / month | Multi-user identity, team caps, per-user/team analytics, hosted operations, audit export, LLM judge tier, agent upgrade |
+| Enterprise | Custom Pro + capped savings add-on | Outcome-linked contract using the shipped savings counterfactual |
+
+Metis does not resell tokens; provider usage is still billed by Anthropic / OpenAI / OpenRouter. The Wave 15 billing module is Stripe-backed and opt-in via gateway config.
 
 ## Sales toolkit
 
@@ -92,8 +104,8 @@ under [`docs/sales/`](docs/sales/):
 - [`one-pager.md`](docs/sales/one-pager.md) — single-page pitch with the headline numbers, honest caveats, and a deployment-shape grid.
 - [`competitive-comparison.md`](docs/sales/competitive-comparison.md) — Metis vs LiteLLM / Portkey / Helicone: canonical-IR fidelity, learned routing, per-user / per-team attribution, where each competitor wins.
 - [`objection-handling.md`](docs/sales/objection-handling.md) — common buyer objections (Vercel AI SDK, Cursor / Claude Code, LiteLLM-is-good-enough, unproven-savings, operational-load, SOC2, "are you going to be around") with honest responses.
-- [`faq.md`](docs/sales/faq.md) — buyer FAQ: how it works, how it compares, how to evaluate, what's the savings number, what's the SOC2 story, where does data go, what's the roadmap.
-- [`case-study-template.md`](docs/sales/case-study-template.md) — slot to be filled in by the first GA customer; honest framing with reproducible numbers.
+- [`faq.md`](docs/sales/faq.md) — buyer FAQ: how it works, how it compares, how to evaluate, billing/pricing, what's the savings number, what's the SOC2 story, where data goes, what's next.
+- [`case-study-template.md`](docs/sales/case-study-template.md) plus the industry templates (`startup-saas`, `dev-tools-company`, `content-platform`) — slots to be filled by the first GA customer flow; honest framing with reproducible anonymized numbers.
 
 ## Operations
 
@@ -101,8 +113,11 @@ The operational docs a buyer's SRE will read before signing. All sit
 under [`docs/operations/`](docs/operations/):
 
 - [`quickstart.md`](docs/operations/quickstart.md) — &lt; 1-hour buyer-trial path: kind + helm + `metis trial` end-to-end, with per-key cost rollup and a pitfalls table from validation.
+- [`first-customer-runbook.md`](docs/operations/first-customer-runbook.md) — day-0 to day-30 operator cadence for the first paid cohort, including setup call, mid-trial check-in, conversion conversation, and post-conversion onboarding scripts.
+- [`billing-operator-guide.md`](docs/operations/billing-operator-guide.md) — Stripe test-mode billing operations: disputes, refunds, failed-payment grace, manual plan changes, and audit-event checks.
+- [`launch-day-playbook.md`](docs/operations/launch-day-playbook.md), [`pre-launch-dry-run-checklist.md`](docs/operations/pre-launch-dry-run-checklist.md), and [`support-channels.md`](docs/operations/support-channels.md) — GA day-1 operating rhythm, synthetic-customer dry run, support templates, and SLA expectations.
 - [`incident-response.md`](docs/operations/incident-response.md) — SEV1-SEV4 criteria, on-call alert paths (PagerDuty / Opsgenie / email), first-hour playbook, post-mortem template, and per-failure-mode playbooks for upstream LLM outage, trace-DB corruption, gateway-key compromise, and quota runaway.
-- [`status-page.md`](docs/operations/status-page.md) — two-tier recipe (external UptimeRobot / Statuspage.io / Better Stack against `/healthz`, plus self-hosted Uptime Kuma in-cluster), publish/redact guidelines, and incident comm templates.
+- [`status-page.md`](docs/operations/status-page.md) + [`status-page-config.yaml`](docs/operations/status-page-config.yaml) — two-tier recipe (external UptimeRobot / Statuspage.io / Better Stack against `/healthz`, plus self-hosted Uptime Kuma in-cluster), paste-ready probe config, publish/redact guidelines, and incident comm templates.
 - [`sla-template.md`](docs/operations/sla-template.md) — 99.5% single-region template the buyer can customize for their own downstream-user SLA: service-credit math, exclusions, force-majeure stub (legal-counsel-deferred).
 - [`compliance-overview.md`](docs/operations/compliance-overview.md) + [`soc2-readiness.md`](docs/operations/soc2-readiness.md) — one-page buyer-conversation index and the full SOC2 Trust Service Criteria gap audit (Security CC1-CC9, Availability A1, Confidentiality C1, Processing Integrity PI1, Privacy P1-P8) mapped against shipped + buyer-responsibility evidence. Honest about gaps (CC8 change management, third-party pentest, vendor review, SOC2 auditor); Type 1 readiness target Q3 2026 contingent on buyer underwriting the audit cost.
 
@@ -135,7 +150,7 @@ Metis is built around the inverse of each: portability, persistence, transparenc
 ┌─ Clients ──────────────────────────────┐
 │  CLI (now) · Textual TUI · Web UI      │
 └────────────────┬───────────────────────┘
-                 │  in-process (CLI) · HTTP+WebSocket (later)
+                 │  in-process (CLI) · HTTP+WebSocket
 ┌────────────────┴───────────────────────┐
 │           Python core server           │
 │                                        │
@@ -145,8 +160,8 @@ Metis is built around the inverse of each: portability, persistence, transparenc
 │  Event bus → SQLite trace store        │
 │  Skills · Memory · Patterns (Phase 2+) │
 └────────────────┬───────────────────────┘
-                 │  (Phase 3+)
-            git remote sync
+                 │
+      Transparent gateway · dashboards · trace export
 ```
 
 Key design choices:
@@ -165,22 +180,20 @@ Key design choices:
 - **Five built-in tools + three memory tools.** `read_file`, `write_file`, `patch_file`, `list_dir`, `shell` (all workspace-scoped, `..` and out-of-root symlinks rejected). Plus `memory_add`, `memory_replace`, `memory_consolidate` for bounded memory mutation.
 - **Bounded memory.** Per-workspace `MEMORY.md` (~2 KB soft, 4 KB hard) and `USER.md` (~1.5 KB soft, 3 KB hard) under `.metis/`. Soft cap fires `memory.eviction`; hard cap rejects the write so the agent has to consolidate. The agent reads memory fresh from disk on every LLM call (composed into the system prompt). See [`docs/specs/memory-store.md`](docs/specs/memory-store.md).
 - **Session manager.** Turn-locked streaming loop, multi-call within a turn, tool cycle wiring, cost stamping, full event emission, parent-event-id chains.
-- **Routing engine.** Per-message `@alias` overrides, `/model` sticky, capability validation (vision / context-window / tools / system-prompt / structured-output), per-provider availability tracking. Exactly one `route.decided` event per turn including the full chain trace. Configured-rule (yaml policy) parsing has landed; integration into the chain is in flight.
+- **Routing engine.** Per-message `@alias` overrides, `/model` sticky, yaml configured rules, pattern-store slot 4, delegation slot 5, capability validation (vision / context-window / tools / system-prompt / structured-output), and per-provider availability tracking. Exactly one `route.decided` event per turn includes the full chain trace.
 - **Event bus + SQLite trace store + SQLite session store.** WAL + `synchronous=NORMAL` for sub-millisecond fast-path writes. Replay queries, causal-chain walks, per-session isolation. Messages and sessions persist; restart preserves conversation history.
 - **HTTP/WebSocket server.** Starlette + uvicorn ASGI app. REST for sessions/turns/messages/models/health; WebSocket `/sessions/{id}/stream` with single-use attach tokens, snapshot+live replay, filter presets, cancel-via-WS, ping/pong. Loopback-only bind in v1.
 - **Three client surfaces.** `metis chat` (line REPL), `metis tui` (Textual app), `metis serve` (HTTP/WS server for external clients). Slash commands `/model`, `/cost`, `/models`, `/help`. Per-message `@alias` syntax.
 - **Cost in real time.** Per-turn input/output/cached token costs computed by core (not parroted from provider), `Decimal` math, versioned for retroactive re-pricing. OpenRouter prices overlaid at session start.
-- **1829 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates + NETWORK-error escalation refinement, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations, pattern store v1 + v2 + concurrency hardening, evaluator heuristic + LLM + hybrid + budget + partial-credit primitive, gateway auth + per-key/user/team identity + rate limiting + TLS + bind hardening + self-serve signup + bare-model normalization + auth-failure event emission + `customer_tier` keystore extension, audit log + trace retention + redaction layer + GDPR export/forget, observability metric collector + Prometheus exposition + latency-percentile histograms + dedicated error counters + per-key cost attribution, billing module subscription lifecycle + webhook idempotency + tier-axis quota composition + Stripe `FakeBillingClient`, `metis customer-report` HTML offline-contract + XSS escaping + JSON determinism, `metis trial-status` conversion-readiness bands + threshold pinning.
+- **1841 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates + NETWORK-error escalation refinement, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations, pattern store v1 + v2 + concurrency hardening, evaluator heuristic + LLM + hybrid + budget + partial-credit primitive, gateway auth + per-key/user/team identity + rate limiting + TLS + bind hardening + self-serve signup + bare-model normalization + auth-failure event emission + `customer_tier` keystore extension, audit log + trace retention + redaction layer + GDPR export/forget, observability metric collector + Prometheus exposition + latency-percentile histograms + dedicated error counters + per-key cost attribution, billing module subscription lifecycle + self-service portal + plan changes + failed-payment grace, webhook idempotency + tier-axis quota composition + Stripe `FakeBillingClient`, `metis customer-report` HTML offline-contract + XSS escaping + JSON determinism + anonymization, `metis trial-status` conversion-readiness bands + threshold pinning.
 
 ## What's NOT built yet (next-up)
 
-- **Configured routing rules in the chain.** The yaml parser, predicate set, and rule loader are in [`packages/metis-core/src/metis_core/routing/`](packages/metis-core/src/metis_core/routing/) (`policy.py`, `policy_loader.py`, `predicates.py`); the `rule` slot in `route.decided.chain` still reports `not_applicable` until the wiring is finished.
-- **Skills.** `packages/metis-core/src/metis_core/skills/` has a store and a `load_skill` tool with `skill.loaded` events emitting. Full agentskills.io conformance, FTS5 indexing, and auto-generation are still phase-2 work.
-- **Tool-confirmation REST endpoint.** [`server-api.md §4.2`](docs/specs/server-api.md) specs `POST /turns/{id}/confirmations/{request_id}`; it isn't wired. The dispatcher uses `AutoAllowHandler` (auto-approves everything; safe for single-user, not for shared).
-- **Pattern store + learned routing.** Phase 2.5.
-- **Delegation (`delegate()` tool).** Phase 4. The routing chain has a `DELEGATE_REQUEST` stub.
-- **Worker sessions** (`include_worker_sessions` accepted by the WS filter but no workers exist yet).
-- **Routing policy hot-reload + version surfacing** (`GET /sessions/{id}` returns `routing_policy_version: null`).
+- **Context-assembler v3 skill activation.** Prompt-cache discipline and minimum-cacheable-prefix padding are live; explicit / agent-side skill activation budgets remain post-GA.
+- **Skill curator.** The spec exists, but the implementation is gated on agent-authored skills (`skill_save` + `skill.created(source="auto_generated")`) landing first.
+- **Delegation v1 follow-ons.** Async/concurrent workers, cancellation cascade, streaming worker output, recursive delegation, `output_schema`, per-tier timeouts, router-decided delegation, and worker pattern-store integration are deferred.
+- **Pattern-store v2 cluster-tightening against real traces.** The synthetic geometry gate passes; a real-embedding / real-API fixture is still a confidence check.
+- **§A3 task-domain model-selection wedge.** Math/symbolic, long-context synthesis, and rare API workloads are the next research wedge; deferred post-GA unless buyer evidence reprioritizes it.
 
 See [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) for spec/impl gaps that are tracked but not yet fixed.
 
@@ -191,8 +204,8 @@ See [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) for spec/impl gaps that are t
 | **1**   | weeks 1–4    | Two providers, canonical format, event bus, file/shell tools, basic TUI, manual routing. **CLI prototype done.** |
 | **2**   | weeks 5–8    | Hand-written skills, bounded memory, web dashboard, explicit feedback, configured rules.                          |
 | **2.5** | weeks 9–10   | Pattern fingerprints, cold-start suggestions, skill auto-generation with security scanner.                        |
-| **3**   | weeks 11–14  | In-session adjustment heuristics, full evaluator, MCP support, git sync, third provider.                          |
-| **4**   | weeks 15+    | Tauri desktop app, public-ready UX, marketplace foundation.                                                       |
+| **3**   | weeks 11–14  | Transparent gateway, multi-user attribution, evaluator, compliance / hardening. **Shipped.**                     |
+| **4**   | post-GA      | Tauri desktop app, public-ready UX, marketplace foundation, skill curator, delegation follow-ons.                 |
 
 (Calendar time roughly doubles at part-time pace.)
 

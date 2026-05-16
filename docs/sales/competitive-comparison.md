@@ -5,9 +5,11 @@
 > internal message representation, learning vs static rules, and cost
 > attribution granularity.
 
-Verified against each project's public docs and open GitHub issues as
-of 2026-05-09 (see [`docs/market-research/03-routing-layers.md`](../market-research/03-routing-layers.md)
-for the full survey). Re-verify before quoting externally.
+Public GitHub counts spot-checked on 2026-05-16; issue analysis still
+comes from the 2026-05-09 market-research sweep (see
+[`docs/market-research/03-routing-layers.md`](../market-research/03-routing-layers.md)
+for the full survey). Re-verify competitor issue lists before quoting
+externally.
 
 ---
 
@@ -15,7 +17,7 @@ for the full survey). Re-verify before quoting externally.
 
 | Capability | Metis | LiteLLM | Portkey | Helicone |
 |---|---|---|---|---|
-| **Stars / license** | (early) / TBD | 46.3k / MIT-ish | 11.7k / MIT (OSS gateway) + SaaS | 5.6k / Apache-2.0 + SaaS |
+| **Stars / license** | (launch) / TBD | 47.2k / MIT-ish | 11.7k / MIT (OSS gateway) + SaaS | 5.7k / Apache-2.0 + SaaS |
 | **Internal IR** | Canonical-first; Anthropic blocks load-bearing | OpenAI-shape lossy bridge | OpenAI-shape | Mostly pass-through |
 | **`cache_control` round-trip** | Lossless (universal placement) | Broken: #26625, #20418, #20485 (Bedrock + Vertex) | Limited; OpenAI-shape constrains it | Pass-through (no placement logic) |
 | **Thinking blocks across providers** | Lossless | Broken: #27512, #26916, #24985, #15601 | Limited; not the focus | Pass-through |
@@ -27,6 +29,7 @@ for the full survey). Re-verify before quoting externally.
 | **Audit log** | 12-event subset, JSONL/CSV deterministic export | Logs, not an audit subset | Logs, SaaS surface | Logs, SaaS surface |
 | **Trace retention + audit-exempt sweep** | `metis trace prune` + helm CronJob; audit events exempt | SaaS-managed | SaaS-managed | SaaS-managed |
 | **GDPR Article 17 (erasure-as-pseudonymization)** | `metis user forget` ships v1 | Buyer-implements | Buyer-implements | Buyer-implements |
+| **Pricing shape** | Open-core gateway + per-seat Pro + Enterprise savings add-on | OSS gateway + enterprise | OSS gateway + SaaS / enterprise | OSS + SaaS |
 | **Self-host story** | Helm chart + Docker compose; loopback-default; explicit `--host 0.0.0.0` + TLS | Self-host gateway; SaaS dashboards optional | Self-host OSS gateway; SaaS for dashboards | Self-host via base URL |
 | **Cloud-required path** | None (BYO keys, BYO infra always) | No | Dashboards SaaS-only | Dashboards SaaS-only |
 | **`/metrics` (Prometheus)** | Shipped, 10 series, ServiceMonitor template | Some metrics | Yes (SaaS) | Yes (SaaS) |
@@ -80,12 +83,17 @@ routing time, the chain consults the K nearest neighbors and aggregates
 their `(cost, success)` per model. The cheapest model whose aggregate
 success clears the confidence gate wins.
 
-The first end-to-end demonstration is in
+The first model-selection end-to-end demonstration is in
 [`benchmarks/RESULTS.md §A3-rev3`](../../benchmarks/RESULTS.md): Pass C
 picked sonnet on the one hard turn of `regex-with-edge-cases` and haiku
 on every other turn, recovering 99% of sonnet-only's quality at roughly
-25% above haiku-only's cost. N=1 inversion; the mechanism is wired,
-breadth is in progress.
+25% above haiku-only's cost. N=1 inversion; §A3-rev7 completion did not
+generalize it (zero sonnet picks across 36 routing decisions on 5
+partial-credit workloads), so this is proof-of-mechanism, not a broad
+regime. The more reproduced routing-surface claim is delegation:
+sonnet planner + haiku workers produce 8.3% – 26.1% better
+cost-per-quality across three A3 runs, with a 19.9% midpoint in
+§A3-rev7 completion.
 
 **No commodity router ships this.** RouteLLM was an offline classifier
 research project (stalled since August 2024). Not Diamond's Python SDK
@@ -115,7 +123,7 @@ fields. `/analytics/cost?group_by=user|team`, `/analytics/by_user`,
 ## What each competitor does better than Metis
 
 **LiteLLM:**
-- 46k stars / huge adoption. 100+ provider list out of the box.
+- 47k stars / huge adoption. 100+ provider list out of the box.
 - Mature org-level cost dashboards.
 - Active commercial team behind it.
 
@@ -145,7 +153,9 @@ progress."
 3. **`delegate(tier, task, context)` as a tool.** Planner spawns workers
    inside the agent loop; cost attributed per role. Closest analog is
    Aider's `architect+editor` (CLI-only, two tiers); nobody else ships
-   delegation as a first-class agent tool.
+   delegation as a first-class agent tool. Metis has three benchmark
+   datapoints at 8.3% / 19.9% / 26.1% better cost-per-quality on the
+   fan-out workload.
 4. **Replays survive provider API changes.** Canonical-IR-backed; refeed
    old traces through today's price table or today's evaluator and the
    numbers move correctly.

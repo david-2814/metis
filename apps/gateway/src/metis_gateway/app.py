@@ -43,6 +43,8 @@ from metis_gateway.billing import (
     billing_cancel_handler,
     billing_pause_handler,
     billing_payment_method_handler,
+    billing_plan_handler,
+    billing_portal_handler,
     billing_status_handler,
     build_billing_state,
     stripe_webhook_handler,
@@ -310,6 +312,8 @@ def build_app(
         routes.extend(
             [
                 Route("/account/billing", billing_status_handler, methods=["GET"]),
+                Route("/account/billing/portal", billing_portal_handler, methods=["GET"]),
+                Route("/account/billing/plan", billing_plan_handler, methods=["POST"]),
                 Route(
                     "/account/billing/subscribe",
                     billing_subscribe_handler,
@@ -1105,6 +1109,7 @@ def _resolve_tier_caps(state: _AppState, key) -> TierCaps | None:
     account = state.signup.store.account_for_key(key.key_id)
     if account is None:
         return None
+    state.billing.service.enforce_failed_payment_state(account_id=account.account_id)
     customer = state.billing.store.get_customer(account.account_id)
     tier = customer.tier if customer is not None else "free"
     if tier != "free":

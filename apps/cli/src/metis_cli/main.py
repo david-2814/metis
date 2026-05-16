@@ -665,6 +665,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Baseline model for the savings counterfactual. Default: anthropic:claude-sonnet-4-6."
         ),
     )
+    customer_report.add_argument(
+        "--anonymize",
+        action="store_true",
+        default=False,
+        help=(
+            "Replace customer labels, paths, gateway keys, users, and teams with "
+            "deterministic placeholders for shareable case-study artifacts."
+        ),
+    )
 
     trial_status = sub.add_parser(
         "trial-status",
@@ -870,6 +879,7 @@ def main(argv: list[str] | None = None) -> int:
                 customer_label=args.customer_label,
                 customer_tier=args.customer_tier,
                 baseline=args.baseline,
+                anonymize=args.anonymize,
             )
         if args.command == "trial-status":
             from metis_cli.trial_status import run_trial_status_command

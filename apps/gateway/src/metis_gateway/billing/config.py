@@ -55,6 +55,8 @@ class BillingConfig:
     free_monthly_cap_usd: Decimal = field(default_factory=lambda: Decimal("5.00"))
     free_daily_cap_usd: Decimal | None = None
     enterprise_savings_rate_pct: int = 15
+    billing_portal_return_url: str | None = None
+    failed_payment_grace_days: int = 7
 
     def resolved_store_path(self) -> Path:
         return (self.store_path or _default_store_path()).expanduser()

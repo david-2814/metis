@@ -1,0 +1,45 @@
+# Copy to benchmarks/customers/{{customer_slug}}/intake.yaml.
+# Keep this file private unless the buyer explicitly approves publication.
+
+customer:
+  slug: "{{customer_slug}}"
+  public_name: "{{customer_name_or_anonymous_shape}}"
+  vertical: "{{startup_saas|dev_tools|content_platform|other}}"
+  primary_contact: "{{name_or_role}}"
+  publication:
+    status: "{{private|anonymous_ok|public_ok}}"
+    approved_by: "{{buyer_approver_or_blank}}"
+    approved_at: "{{iso8601_or_blank}}"
+
+trial:
+  tier: "paid"
+  workspace_path: "{{buyer_workspace_path}}"
+  gateway_url: "{{gateway_url}}"
+  window_start: "{{window_start_iso}}"
+  window_end: "{{window_end_iso}}"
+  baseline_model: "anthropic:claude-sonnet-4-6"
+  customer_tier: "paid"
+
+attribution:
+  user_id_policy: "{{per_person|role_based|not_available}}"
+  team_id_policy: "{{team|project|not_available}}"
+  known_unattributed_paths:
+    - "{{shared_ci_key_or_blank}}"
+
+quality:
+  rubric_owner: "{{buyer|metis|none}}"
+  verdict_source: "{{pytest|human_review|llm_judge|none}}"
+  minimum_publishable_verdicts: 10
+
+artifacts:
+  trace_snapshot: "snapshots/metis.db"
+  buyer_report_html: "reports/day7-buyer.html"
+  anonymized_report_json: "reports/day7-anonymized.json"
+  case_study_draft: "reports/case-study-draft.md"
+
+notes:
+  buyer_success_criteria:
+    - "{{criterion_1}}"
+    - "{{criterion_2}}"
+  known_caveats:
+    - "{{caveat_1}}"

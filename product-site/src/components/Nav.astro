@@ -1,6 +1,6 @@
 ---
 interface Props {
-  current?: "home" | "compare" | "pricing";
+  current?: "home" | "compare" | "pricing" | "blog";
 }
 const { current = "home" } = Astro.props;
 
@@ -16,6 +16,7 @@ const link = (active: boolean) =>
     </a>
     <nav class="flex items-center gap-6 text-sm">
       <a href="/#how-it-works" class={link(false)}>how it works</a>
+      <a href="/blog/announcing-metis" class={link(current === "blog")}>blog</a>
       <a href="/compare" class={link(current === "compare")}>compare</a>
       <a href="/pricing" class={link(current === "pricing")}>pricing</a>
       <a
