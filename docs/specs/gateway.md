@@ -192,6 +192,24 @@ The streaming path **primes the first event** before committing to a 200 respons
 
 Client disconnect (TCP RST / closed read side) triggers the harness to cancel the in-flight adapter call (per [`provider-adapter-contract.md §5.4`](provider-adapter-contract.md)). The disconnect probe races the adapter task; on disconnect, the adapter's `cancel()` is invoked and the harness raises `ClientDisconnected`. Partial token usage up to cancellation is still cost-stamped and traced. The HTTP handler returns a 499-style sentinel in case the socket is somehow still open.
 
+### 4.8 Model normalization (the bare-name pitfall)
+
+SDK clients speak the bare model names their upstream provider expects — the Anthropic SDK sends `claude-3-5-haiku-20241022` and rejects any `anthropic:` prefix because the real Anthropic API doesn't take one; the OpenAI SDK sends `gpt-4o-mini` and rejects an `openai:` prefix for the same reason. Metis's internal model id is always `provider:name` so the routing engine, the price table, and the registry all agree on a single key. Without an explicit bridge between the two namespaces, the gateway's `per_message_override` slot can't resolve the bare client name → routing falls through to `global_default` → cost is billed under whichever model that points at. The GA-readiness audit ([§2.4](../operations/ga-readiness-audit.md)) caught this on the canonical `claude-haiku-4-5` workload: every call was routed and priced as `anthropic:claude-sonnet-4-6`, over-reporting cost ~6×.
+
+The fix lives in [`harness.py::_normalize_inbound_model`](../../apps/gateway/src/metis_gateway/harness.py) and runs once per request, immediately before `registry.resolve_alias`. Rules (first match wins):
+
+1. **Registry already knows the name** — Metis aliases (`haiku`, `sonnet`, etc.) and canonical ids (`anthropic:claude-haiku-4-5`) pass through unchanged. This preserves the alias path the agent loop and the CLI already use.
+2. **`metis://` opt-out** — `metis://auto`, `metis://cheap`, `metis://opus` are the documented "let routing decide" form and MUST NOT be prefixed.
+3. **Already `provider:name`** — any string containing `:` (other than the `metis://` form) passes through; if the registry doesn't know it, the routing chain falls through as documented in §5.3.
+4. **Bare name** — no `:`, not `metis://`: prepend the inbound shape's provider prefix. The current shape→prefix map is `{"openai": "openai", "anthropic": "anthropic"}`; other shapes pass through unchanged so the chain falls through cleanly.
+
+The normalization is **registry-aware on the alias step but otherwise unconditional**: a bare name unknown to the registry still ends up prefixed so the routing trace records the buyer's intent (and the price table can look up the canonical key) rather than stamping a bare string no analytics surface recognizes.
+
+What does NOT change:
+- The outbound JSON body still echoes the client's original `model` string verbatim. SDKs that compare the echo against what they sent (some clients do) continue to work.
+- The translator modules ([`translators.py`](../../apps/gateway/src/metis_gateway/translators.py) for OpenAI, [`endpoints/anthropic.py`](../../apps/gateway/src/metis_gateway/endpoints/anthropic.py) for Anthropic) remain pure data parsers — they don't depend on the registry. Normalization happens at the harness boundary because that's where both the inbound shape and the registry are in scope.
+- `PriceTable.compute_cost` is unchanged — it's a strict canonical-id lookup. The pre-existing `UnknownPricingModelError` still surfaces if a buyer points at a model that's registered for routing but missing from the price table.
+
 ---
 
 ## 5. Routing in the gateway path
@@ -229,7 +247,7 @@ OpenAI- and Anthropic-shape clients send `model: "<string>"` and expect a model 
 
 1. **Metis alias** (preferred): `model: "metis://auto"`, `model: "metis://cheap"`, `model: "metis://opus"`. Resolved by `registry.resolve_alias`.
 2. **Canonical `provider:name`**: `model: "anthropic:claude-opus-4-7"`. Identity-resolves.
-3. **Bare provider name**: `model: "gpt-4o"` or `model: "claude-opus-4-5"`. Resolved if the registry has it as an alias; otherwise the override is treated as "the client's literal name, accepted as a hint" and the chain falls through.
+3. **Bare provider name**: `model: "gpt-4o"` or `model: "claude-opus-4-5"`. Resolved if the registry has it as an alias; otherwise normalized to canonical form (`<inbound_shape>:<name>`) per §4.8 — if the registry knows that canonical id, slot 1 wins on the prefixed form; if not, the chain falls through.
 
 **Real-world consequence.** Mainstream OpenAI / Anthropic SDKs always include `model` in the request body, so `route.decided.chain` reports `policy=per_message_override`, `verdict=chose` on **every** gateway request unless the client deliberately omits `model`. The `rule`, `pattern`, `workspace_default`, and `global_default` slots are unreachable in that mode. This is correct (the spec interprets `model` as a per-message override), but worth knowing when reading gateway traces.
 

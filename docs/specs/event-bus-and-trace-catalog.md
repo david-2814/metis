@@ -1351,6 +1351,33 @@ inherited identity dimensions so the rotation surfaces in
 }
 ```
 
+#### `gateway.auth_failed`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 3 (Wave 14a)
+> **Actor:** SYSTEM
+> **Parent:** none (pre-routing rejection)
+> **Audit-flagged:** true (preserved for brute-force / credential-stuffing forensics)
+
+Emitted at the gateway's auth gate when an inbound request is rejected
+before reaching routing / adapters. Drives both
+`metis_gateway_auth_failures_total{reason}` (observability.md §3.2) and
+gives compliance / SIEM ingest a row per failed authentication. The
+payload deliberately omits the raw bearer token — only the
+SHA-256-hash prefix (8 hex chars) is persisted so operators can
+correlate repeated attempts of the same leaked credential without
+persisting the credential itself. `gateway_key_id` is set only on the
+`key_revoked` reason path (the token matched a known but inactive key).
+
+```python
+{
+    "reason": Literal["missing_token", "invalid_token", "key_revoked"],
+    "inbound_shape": Literal["openai", "anthropic"],
+    "token_hash_prefix": str | None,        # SHA-256 first 8 hex chars
+    "gateway_key_id": str | None,           # set on reason="key_revoked"
+}
+```
+
 ### 6.14 Trace domain
 
 #### `trace.swept`
@@ -1481,7 +1508,7 @@ The trace DB is a single SQLite file. Backups use SQLite's `VACUUM INTO` (atomic
 
 ### 7.6 Audit subset
 
-The Wave 12 audit log ([`audit-log.md`](audit-log.md)) is a filtered projection of this trace store. An **audit event** is a trace event whose type appears in `metis_core.events.payloads.AUDIT_EVENT_TYPES` — the security/compliance-relevant subset. The v1 set is nine types: `gateway.key_issued`, `gateway.key_revoked`, `gateway.key_rotated`, `gateway.quota_exceeded`, `quota.alert`, `routing.policy_invalid`, `memory.eviction`, `pattern.evicted`, `tool.confirmation_resolved`. See [`audit-log.md §4`](audit-log.md) for the per-type rationale.
+The Wave 12 audit log ([`audit-log.md`](audit-log.md)) is a filtered projection of this trace store. An **audit event** is a trace event whose type appears in `metis_core.events.payloads.AUDIT_EVENT_TYPES` — the security/compliance-relevant subset. The set is ten types after the Wave 14a `gateway.auth_failed` addition: `gateway.key_issued`, `gateway.key_revoked`, `gateway.key_rotated`, `gateway.quota_exceeded`, `gateway.auth_failed`, `quota.alert`, `routing.policy_invalid`, `memory.eviction`, `pattern.evicted`, `tool.confirmation_resolved`. (Other audit-flagged types — `trace.swept`, `analytics.user_exported`, `analytics.user_forgotten` — are documented in the §6.13 / §6.14 catalog entries and the audit-log spec; the count here is the catalog-domain subset for cross-reference.) See [`audit-log.md §4`](audit-log.md) for the per-type rationale.
 
 Three properties bind the audit subset to this spec:
 

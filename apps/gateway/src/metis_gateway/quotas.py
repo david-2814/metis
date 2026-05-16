@@ -305,7 +305,34 @@ class QuotaExceeded:
     limit_usd: Decimal
 
 
-def applicable_quotas(key: GatewayKey) -> list[tuple[IdentityKind, str, WindowKind, Decimal]]:
+@dataclass(frozen=True)
+class TierCaps:
+    """Billing-tier spend ceiling aggregated across an account's keys.
+
+    Wave 15 — pricing.md §5.5.4 lands a Free-tier `$5/month` cap so a
+    buyer who flips the gateway on but hasn't subscribed yet can't
+    accidentally bill themselves into the next bracket. The tier cap
+    aggregates spend across *every gateway key under the account*, so
+    issuing more keys doesn't open more headroom.
+
+    `account_id` is the buyer's account id; `key_ids` is the full set
+    of `gateway_key_id`s under that account (resolved from the signup
+    AccountStore at request time). When `key_ids` is empty the cap is
+    skipped — there's nothing to sum.
+
+    Pro / Enterprise tiers default unlimited at the tier layer; the
+    per-(user/team/key/workspace) caps remain the granular knob.
+    """
+
+    account_id: str
+    key_ids: tuple[str, ...]
+    daily_cap_usd: Decimal | None = None
+    monthly_cap_usd: Decimal | None = None
+
+
+def applicable_quotas(
+    key: GatewayKey,
+) -> list[tuple[IdentityKind, str, WindowKind, Decimal]]:
     """Enumerate every (identity, window, cap) tuple this key is subject to.
 
     v1 lands key-level caps only — `multi-user.md §5.1` describes
@@ -321,6 +348,45 @@ def applicable_quotas(key: GatewayKey) -> list[tuple[IdentityKind, str, WindowKi
     return out
 
 
+def _account_spend(
+    cache: RequestQuotaCache,
+    key_ids: tuple[str, ...],
+    *,
+    window: WindowKind,
+) -> Decimal:
+    """Sum spend across every gateway key in an account."""
+    total = Decimal("0")
+    for kid in key_ids:
+        status = cache.status(
+            identity_kind="key",
+            identity_value=kid,
+            window=window,
+            cap_usd=None,
+        )
+        total += status.used_usd
+    return total
+
+
+def _check_tier_cap(
+    *,
+    cache: RequestQuotaCache,
+    tier_caps: TierCaps,
+    window: WindowKind,
+    cap_usd: Decimal,
+) -> QuotaExceeded | None:
+    """Return a verdict when the account-wide cap is exceeded."""
+    used = _account_spend(cache, tier_caps.key_ids, window=window)
+    if used >= cap_usd:
+        scope: QuotaScope = "user_monthly" if window == "monthly" else "user_daily"
+        return QuotaExceeded(
+            scope=scope,
+            identity_kind="user",
+            current_usd=used,
+            limit_usd=cap_usd,
+        )
+    return None
+
+
 def enforce_quotas(
     *,
     bus: EventBus,
@@ -328,6 +394,7 @@ def enforce_quotas(
     key: GatewayKey,
     identity: Identity,
     inbound_shape: Literal["openai", "anthropic"],
+    tier_caps: TierCaps | None = None,
 ) -> QuotaExceeded | None:
     """Compute every applicable quota status and apply soft / hard policy.
 
@@ -339,7 +406,47 @@ def enforce_quotas(
 
     Hard caps short-circuit on first match — once one cap fires we
     don't bother computing the others, since the request is rejected.
+
+    `tier_caps` (Wave 15) — billing-tier cap aggregated across all
+    keys in an account. When present, it composes with the existing
+    per-key caps using the same enforcement order (any one cap
+    exhausted → short-circuit). The tier layer is opt-in; the v1
+    path with no `tier_caps` preserves the pre-Wave-15 behavior.
     """
+    # 1. Account-wide tier cap (Wave 15) — runs first so a Free-tier
+    # buyer who issued multiple keys can't slide past the cap.
+    if tier_caps is not None and tier_caps.key_ids:
+        if tier_caps.monthly_cap_usd is not None:
+            verdict = _check_tier_cap(
+                cache=cache,
+                tier_caps=tier_caps,
+                window="monthly",
+                cap_usd=tier_caps.monthly_cap_usd,
+            )
+            if verdict is not None:
+                _emit_quota_exceeded_from_verdict(
+                    bus=bus,
+                    verdict=verdict,
+                    identity=identity,
+                    inbound_shape=inbound_shape,
+                )
+                return verdict
+        if tier_caps.daily_cap_usd is not None:
+            verdict = _check_tier_cap(
+                cache=cache,
+                tier_caps=tier_caps,
+                window="daily",
+                cap_usd=tier_caps.daily_cap_usd,
+            )
+            if verdict is not None:
+                _emit_quota_exceeded_from_verdict(
+                    bus=bus,
+                    verdict=verdict,
+                    identity=identity,
+                    inbound_shape=inbound_shape,
+                )
+                return verdict
+
     quotas = applicable_quotas(key)
     if not quotas:
         return None
@@ -452,6 +559,41 @@ def _emit_quota_exceeded(
         )
     except Exception:
         logger.warning("failed to emit gateway.quota_exceeded", exc_info=True)
+
+
+def _emit_quota_exceeded_from_verdict(
+    *,
+    bus: EventBus,
+    verdict: QuotaExceeded,
+    identity: Identity,
+    inbound_shape: Literal["openai", "anthropic"],
+) -> None:
+    """Emit `gateway.quota_exceeded` from a Wave-15 tier-cap verdict.
+
+    Mirrors `_emit_quota_exceeded` but consumes the `QuotaExceeded` shape
+    directly (the tier-cap path doesn't have a `QuotaStatus` in hand).
+    """
+    payload = GatewayQuotaExceeded(
+        scope=verdict.scope,
+        current_usd=verdict.current_usd,
+        limit_usd=verdict.limit_usd,
+        inbound_shape=inbound_shape,
+        gateway_key_id=identity.gateway_key_id,
+        user_id=identity.user_id,
+        team_id=identity.team_id,
+    )
+    try:
+        bus.emit(
+            make_event(
+                type="gateway.quota_exceeded",
+                session_id=_synthetic_session_id(),
+                actor=Actor.SYSTEM,
+                payload=payload,
+                timestamp=datetime.now(UTC),
+            )
+        )
+    except Exception:
+        logger.warning("failed to emit gateway.quota_exceeded (tier-cap path)", exc_info=True)
 
 
 def _synthetic_session_id() -> str:

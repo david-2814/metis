@@ -192,9 +192,12 @@ nav:
       - Gateway deployment: gateway-deployment.md
       - Upgrade guide: operations/upgrade-guide.md
       - Incident response: operations/incident-response.md
+      - Observability runbook: operations/observability-runbook.md
       - Status page: operations/status-page.md
       - SLA template: operations/sla-template.md
       - Trace performance: operations/trace-performance.md
+      - Concierge onboarding: operations/concierge-onboarding.md
+      - GA readiness audit: operations/ga-readiness-audit.md
       - Compliance overview: operations/compliance-overview.md
       - SOC2 readiness: operations/soc2-readiness.md
       - Phase claim proposal: operations/phase-claim-proposal.md

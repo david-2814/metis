@@ -1,6 +1,6 @@
 # Observability — Prometheus `/metrics` surface
 
-**Status:** v1, shipped (gateway + server, 2026-05-15).
+**Status:** v1.1, shipped (gateway + server, 2026-05-15; Wave 14a extensions 2026-05-16).
 
 **Owners:** the same operators who run `metis serve` / `metis gateway` in
 production. The buyer's k8s ops team.
@@ -76,15 +76,59 @@ Labels are deliberately bounded:
 * `judge_kind` ∈ `heuristic | llm | hybrid`; `subject_kind` ∈
   `turn | tool_cycle | session | workload`.
 * `identity_kind` ∈ `key | user | team`.
+* `error_class` (LLM errors) is the 8-value `LLMErrorClass` enum;
+  `error_class` (tool failures) is the 8-value `ToolErrorClass` enum.
+* `tool_name` is bounded by the tool registry (a fixed registration
+  list at runtime startup; unmatched dispatches collapse to `unknown`).
+* `reason` (gateway auth failures) is the 3-value
+  `GatewayAuthFailureReason` enum.
 
-The only unbounded label is `identity_id` on `metis_quota_used_ratio`.
-That's intentional — quota ratios are interesting per-tenant, and a
-single deployment is unlikely to outgrow Prometheus's per-series
-budget on this dimension. If it does, the operator can drop the gauge
-in their scrape config.
+The unbounded labels are `identity_id` on `metis_quota_used_ratio` and
+`gateway_key_id` on `metis_gateway_key_cost_usd_total`. Both are
+deliberate — per-tenant ratios and per-key spend are interesting at
+operator-bounded cardinality (typically <100 keys per deployment) and
+a single deployment is unlikely to outgrow Prometheus's per-series
+budget on these dimensions. If it does, the operator can drop the
+gauge / counter in their scrape config or apply `metricRelabelings` in
+the helm chart's `monitoring.serviceMonitor.metricRelabelings`.
 
 Unknown / missing fields collapse to a single `unknown` bucket per
-label rather than proliferating series on a malformed event.
+label rather than proliferating series on a malformed event. The one
+exception is the per-identity null-bucket convention: agent-loop traffic
+without a `gateway_key_id` lands under `gateway_key_id="null"` (not
+`"unknown"`) per multi-user.md §3.4 so dashboards distinguish "no key"
+from "key field missing on event."
+
+### 3.2 Wave 14a extensions
+
+Production-grade observability additions per the GA-readiness checklist. All
+are additive; the v1 metric set is unchanged. Paired with the
+`PrometheusRule` alert templates in [`infra/gateway/helm/templates/prometheus-rules.yaml`](../../infra/gateway/helm/templates/prometheus-rules.yaml)
+and the runbook in [`docs/operations/observability-runbook.md`](../operations/observability-runbook.md).
+
+| Name | Type | Labels | Source event | Notes |
+|------|------|--------|--------------|-------|
+| `metis_routing_decision_latency_seconds` | histogram | (none) | `route.decided.elapsed_ms` | Wall-time of the routing engine itself. Buckets span 100µs–500ms (`_ROUTING_LATENCY_BUCKETS_SECONDS`). Typically sub-millisecond; tails out under K-NN cluster-tightening regimes. |
+| `metis_tool_call_latency_seconds` | histogram | `tool_name` | both `tool.completed` and `tool.failed` | Tool dispatcher wall-time. `tool_name` is correlated from the prior `tool.called` event via a bounded in-collector LRU (`_TOOL_NAME_CACHE_MAX=1000`); unmatched completes/fails collapse to `tool_name="unknown"`. Buckets span 5ms–30s. |
+| `metis_llm_call_errors_total` | counter | `provider`, `model`, `error_class` | `llm.call_failed` | Failure-only counter split out of `metis_llm_calls_total{status}` so rate() queries don't have to sum across the success+error label space. Same row simultaneously bumps the legacy `metis_llm_calls_total{status=<error_class>}` for back-compat with Wave-11 dashboards. |
+| `metis_tool_failures_total` | counter | `tool_name`, `error_class` | `tool.failed` | Same tool-name correlation as the latency histogram. `error_class` is the 8-value `ToolErrorClass`. |
+| `metis_gateway_auth_failures_total` | counter | `reason` | `gateway.auth_failed` | Auth-time rejections. `reason` ∈ `missing_token | invalid_token | key_revoked` — the closed `GatewayAuthFailureReason` enum. Drives the credential-stuffing / leaked-key alert. |
+| `metis_gateway_key_cost_usd_total` | counter | `gateway_key_id` | `llm.call_completed.cost_usd` | Per-key cost attribution. Calls without a `gateway_key_id` (agent-loop, pre-multi-user gateway keys) collapse under `gateway_key_id="null"` per multi-user.md §3.4. Drives the per-key spend-anomaly alert. |
+
+A new event type — `gateway.auth_failed` — backs the auth-failure counter.
+Payload schema in `event-bus-and-trace-catalog.md §6.x` (Wave 14a addition):
+
+```python
+class GatewayAuthFailed(msgspec.Struct, frozen=True):
+    reason: Literal["missing_token", "invalid_token", "key_revoked"]
+    inbound_shape: Literal["openai", "anthropic"]
+    token_hash_prefix: str | None = None   # SHA-256 first 8 hex chars
+    gateway_key_id: str | None = None      # set on reason="key_revoked"
+```
+
+The event is `PSEUDONYMOUS` sensitivity and `AUDIT_EVENT_TYPES`-flagged
+(audit-log.md §AUDIT_EVENT_TYPES) — the trace-retention sweep preserves
+brute-force / credential-stuffing forensics past the 90-day window.
 
 ## 4. Implementation
 
@@ -194,8 +238,42 @@ at the same `Service:port/metrics` if you don't run the operator.
   `bus.subscriber_unregistered(reason="removed_after_errors")` are
   catalog events with operational signal but aren't projected into
   `/metrics` yet. Cheap add when the demand surfaces.
-* **`metis_tool_calls_total{tool, success}`.** Useful for spotting
-  flaky tools or unexpected confirmation-deny rates. Out of scope for
-  v1; the trace DB has it.
+* ~~`metis_tool_calls_total{tool, success}`.~~ **Closed in Wave 14a** —
+  superseded by `metis_tool_call_latency_seconds{tool_name}` (histogram
+  carries success-vs-failure count via the `_count` series across both
+  `tool.completed` and `tool.failed`) and `metis_tool_failures_total{tool_name, error_class}`
+  for the failure breakdown.
 * **Exemplars.** OpenMetrics exemplars on the latency histogram could
   link a hot bucket back to a specific trace event id. Not in v1.
+* **Histogram exemplar links to runbook.** Once exemplars land, the
+  runbook entries in [`docs/operations/observability-runbook.md`](../operations/observability-runbook.md)
+  should embed `traceID` exemplars so a Grafana panel click jumps
+  straight to the matching trace event in the SQLite trace DB browser.
+
+## 9. Alert rule templates (Wave 14a)
+
+The helm chart ships [`infra/gateway/helm/templates/prometheus-rules.yaml`](../../infra/gateway/helm/templates/prometheus-rules.yaml)
+with four `PrometheusRule` templates per the production-grade observability
+checklist. All are off by default (`monitoring.prometheusRules.enabled: false`);
+the runbook in [`docs/operations/observability-runbook.md §4`](../operations/observability-runbook.md)
+walks operators through a one-week baseline-then-enable workflow rather than
+shipping pre-tuned thresholds that drift from real traffic.
+
+| Alert | Default threshold | Primary input |
+|---|---|---|
+| `MetisLLMCallLatencyP99High` | p99 > 30s, 5m | `metis_llm_call_latency_seconds_bucket` |
+| `MetisLLMErrorRateHigh` | error rate > 5%, 10m | `metis_llm_call_errors_total` / `metis_llm_calls_total` |
+| `MetisGatewayAuthFailureRateHigh` | > 0.1/sec, 5m | `metis_gateway_auth_failures_total` |
+| `MetisGatewayKeyCostSpike` | > $10/hour/key, 10m | `metis_gateway_key_cost_usd_total` |
+
+Each rule's `threshold`, `for`, `severity`, and `enabled` flags are exposed
+in `values.yaml` under `monitoring.prometheusRules.<rule>` so buyers can tune
+without editing the chart. The runbook covers the runtime triage path for
+each alert; see [`docs/operations/observability-runbook.md §2`](../operations/observability-runbook.md).
+
+The chart also ships a default Grafana dashboard at
+[`infra/gateway/helm/dashboards/metis-gateway.json`](../../infra/gateway/helm/dashboards/metis-gateway.json)
+that buyers import into their Grafana instance; it visualizes every metric
+in §3 plus the §3.2 extensions, partitioned into five rows
+(Traffic & Latency, Errors, Routing & Tools, Gateway Auth & Cost,
+Quotas & Active Keys + WAL).

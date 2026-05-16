@@ -69,6 +69,7 @@ class KeyListing:
     created_at: datetime | None
     revoked_at: datetime | None
     grace_period_until: datetime | None
+    customer_tier: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +257,7 @@ def list_keys(*, keystore_path: Path, now: datetime | None = None) -> list[KeyLi
                 created_at=_parse_iso(entry.get("created_at")),
                 revoked_at=revoked_at,
                 grace_period_until=grace_until,
+                customer_tier=entry.get("customer_tier"),
             )
         )
     return listings
@@ -542,6 +544,7 @@ def list_keys_command(
                 "grace_period_until": (
                     _iso(k.grace_period_until) if k.grace_period_until else None
                 ),
+                "customer_tier": k.customer_tier,
             }
             for k in listings
         ]

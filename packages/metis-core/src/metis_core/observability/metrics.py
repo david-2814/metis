@@ -25,6 +25,7 @@ content-type via `METRICS_CONTENT_TYPE`.
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from collections.abc import Callable
 from decimal import Decimal
 
@@ -52,6 +53,15 @@ _OBSERVED_EVENT_TYPES: frozenset[str] = frozenset(
         "quota.alert",
         "gateway.quota_exceeded",
         "eval.completed",
+        # Wave 14a — production-grade observability extensions:
+        # tool-call latency + failure attribution requires correlating
+        # tool.completed / tool.failed (no tool_name) back to tool.called
+        # (carries tool_name). The collector keeps a small bounded LRU.
+        "tool.called",
+        "tool.completed",
+        "tool.failed",
+        # Gateway auth-failure rate alert input.
+        "gateway.auth_failed",
     }
 )
 
@@ -59,6 +69,9 @@ _OBSERVED_EVENT_TYPES: frozenset[str] = frozenset(
 # Histogram buckets covering typical LLM latencies — short tool-cycle
 # completions through long thinking-block calls. Matches the order-of-
 # magnitude shape Prometheus expects for `_seconds` histograms.
+# Range spans 50ms (tiny cached completions) through 120s (long
+# multi-block thinking calls) — covers the observability.md §3 0.1-30s
+# target with headroom on both ends.
 _LATENCY_BUCKETS_SECONDS: tuple[float, ...] = (
     0.05,
     0.1,
@@ -72,6 +85,51 @@ _LATENCY_BUCKETS_SECONDS: tuple[float, ...] = (
     60.0,
     120.0,
 )
+
+
+# Routing slot evaluation is the cheapest hot path in the system — sync
+# Python over 7 slots + at most one K-NN SQLite read. Typical wall-time is
+# sub-millisecond; the tail catches the K-NN cluster-tightening regime
+# where pattern-store lookup dominates. Buckets span 100µs through 500ms.
+_ROUTING_LATENCY_BUCKETS_SECONDS: tuple[float, ...] = (
+    0.0001,
+    0.0005,
+    0.001,
+    0.0025,
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.5,
+)
+
+
+# Tool calls range from instant in-process file reads to bash invocations
+# that legitimately take tens of seconds (build / test loops). Buckets
+# share the LLM shape on the long end but add 5ms / 10ms on the short
+# end so file/memory tools don't all pile into the 50ms bucket.
+_TOOL_LATENCY_BUCKETS_SECONDS: tuple[float, ...] = (
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
+    30.0,
+)
+
+
+# Cap on the in-memory `tool_use_id → tool_name` correlation table.
+# Tools execute serially within a turn but a runaway turn (or a tool that
+# never completes) could leak entries; the LRU is the safety net. 1000 is
+# >> the largest fan-out we expect from a single turn's tool cycle.
+_TOOL_NAME_CACHE_MAX = 1000
 
 
 class MetricsCollector:
@@ -117,6 +175,12 @@ class MetricsCollector:
         self._trace_wal_bytes_getter = trace_wal_bytes_getter
         self._pattern_cache_getter = pattern_cache_getter
         self._handle: SubscriptionHandle | None = None
+        # Wave 14a — tool.completed / tool.failed don't carry `tool_name`
+        # in their payloads (event-bus-and-trace-catalog §6.4). We
+        # correlate via `tool_use_id` from tool.called using a bounded
+        # LRU. Entries land on `tool.called`, drain on
+        # tool.completed/tool.failed; the cap is the leak backstop.
+        self._tool_names: OrderedDict[str, str] = OrderedDict()
 
         self._llm_calls_total = Counter(
             "metis_llm_calls_total",
@@ -213,6 +277,64 @@ class MetricsCollector:
             labelnames=("workspace_id",),
             registry=self._registry,
         )
+        # Wave 14a — production-grade observability extensions per
+        # observability.md §3.2. Three additions:
+        #
+        # 1. Latency histograms for the routing decision and tool-call hot
+        #    paths (LLM latency was already shipped in Wave 11).
+        # 2. Dedicated error counters with the failure-class label split out
+        #    — distinct from the `metis_llm_calls_total{status}` rollup so
+        #    rate() queries don't pay the cardinality of mixing success +
+        #    error series in one histogram.
+        # 3. Gateway auth-failure counter for credential-stuffing / leaked-
+        #    key burn detection.
+        #
+        # Counters and histograms have process-startup cost only; gauges are
+        # polled. Cardinality is bounded by the same closed-enum discipline
+        # spelled out in observability.md §3.1.
+        self._routing_decision_latency_seconds = Histogram(
+            "metis_routing_decision_latency_seconds",
+            "Routing-engine wall-time per turn (route.decided.elapsed_ms).",
+            buckets=_ROUTING_LATENCY_BUCKETS_SECONDS,
+            registry=self._registry,
+        )
+        self._tool_call_latency_seconds = Histogram(
+            "metis_tool_call_latency_seconds",
+            "Tool dispatcher wall-time, observed from tool.completed and tool.failed.",
+            labelnames=("tool_name",),
+            buckets=_TOOL_LATENCY_BUCKETS_SECONDS,
+            registry=self._registry,
+        )
+        self._llm_call_errors_total = Counter(
+            "metis_llm_call_errors_total",
+            "LLM call failures observed on llm.call_failed, by error class.",
+            labelnames=("provider", "model", "error_class"),
+            registry=self._registry,
+        )
+        self._tool_failures_total = Counter(
+            "metis_tool_failures_total",
+            "Tool failures observed on tool.failed, by tool and error class.",
+            labelnames=("tool_name", "error_class"),
+            registry=self._registry,
+        )
+        self._gateway_auth_failures_total = Counter(
+            "metis_gateway_auth_failures_total",
+            "Gateway auth rejections, by reason (missing/invalid token, revoked key).",
+            labelnames=("reason",),
+            registry=self._registry,
+        )
+        # Per-key cost counter. Drives the `MetisGatewayKeyCostSpike` alert
+        # (prometheus-rules.yaml). Cardinality follows the same discipline
+        # as `metis_quota_used_ratio` — the identity dimension is operator-
+        # bounded (typically <100 keys per deployment). Calls without a
+        # `gateway_key_id` (agent-loop traffic / pre-multi-user gateway
+        # keys) collapse under the `null` bucket so dashboards stay one query.
+        self._gateway_key_cost_usd_total = Counter(
+            "metis_gateway_key_cost_usd_total",
+            "Cumulative LLM cost in USD attributed per gateway key.",
+            labelnames=("gateway_key_id",),
+            registry=self._registry,
+        )
 
     # ---- Lifecycle -----------------------------------------------------
 
@@ -301,6 +423,14 @@ class MetricsCollector:
             self._on_quota_event(event.type, payload)
         elif event.type == "eval.completed":
             self._on_eval_completed(payload)
+        elif event.type == "tool.called":
+            self._on_tool_called(payload)
+        elif event.type == "tool.completed":
+            self._on_tool_completed(payload)
+        elif event.type == "tool.failed":
+            self._on_tool_failed(payload)
+        elif event.type == "gateway.auth_failed":
+            self._on_gateway_auth_failed(payload)
 
     def _on_llm_completed(self, payload: dict) -> None:
         provider = _label(payload, "provider")
@@ -315,12 +445,25 @@ class MetricsCollector:
         cost_float = _coerce_cost(cost)
         if cost_float is not None and cost_float > 0:
             self._llm_cost_usd_total.labels(provider=provider, model=model).inc(cost_float)
+            # Per-key cost attribution. `gateway_key_id` is None for the
+            # in-process agent loop and pre-multi-user keys; the `null`
+            # bucket keeps it queryable in one shot vs. dropping the row.
+            gateway_key_id = _nullable_label(payload, "gateway_key_id")
+            self._gateway_key_cost_usd_total.labels(gateway_key_id=gateway_key_id).inc(cost_float)
 
     def _on_llm_failed(self, payload: dict) -> None:
         provider = _label(payload, "provider")
         model = _label(payload, "model")
-        status = _label(payload, "error_class", default="error")
-        self._llm_calls_total.labels(provider=provider, model=model, status=status).inc()
+        error_class = _label(payload, "error_class", default="error")
+        # `metis_llm_calls_total{status=error_class}` keeps the success +
+        # error roll-up parity with completed calls; the dedicated
+        # `metis_llm_call_errors_total` counter below carries the same
+        # data on its own series so alerting rules can rate() errors
+        # without summing across status labels.
+        self._llm_calls_total.labels(provider=provider, model=model, status=error_class).inc()
+        self._llm_call_errors_total.labels(
+            provider=provider, model=model, error_class=error_class
+        ).inc()
         latency_ms = payload.get("latency_ms")
         if isinstance(latency_ms, (int, float)):
             self._llm_call_latency_seconds.labels(provider=provider, model=model).observe(
@@ -340,6 +483,9 @@ class MetricsCollector:
             winning_slot=winning_slot,
             chosen_model=chosen_model,
         ).inc()
+        elapsed_ms = payload.get("elapsed_ms")
+        if isinstance(elapsed_ms, (int, float)):
+            self._routing_decision_latency_seconds.observe(float(elapsed_ms) / 1000.0)
 
     def _on_pattern_matched(self, payload: dict) -> None:
         chose_model = _label(payload, "chosen_model")
@@ -373,6 +519,60 @@ class MetricsCollector:
         subject_kind = _label(payload, "subject_kind")
         self._eval_verdicts_total.labels(judge_kind=judge_kind, subject_kind=subject_kind).inc()
 
+    def _on_tool_called(self, payload: dict) -> None:
+        """Record the tool_use_id → tool_name mapping for later correlation.
+
+        `tool.completed` and `tool.failed` don't carry `tool_name` directly
+        (event-bus-and-trace-catalog §6.4); this LRU lets the latency
+        histogram and failure counter both label by tool. The OrderedDict
+        is bounded by `_TOOL_NAME_CACHE_MAX` so a runaway turn that never
+        completes its tool calls can't leak memory.
+        """
+        tool_use_id = payload.get("tool_use_id")
+        tool_name = payload.get("tool_name")
+        if not isinstance(tool_use_id, str) or not isinstance(tool_name, str):
+            return
+        self._tool_names[tool_use_id] = tool_name
+        self._tool_names.move_to_end(tool_use_id)
+        while len(self._tool_names) > _TOOL_NAME_CACHE_MAX:
+            self._tool_names.popitem(last=False)
+
+    def _on_tool_completed(self, payload: dict) -> None:
+        tool_use_id = payload.get("tool_use_id")
+        tool_name = self._pop_tool_name(tool_use_id)
+        latency_ms = payload.get("latency_ms")
+        if isinstance(latency_ms, (int, float)):
+            self._tool_call_latency_seconds.labels(tool_name=tool_name).observe(
+                float(latency_ms) / 1000.0
+            )
+
+    def _on_tool_failed(self, payload: dict) -> None:
+        tool_use_id = payload.get("tool_use_id")
+        tool_name = self._pop_tool_name(tool_use_id)
+        error_class = _label(payload, "error_class", default="error")
+        self._tool_failures_total.labels(tool_name=tool_name, error_class=error_class).inc()
+        latency_ms = payload.get("latency_ms")
+        if isinstance(latency_ms, (int, float)):
+            self._tool_call_latency_seconds.labels(tool_name=tool_name).observe(
+                float(latency_ms) / 1000.0
+            )
+
+    def _pop_tool_name(self, tool_use_id: object) -> str:
+        """Resolve and drain a tool_use_id from the correlation cache.
+
+        Missing entries (the `tool.called` event was lost / out of order /
+        never seen — e.g. tests that emit only completed/failed) collapse
+        to `"unknown"` rather than mint a new label series.
+        """
+        if not isinstance(tool_use_id, str):
+            return "unknown"
+        name = self._tool_names.pop(tool_use_id, None)
+        return name if name is not None else "unknown"
+
+    def _on_gateway_auth_failed(self, payload: dict) -> None:
+        reason = _label(payload, "reason")
+        self._gateway_auth_failures_total.labels(reason=reason).inc()
+
 
 def _label(payload: dict, key: str, *, default: str = "unknown") -> str:
     """Coerce a payload field into a stable label string.
@@ -383,6 +583,20 @@ def _label(payload: dict, key: str, *, default: str = "unknown") -> str:
     raw = payload.get(key)
     if raw is None or raw == "":
         return default
+    return str(raw)
+
+
+def _nullable_label(payload: dict, key: str) -> str:
+    """Coerce a nullable identity field into a label string.
+
+    Distinct from `_label()` because the null bucket has a documented
+    meaning ("agent-loop traffic / pre-multi-user gateway key") and the
+    word `null` reads clearer than `unknown` for these dimensions.
+    Mirrors the analytics-api null-row convention (multi-user.md §3.4).
+    """
+    raw = payload.get(key)
+    if raw is None or raw == "":
+        return "null"
     return str(raw)
 
 

@@ -166,3 +166,76 @@ async def test_audit_event_does_not_perturb_metrics(client, runtime) -> None:
     for fam_name, samples in families.items():
         for s in samples:
             assert "gk_audit" not in s.labels.values() or fam_name != "metis_llm_calls"
+
+
+async def test_missing_auth_bumps_gateway_auth_failures_metric(client, runtime) -> None:
+    """A request with no Authorization header emits `gateway.auth_failed`
+    with `reason=missing_token`, which the metrics collector projects onto
+    `metis_gateway_auth_failures_total{reason="missing_token"}`.
+    """
+    r = await client.post(
+        "/v1/chat/completions",
+        json={"model": "haiku", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 401
+    await runtime.bus.drain()
+
+    families = _families((await client.get("/metrics")).text)
+    samples = [
+        s
+        for s in families["metis_gateway_auth_failures"]
+        if s.name == "metis_gateway_auth_failures_total"
+    ]
+    matching = [s for s in samples if s.labels.get("reason") == "missing_token"]
+    assert matching, "expected a missing_token row in the auth-failures counter"
+    assert matching[0].value >= 1.0
+
+
+async def test_invalid_bearer_bumps_gateway_auth_failures_metric(client, runtime) -> None:
+    """A wrong bearer token produces `reason=invalid_token` (the token
+    was offered but didn't match any active key).
+    """
+    r = await client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer gw_not_a_real_key"},
+        json={"model": "haiku", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 401
+    await runtime.bus.drain()
+
+    families = _families((await client.get("/metrics")).text)
+    samples = [
+        s
+        for s in families["metis_gateway_auth_failures"]
+        if s.name == "metis_gateway_auth_failures_total"
+    ]
+    matching = [s for s in samples if s.labels.get("reason") == "invalid_token"]
+    assert matching, "expected an invalid_token row in the auth-failures counter"
+    assert matching[0].value >= 1.0
+
+
+async def test_revoked_key_bumps_gateway_auth_failures_metric(
+    revoked_client, revoked_bearer_token, revoked_runtime
+) -> None:
+    """A revoked-key request produces `reason=key_revoked` and includes
+    the matched `gateway_key_id` on the event payload (so the audit
+    trail can correlate to the previously-issued key).
+    """
+    r = await revoked_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {revoked_bearer_token}"},
+        json={"model": "haiku", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 401
+    await revoked_runtime.bus.drain()
+
+    r2 = await revoked_client.get("/metrics")
+    families = _families(r2.text)
+    samples = [
+        s
+        for s in families["metis_gateway_auth_failures"]
+        if s.name == "metis_gateway_auth_failures_total"
+    ]
+    matching = [s for s in samples if s.labels.get("reason") == "key_revoked"]
+    assert matching, "expected a key_revoked row in the auth-failures counter"
+    assert matching[0].value >= 1.0

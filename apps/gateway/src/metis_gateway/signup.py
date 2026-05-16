@@ -235,6 +235,19 @@ class AccountStore:
     def get_by_id(self, account_id: str) -> Account | None:
         return self._accounts.get(account_id)
 
+    def account_for_key(self, key_id: str) -> Account | None:
+        """Reverse-lookup: which account owns a given gateway key?
+
+        Returns `None` for keys that pre-date the signup flow (CLI-issued
+        keys) or whose account binding was stripped. Linear scan over
+        `self._accounts` — fine for v1 (≤ a few hundred accounts);
+        production-scale deployments would want an inverted index.
+        """
+        for account in self._accounts.values():
+            if key_id in account.key_ids:
+                return account
+        return None
+
     def accounts(self) -> list[Account]:
         return list(self._accounts.values())
 

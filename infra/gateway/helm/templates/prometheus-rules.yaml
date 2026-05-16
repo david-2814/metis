@@ -1,0 +1,148 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.prometheusRules.enabled }}
+# PrometheusRule (monitoring.coreos.com/v1) — Wave 14a alert templates
+# per docs/operations/observability-runbook.md.
+#
+# These are TEMPLATES. Default thresholds are conservative starting points;
+# buyers should tune to their traffic shape. The recipe is:
+#
+#   1. Run the gateway under typical load for a week.
+#   2. Inspect the metric series in Grafana (dashboard JSON ships under
+#      `infra/gateway/helm/dashboards/`).
+#   3. Set thresholds to whatever is 2-3x the 95th percentile of normal.
+#
+# Rule overrides flow through `monitoring.prometheusRules.<rule>.{threshold,
+# for}` in values.yaml so the values can be tuned without editing the chart.
+#
+# Disable a single rule by setting its `.enabled: false` in values; the chart
+# leaves the rest in place.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "metis-gateway.fullname" . }}
+  {{- with .Values.monitoring.serviceMonitor.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "metis-gateway.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheusRules.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: metis-gateway.rules
+      interval: {{ .Values.monitoring.prometheusRules.interval | default "30s" }}
+      rules:
+        {{- with .Values.monitoring.prometheusRules.llmLatencyP99 }}
+        {{- if .enabled }}
+        # LLM call p99 latency over the rolling window. Alerts when the upstream
+        # provider is degraded (network blip, model-side queue saturation, or a
+        # specific (provider, model) outage). The threshold is in seconds —
+        # default 30s matches the buyer-facing SLA template's worst-case turn
+        # latency budget. Pair with `metis_llm_call_errors_total` to disambiguate
+        # latency-bound vs error-bound degradation.
+        - alert: MetisLLMCallLatencyP99High
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum by (provider, model, le) (
+                rate(metis_llm_call_latency_seconds_bucket[5m])
+              )
+            ) > {{ .threshold | default 30 }}
+          for: {{ .for | default "5m" }}
+          labels:
+            severity: {{ .severity | default "warning" }}
+            component: metis-gateway
+          annotations:
+            summary: "Metis LLM p99 latency > {{ .threshold | default 30 }}s ({{ "{{" }} $labels.provider {{ "}}" }}/{{ "{{" }} $labels.model {{ "}}" }})"
+            description: |
+              LLM call p99 latency has exceeded {{ .threshold | default 30 }}s for {{ .for | default "5m" }}
+              on provider={{ "{{" }} $labels.provider {{ "}}" }} model={{ "{{" }} $labels.model {{ "}}" }}.
+              Likely causes: upstream provider degraded, network path flapping,
+              or model-side queue saturation. Runbook:
+              docs/operations/observability-runbook.md#llm-latency-p99-high
+        {{- end }}
+        {{- end }}
+        {{- with .Values.monitoring.prometheusRules.llmErrorRate }}
+        {{- if .enabled }}
+        # LLM call error rate. Triggers on (provider, model) — so a single
+        # provider outage doesn't drown the dashboard in a sea of cross-provider
+        # alerts. `metis_llm_calls_total{status="ok"}` denominator is by
+        # provider+model only (the `status` dimension drops via `sum without`).
+        - alert: MetisLLMErrorRateHigh
+          expr: |
+            sum by (provider, model) (rate(metis_llm_call_errors_total[10m]))
+              /
+            sum by (provider, model) (rate(metis_llm_calls_total[10m]))
+              > {{ .threshold | default 0.05 }}
+          for: {{ .for | default "10m" }}
+          labels:
+            severity: {{ .severity | default "warning" }}
+            component: metis-gateway
+          annotations:
+            summary: "Metis LLM error rate > {{ .threshold | default 0.05 | mulf 100.0 }}% ({{ "{{" }} $labels.provider {{ "}}" }}/{{ "{{" }} $labels.model {{ "}}" }})"
+            description: |
+              LLM error rate for provider={{ "{{" }} $labels.provider {{ "}}" }} model={{ "{{" }} $labels.model {{ "}}" }}
+              is {{ "{{" }} $value | humanizePercentage {{ "}}" }} (threshold:
+              {{ .threshold | default 0.05 | mulf 100.0 }}% over {{ .for | default "10m" }}).
+              Likely causes: rate-limit throttling, model deprecation, network
+              instability, auth misconfiguration. Runbook:
+              docs/operations/observability-runbook.md#llm-error-rate-high
+        {{- end }}
+        {{- end }}
+        {{- with .Values.monitoring.prometheusRules.gatewayAuthFailureRate }}
+        {{- if .enabled }}
+        # Gateway auth failure rate alert. Fires on sustained elevated rejection
+        # rates — the signature of credential stuffing or a brute-force scan.
+        # The numerator counts ALL auth failures (`missing_token`, `invalid_token`,
+        # `key_revoked`); a small steady-state from misconfigured clients is
+        # normal, so the threshold is well above 0. Tune down once you've
+        # baselined your fleet's well-behaved client error rate.
+        - alert: MetisGatewayAuthFailureRateHigh
+          expr: |
+            sum(rate(metis_gateway_auth_failures_total[5m])) > {{ .threshold | default 0.1 }}
+          for: {{ .for | default "5m" }}
+          labels:
+            severity: {{ .severity | default "warning" }}
+            component: metis-gateway
+          annotations:
+            summary: "Metis gateway auth failures > {{ .threshold | default 0.1 }}/sec"
+            description: |
+              Gateway auth-failure rate is {{ "{{" }} $value | humanize {{ "}}" }}/sec
+              over the last {{ .for | default "5m" }} (threshold:
+              {{ .threshold | default 0.1 }}/sec). Likely causes: leaked key being
+              brute-forced (check `reason="invalid_token"` series), client
+              misconfig (`reason="missing_token"`), or staff rotating keys
+              without updating downstream clients (`reason="key_revoked"`).
+              Runbook: docs/operations/observability-runbook.md#gateway-auth-failure-rate-high
+        {{- end }}
+        {{- end }}
+        {{- with .Values.monitoring.prometheusRules.gatewayKeyCostSpike }}
+        {{- if .enabled }}
+        # Single-key spend anomaly. Triggers when one gateway_key's burn rate
+        # exceeds the configured per-hour cap. Spot a runaway script or a
+        # leaked key BEFORE the daily/monthly hard cap fires (quota.alert
+        # gives soft-warn, this alert gives anomaly-detection slot above that
+        # warning band). The threshold is dollars per hour.
+        - alert: MetisGatewayKeyCostSpike
+          expr: |
+            sum by (gateway_key_id) (
+              rate(metis_gateway_key_cost_usd_total{gateway_key_id!="null"}[1h]) * 3600
+            ) > {{ .threshold | default 10 }}
+          for: {{ .for | default "10m" }}
+          labels:
+            severity: {{ .severity | default "warning" }}
+            component: metis-gateway
+          annotations:
+            summary: "Metis gateway key spending > ${{ .threshold | default 10 }}/hr ({{ "{{" }} $labels.gateway_key_id {{ "}}" }})"
+            description: |
+              Gateway key {{ "{{" }} $labels.gateway_key_id {{ "}}" }} has sustained
+              spend over ${{ .threshold | default 10 }}/hour for the last {{ .for | default "10m" }}.
+              Likely causes: leaked key being used by a third party, a runaway
+              CI / cron loop that retries on failure, or a legitimate
+              tenant burst (confirm with the tenant before revoking).
+              Investigation recipe: `metis gateway list-keys`, then cross-check
+              via `/analytics/by_key?key={{ "{{" }} $labels.gateway_key_id {{ "}}" }}`.
+              Runbook: docs/operations/observability-runbook.md#gateway-key-cost-spike
+        {{- end }}
+        {{- end }}
+{{- end }}

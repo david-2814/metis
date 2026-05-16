@@ -1,7 +1,7 @@
 # Pricing Specification
 
-**Status:** Draft v1 — recommendation, awaiting owner sign-off / commercial decision
-**Last updated:** 2026-05-14
+**Status:** Ratified — §5.5.4 open-core gateway + per-seat Pro + enterprise %-of-savings add-on (2026-05-16)
+**Last updated:** 2026-05-16
 
 > Frames the commercial pricing model for the Metis product itself: gateway access, the analytics dashboard, multi-user identity, the upgrade-tier agent. Surveys the candidate models, names the trade-offs each one creates, and proposes one for the owner to ratify or reject. **The spec lays out the choice; the owner closes [`STRATEGY.md §6.8`](../STRATEGY.md).**
 >
@@ -512,11 +512,9 @@ Promises this spec makes that downstream specs and implementation must preserve.
 
 ## 14. Sign-off
 
-This spec is the recommendation only. It does not retire [`STRATEGY.md §6.8`](../STRATEGY.md) or land any STRATEGY.md edits beyond a pointer to this file. Those follow on owner ratification.
+**Ratified 2026-05-16** — owner accepted the §5.5.4 recommendation: open-core gateway + per-seat Pro + reserved enterprise %-of-savings add-on. Price points (per-seat $/month, %-of-savings rate, Free-tier spend cap floor) remain commercial decisions deferred to first-buyer triangulation; this spec ratifies the *model shape*, not the *numbers*. Implementation lands as Wave 15.
 
-When ratified (or revised-then-ratified), the STRATEGY.md edits queued are:
+STRATEGY.md edits landed alongside ratification:
 
-- **§5** — new dated entry: *"2026-XX-XX — Adopt pricing model (open-core + per-seat Pro + reserved enterprise %-of-savings add-on, per [`pricing.md`](specs/pricing.md))."*
-- **§6.8** — retire the question; add: *"Resolved 2026-XX-XX: open-core + per-seat Pro. See [`pricing.md`](specs/pricing.md)."*
-
-Until ratified, §6.8 reads: *"Specced; awaiting commercial decision. See [`pricing.md`](specs/pricing.md)."*
+- **§5** — dated entry: *"2026-05-16 — Adopt pricing model (open-core gateway + per-seat Pro + reserved enterprise %-of-savings add-on, per [`pricing.md`](specs/pricing.md))."*
+- **§6.8** — retired: *"Resolved 2026-05-16: open-core gateway + per-seat Pro, with reserved enterprise %-of-savings add-on. See [`pricing.md`](specs/pricing.md)."*

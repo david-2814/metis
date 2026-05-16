@@ -541,6 +541,41 @@ class GatewayQuotaExceeded(msgspec.Struct, frozen=True):
     team_id: str | None = None
 
 
+# Reasons the gateway can reject an inbound request at the auth gate.
+# Closed set — drives the `metis_gateway_auth_failures_total{reason}` label
+# (observability.md §3) and is bounded for cardinality control. `key_revoked`
+# covers both explicit revocations and grace-period-expired keys (auth-time
+# `is_active(now=…)` returns False in both cases).
+GatewayAuthFailureReason = Literal[
+    "missing_token",
+    "invalid_token",
+    "key_revoked",
+]
+
+
+class GatewayAuthFailed(msgspec.Struct, frozen=True):
+    """`gateway.auth_failed` per observability.md §3.
+
+    Emitted at the gateway's auth gate when an inbound request is rejected
+    before reaching routing / adapters. Drives both
+    ``metis_gateway_auth_failures_total{reason}`` (operator-facing rate alert)
+    and gives compliance / SIEM ingest a row per failed authentication.
+
+    The payload deliberately omits the raw bearer token; it carries only
+    the rejection ``reason``, the ``inbound_shape`` of the rejected
+    request, and the SHA-256-hash prefix of the offered token (``token_hash_prefix``,
+    8 hex chars) so operators can correlate repeated attempts of the same
+    leaked credential without persisting the credential itself. ``gateway_key_id``
+    is populated only when the token matched a known key (i.e. the
+    ``key_revoked`` reason path).
+    """
+
+    reason: GatewayAuthFailureReason
+    inbound_shape: InboundShapeLiteral
+    token_hash_prefix: str | None = None
+    gateway_key_id: str | None = None
+
+
 # --- §6.8 Delegate domain (delegation.md §9; v1 MVP) -----------------------
 
 DelegateTierLiteral = Literal["fast", "balanced", "deep"]
@@ -639,6 +674,9 @@ class GatewayKeyIssued(msgspec.Struct, frozen=True):
     allowed_models: list[str] | None = None
     daily_cap_usd: Decimal | None = None
     monthly_cap_usd: Decimal | None = None
+    # Wave 14b concierge-onboarding tag — optional. Pre-Wave-14b key
+    # issuances omit this; pre-existing audit consumers ignore the field.
+    customer_tier: str | None = None
 
 
 class GatewayKeyRevoked(msgspec.Struct, frozen=True):
@@ -733,6 +771,127 @@ class TraceSwept(msgspec.Struct, frozen=True):
     swept_at: datetime
 
 
+# --- §6.15 Billing domain (Wave 15 — pricing.md §5.5.4) --------------------
+#
+# Six audit-flagged events that record the lifecycle of a paying account's
+# subscription. The bus never sees a Stripe API key, payment-method id, or
+# customer card data — only the opaque ids the gateway needs to correlate
+# billing state with the account record (audit-log.md §5.1).
+#
+# `account_id` mirrors `apps/gateway/.../signup.py`'s `ACCOUNT_ID_PREFIX`-
+# prefixed ULID; pre-Wave-15 accounts get a `None` `stripe_customer_id`.
+# `tier` is the post-transition tier ("free" / "pro" / "enterprise") so a
+# replay of the bus reconstructs the entitlement state without needing
+# the BillingStore. `current_period_end` lets dashboards chart upcoming
+# renewals without round-tripping to Stripe.
+
+
+BillingTier = Literal["free", "pro", "enterprise"]
+
+
+class BillingCustomerCreated(msgspec.Struct, frozen=True):
+    """`billing.customer_created` — Stripe customer object created.
+
+    Stamped once per account after the first successful `Customer.create`
+    against Stripe. Re-runs against an already-created customer don't
+    re-emit (idempotent on the account side).
+    """
+
+    account_id: str
+    stripe_customer_id: str
+    email_sha256: str
+    created_at: datetime
+
+
+class BillingSubscriptionCreated(msgspec.Struct, frozen=True):
+    """`billing.subscription_created` — new Subscription against an account.
+
+    `tier` distinguishes Pro vs Enterprise. `pro_seats` is the
+    `SubscriptionItem.quantity` for the per-seat line; `enterprise_addon`
+    is True when the metered usage SubscriptionItem for the %-of-savings
+    add-on is attached at creation (Pro-only subs leave it False).
+    """
+
+    account_id: str
+    stripe_customer_id: str
+    stripe_subscription_id: str
+    tier: BillingTier
+    pro_seats: int
+    enterprise_addon: bool
+    current_period_end: datetime
+    created_at: datetime
+
+
+class BillingSubscriptionUpdated(msgspec.Struct, frozen=True):
+    """`billing.subscription_updated` — tier change, seat count, or status.
+
+    Stamped on every Stripe `customer.subscription.updated` webhook the
+    gateway processes. `previous_status` / `status` are Stripe's literal
+    status strings (active / past_due / unpaid / canceled / incomplete /
+    incomplete_expired / trialing / paused).
+    """
+
+    account_id: str
+    stripe_subscription_id: str
+    previous_status: str
+    status: str
+    previous_tier: BillingTier
+    tier: BillingTier
+    pro_seats: int
+    current_period_end: datetime
+    updated_at: datetime
+
+
+class BillingSubscriptionCanceled(msgspec.Struct, frozen=True):
+    """`billing.subscription_canceled` — subscription terminated.
+
+    Covers both `cancel_at_period_end=True` (which lands as a webhook on
+    period boundary) and immediate cancellation (`cancel_at` set, status
+    flips to `canceled`).
+    """
+
+    account_id: str
+    stripe_subscription_id: str
+    canceled_at: datetime
+    reason: Literal["user_requested", "payment_failed", "admin"]
+    final_period_end: datetime
+
+
+class BillingInvoicePaid(msgspec.Struct, frozen=True):
+    """`billing.invoice_paid` — `invoice.payment_succeeded` webhook fired.
+
+    The amount is what Stripe collected, in cents to avoid float drift on
+    cent-level math. The webhook carries the line-item breakdown but v1
+    rolls it up to a single `amount_paid_cents` per invoice; the breakdown
+    survives in Stripe and the BillingStore's processed-event log.
+    """
+
+    account_id: str
+    stripe_subscription_id: str
+    stripe_invoice_id: str
+    amount_paid_cents: int
+    paid_at: datetime
+
+
+class BillingInvoicePaymentFailed(msgspec.Struct, frozen=True):
+    """`billing.invoice_payment_failed` — Stripe couldn't collect.
+
+    Stripe retries on its own schedule per the dunning settings; the
+    gateway just records the audit trail. After Stripe exhausts its
+    retries the subscription transitions to `unpaid` or `canceled`
+    via `customer.subscription.updated` — that fires a separate event.
+    `attempt_count` mirrors Stripe's `Invoice.attempt_count` so dashboards
+    can chart "how many tries before churn."
+    """
+
+    account_id: str
+    stripe_subscription_id: str
+    stripe_invoice_id: str
+    amount_due_cents: int
+    attempt_count: int
+    failed_at: datetime
+
+
 # --- §6.10 Bus meta-events --------------------------------------------------
 
 
@@ -798,6 +957,8 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     # gateway quota (Phase 3 — multi-user.md §5, §7.2)
     "quota.alert": (QuotaAlert, Sensitivity.PSEUDONYMOUS),
     "gateway.quota_exceeded": (GatewayQuotaExceeded, Sensitivity.PSEUDONYMOUS),
+    # gateway auth (Wave 14a — observability.md §3 — error-rate alerts)
+    "gateway.auth_failed": (GatewayAuthFailed, Sensitivity.PSEUDONYMOUS),
     # delegate (Phase 4 v1 MVP — delegation.md §9)
     "delegate.started": (DelegateStarted, Sensitivity.PSEUDONYMOUS),
     "delegate.completed": (DelegateCompleted, Sensitivity.PSEUDONYMOUS),
@@ -809,6 +970,13 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     # GDPR / portability audit (analytics-api.md §4.10, multi-user.md §7.4.4)
     "analytics.user_exported": (AnalyticsUserExported, Sensitivity.PSEUDONYMOUS),
     "analytics.user_forgotten": (AnalyticsUserForgotten, Sensitivity.PSEUDONYMOUS),
+    # billing (Wave 15 — pricing.md §5.5.4)
+    "billing.customer_created": (BillingCustomerCreated, Sensitivity.PSEUDONYMOUS),
+    "billing.subscription_created": (BillingSubscriptionCreated, Sensitivity.PSEUDONYMOUS),
+    "billing.subscription_updated": (BillingSubscriptionUpdated, Sensitivity.PSEUDONYMOUS),
+    "billing.subscription_canceled": (BillingSubscriptionCanceled, Sensitivity.PSEUDONYMOUS),
+    "billing.invoice_paid": (BillingInvoicePaid, Sensitivity.PSEUDONYMOUS),
+    "billing.invoice_payment_failed": (BillingInvoicePaymentFailed, Sensitivity.PSEUDONYMOUS),
     # bus
     "bus.subscriber_registered": (BusSubscriberRegistered, Sensitivity.PSEUDONYMOUS),
     "bus.subscriber_unregistered": (BusSubscriberUnregistered, Sensitivity.PSEUDONYMOUS),
@@ -841,6 +1009,10 @@ AUDIT_EVENT_TYPES: frozenset[str] = frozenset(
         "gateway.key_revoked",
         "gateway.key_rotated",
         "gateway.quota_exceeded",
+        # Wave 14a — observability.md §3. Audit-flagged so brute-force /
+        # credential-stuffing attempts are preserved past the retention
+        # window for incident-response forensics.
+        "gateway.auth_failed",
         "quota.alert",
         "routing.policy_invalid",
         "memory.eviction",
@@ -855,6 +1027,16 @@ AUDIT_EVENT_TYPES: frozenset[str] = frozenset(
         # audit-trail records for subject-rights operations.
         "analytics.user_exported",
         "analytics.user_forgotten",
+        # Wave 15 — pricing.md §5.5.4. Billing lifecycle is SOC2/finance-
+        # audit territory; the retention sweep must preserve every record
+        # of customer / subscription / invoice state for the lifetime of
+        # the trace DB, not just the 90-day window.
+        "billing.customer_created",
+        "billing.subscription_created",
+        "billing.subscription_updated",
+        "billing.subscription_canceled",
+        "billing.invoice_paid",
+        "billing.invoice_payment_failed",
     }
 )
 

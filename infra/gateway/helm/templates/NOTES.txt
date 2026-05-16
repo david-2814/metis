@@ -15,6 +15,9 @@ What you got:
   {{- if .Values.persistence.enabled }}
   PVC             : {{ include "metis-gateway.pvcName" . }}  ({{ .Values.persistence.size }})
   {{- end }}
+  {{- if .Values.statusPage.enabled }}
+  Status page     : {{ include "metis-gateway.statusPage.fullname" . }}  (Uptime Kuma, in-cluster)
+  {{- end }}
   Provider secret : {{ include "metis-gateway.providerSecretName" . }}
   Keystore source : {{ if .Values.keystore.existingSecret }}Secret/{{ .Values.keystore.existingSecret }}{{ else }}ConfigMap/{{ include "metis-gateway.keystoreConfigMapName" . }} (seed){{ end }}
 
@@ -73,6 +76,24 @@ Next steps:
    - In-cluster: point clients at  http://{{ include "metis-gateway.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
    - port-forward (see step 2) for local dev / smoke
    - Enable ingress.* values and add a TLS terminator before exposing publicly
+{{- end }}
+
+{{- if .Values.statusPage.enabled }}
+
+4. Status page (Uptime Kuma) is enabled. Reach it via:
+
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "metis-gateway.statusPage.fullname" . }} 3001:{{ .Values.statusPage.service.port }}
+   # then open http://127.0.0.1:3001 to complete first-boot setup
+
+   {{- if .Values.statusPage.ingress.enabled }}
+   Public URL: https://{{ .Values.statusPage.ingress.host }}
+   (TLS cert must be in place — see docs/operations/status-page.md "Live deployment").
+   {{- end }}
+
+   First-boot configuration: paste the monitor + incident templates from
+   docs/operations/status-page.md "Helm sidecar option" into the Kuma UI.
+   Trade-off: a cluster-wide outage takes this status page down too;
+   that's the documented Tier B posture, not a chart bug.
 {{- end }}
 
 Production-readiness notes are in docs/gateway-deployment.md ("Kubernetes
