@@ -47,3 +47,25 @@ services:
       # per-request stateless — it does not write to the workspace.
       - ${METIS_WORKSPACE:-./}:/workspace:ro
     restart: unless-stopped
+
+  # Documentation site (mkdocs-material). Renders docs/ + mkdocs.yml at
+  # image-build time and serves the static output. Public content; no
+  # loopback constraint. Gated behind the `docs` profile so `docker
+  # compose up` (no profile) keeps just the gateway running:
+  #
+  #   docker compose --profile docs up docs
+  #   open http://127.0.0.1:8423/
+  docs:
+    build:
+      context: .
+      dockerfile: infra/docs/Dockerfile
+    image: metis-docs:latest
+    container_name: metis-docs
+    profiles:
+      - docs
+    environment:
+      METIS_DOCS_HOST: "0.0.0.0"
+      METIS_DOCS_PORT: "${METIS_DOCS_PORT:-8423}"
+    ports:
+      - "${METIS_DOCS_PORT:-8423}:8423"
+    restart: unless-stopped

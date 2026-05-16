@@ -1,0 +1,73 @@
+{
+  "name": "ROOT",
+  "tombstoned": false,
+  "reports": [
+    {
+      "name": "Alice",
+      "tombstoned": false,
+      "reports": [
+        {
+          "name": "Bob",
+          "tombstoned": false,
+          "reports": [
+            {"name": "Carol", "tombstoned": false, "reports": []},
+            {"name": "Dan", "tombstoned": false, "reports": [
+              {"name": "Eve", "tombstoned": false, "reports": [
+                {"name": "Target", "tombstoned": false, "reports": []}
+              ]}
+            ]}
+          ]
+        },
+        {
+          "name": "Frank",
+          "tombstoned": true,
+          "reports": [
+            {"name": "Target", "tombstoned": false, "reports": []}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Gina",
+      "tombstoned": false,
+      "reports": [
+        {"name": "Hank", "tombstoned": false, "reports": []},
+        {"name": "Iris", "tombstoned": false, "reports": [
+          {"name": "Jack", "tombstoned": false, "reports": []},
+          {"name": "Kate", "tombstoned": false, "reports": [
+            {"name": "Leo", "tombstoned": false, "reports": [
+              {"name": "Mary", "tombstoned": false, "reports": [
+                {"name": "Deep", "tombstoned": false, "reports": []}
+              ]}
+            ]}
+          ]}
+        ]}
+      ]
+    },
+    {
+      "name": "Nora",
+      "tombstoned": false,
+      "reports": [
+        {"name": "Olive", "tombstoned": false, "reports": []},
+        {"name": "DUP", "tombstoned": false, "reports": [
+          {"name": "Pam", "tombstoned": false, "reports": []}
+        ]},
+        {"name": "Quinn", "tombstoned": false, "reports": [
+          {"name": "Rita", "tombstoned": false, "reports": [
+            {"name": "DUP", "tombstoned": false, "reports": []}
+          ]}
+        ]}
+      ]
+    },
+    {
+      "name": "Skip",
+      "tombstoned": true,
+      "reports": [
+        {"name": "Hidden", "tombstoned": false, "reports": []},
+        {"name": "DeeperHidden", "tombstoned": false, "reports": [
+          {"name": "AlsoHidden", "tombstoned": false, "reports": []}
+        ]}
+      ]
+    }
+  ]
+}

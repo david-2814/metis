@@ -217,13 +217,9 @@ def _parse_pattern(raw: Any, field: str, errors: list[str]) -> PatternConfig:
     if embedding_provider is not None and not isinstance(embedding_provider, str):
         errors.append(f"{field}.embedding_provider must be a string (got {embedding_provider!r})")
     if not isinstance(embedding_alpha, int | float) or not (0.0 <= embedding_alpha <= 1.0):
-        errors.append(
-            f"{field}.embedding_alpha must be in [0.0, 1.0] (got {embedding_alpha!r})"
-        )
+        errors.append(f"{field}.embedding_alpha must be in [0.0, 1.0] (got {embedding_alpha!r})")
     if fingerprint_version == "v2" and not embedding_provider:
-        errors.append(
-            f"{field}.fingerprint_version='v2' requires {field}.embedding_provider"
-        )
+        errors.append(f"{field}.fingerprint_version='v2' requires {field}.embedding_provider")
     # If we detected a v2-without-provider error above, fall back to v1 in
     # the constructed config so PatternConfig.__post_init__ doesn't raise
     # before the caller sees the aggregated errors via PolicyValidationError.

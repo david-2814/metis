@@ -31,7 +31,6 @@ from metis_core.patterns.embeddings import EmbeddingProvider
 from metis_core.patterns.fingerprint import (
     Fingerprint,
     FingerprintInputs,
-    attach_embedding_for_recording,
     compute_fingerprint,
 )
 from metis_core.patterns.store import PatternStore, RecordResult
@@ -92,6 +91,11 @@ class PatternEventSubscriber:
         self._workspace_resolver = workspace_resolver
         self._bus = bus
         self._fingerprint_builder = fingerprint_builder
+        # `embedder` is no longer used on the recording path — the embedding
+        # is now precomputed at turn start by the SessionManager's
+        # fingerprint_inputs_hook (apps/cli/src/metis_cli/runtime.py and
+        # pattern-store.md §16). The parameter is retained for backwards
+        # compatibility with callers that still pass it.
         self._embedder = embedder
         self._stores: dict[str, PatternStore] = {}
         # turn_id -> (route_decided event, fingerprint_inputs_override)
@@ -211,24 +215,15 @@ class PatternEventSubscriber:
             latency_ms=latency_ms,
             pricing_version=pricing_version,
         )
-        # v2 recording-side cache warm-up (pattern-store.md §16.6): once
-        # the outcome row is durable and `_turn_outcomes` is set, populate
-        # the embedding cache for this user message so future routing-time
-        # `_attach_cached_embedding` lookups hit. Done AFTER record() to
-        # avoid racing with `_on_eval_completed`, which depends on
-        # `_turn_outcomes[turn_id]` being set before it fires.
-        if (
-            self._embedder is not None
-            and getattr(store, "fingerprint_version", "v1") == "v2"
-            and inputs.embedding is None
-            and inputs.user_message_text
-        ):
-            try:
-                await attach_embedding_for_recording(
-                    inputs, store=store, embedder=self._embedder
-                )
-            except Exception:
-                logger.exception("pattern subscriber: attach_embedding_for_recording failed")
+        # The recording path is purely synchronous: by the time turn.completed
+        # fires, the SessionManager's fingerprint_inputs_hook has already
+        # awaited `attach_embedding_for_recording` (at turn start) and stored
+        # the embedded inputs via `set_fingerprint_inputs`. So `inputs` here
+        # already carries `embedding` for v2 sessions and `compute_fingerprint`
+        # produces a HYBRID row above. No await happens between record() and
+        # `_turn_outcomes[turn_id]` being set, so the per-turn eval cascade
+        # (turn.completed → eval.completed → update_score) cannot race ahead
+        # of the outcome key (benchmarks/RESULTS.md §A3-rev4 Q1).
 
     async def _on_eval_completed(self, event: Event) -> None:
         payload = event.payload

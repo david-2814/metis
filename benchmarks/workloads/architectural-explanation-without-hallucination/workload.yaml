@@ -17,6 +17,12 @@ description: >-
   multiple real-symbol entry points so the score reflects whether the
   agent opened the files, not whether it copied one specific phrase.
 suite_version: 1
+# Per the §A3-rev6 cross-run audit (RESULTS.md §A3-rev6): haiku 1.000 /
+# sonnet 1.000 / gap +0.000 across §A3-rev3..rev6 patterns DBs. This
+# workload is a hallucination control (both grounded models pass); it
+# is intentionally NOT a haiku-vs-sonnet differentiator. Kept on disk
+# and runnable by name; excluded from the default v2 suite.
+signal_strength: marginal
 turns:
   - prompt: >-
       The directory `routing/` in this workspace is a snapshot of

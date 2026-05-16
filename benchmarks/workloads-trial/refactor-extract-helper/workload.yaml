@@ -1,0 +1,64 @@
+name: refactor-extract-helper
+description: >-
+  Buyer-trial workload (separate from the project benchmark suite under
+  benchmarks/workloads/). Two functions in `prices.py` share quantization,
+  thousands-separator, and sign-placement logic that was copy-pasted between
+  them. The agent reads `prices.py` + `test_prices.py`, extracts the
+  duplicated logic into a private helper, and verifies the existing tests
+  still pass. Realistic shape, ~$0.05-0.10 against haiku, runs in <2 minutes.
+  Designed for a buyer to validate cost attribution + savings end-to-end
+  via the gateway without committing to the full benchmark suite.
+suite_version: 1
+turns:
+  - prompt: >-
+      Read `prices.py` and `test_prices.py` in this workspace. In one short
+      paragraph (3-5 sentences), name the two public functions that share
+      logic and describe the duplicated region you would extract. Mention
+      at least one specific behavior they have in common (rounding,
+      thousands separator, or negative-sign placement). Do not edit any
+      files yet.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Now refactor `prices.py` so the duplicated formatting logic lives in
+      a single private helper. The helper should be the smallest extraction
+      that removes the duplication; both `format_price_usd` and
+      `format_price_eur` should call it. Don't edit `test_prices.py`. Keep
+      the public API (function names, signatures, return values) byte-for-
+      byte identical to the existing behavior — every test in
+      `test_prices.py` must still pass.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 8
+  - prompt: >-
+      Run the test suite from the workspace root with `python -m pytest
+      test_prices.py -q` and report the exact final summary line verbatim.
+      Do not edit any files.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 3
+      contains_substring: "passed"
+expect:
+  max_total_cost_usd: 0.10
+  min_llm_calls: 3
+  max_hard_failures: 0
+evaluate:
+  rubric: hybrid
+  llm_judge_model: anthropic:claude-haiku-4-5
+  # Real symbols / behaviors a grounded refactor will reference. Mix
+  # of public-API names and the named behaviors the duplicated region
+  # implements. An agent that opened the files will name several;
+  # one that hallucinated will miss most.
+  grounding_tokens:
+    - "format_price_usd"
+    - "format_price_eur"
+    - "Decimal"
+    - "passed"
+  # Plausible-but-fabricated names a hallucinating agent would invent
+  # (each follows naming conventions for "price formatter" but is NOT
+  # in `prices.py`). Presence of any is positive evidence of fabrication.
+  forbidden_grounding:
+    - "PriceFormatter"
+    - "CurrencyRenderer"
+    - "format_currency"

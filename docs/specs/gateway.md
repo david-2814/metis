@@ -65,9 +65,26 @@ Deferred to v1.1+: `/v1/models` (OpenAI-shape model list), `/v1/embeddings`, `/v
 
 ### 3.2 Network posture
 
-The gateway is `loopback-only by default in v1`, matching `metis serve`'s safety posture ([`server-api.md §3.1`](server-api.md)). `run_gateway()` silently rewrites any non-loopback bind to `127.0.0.1` until production-bind hardening lands (auth/rate limiting/audit; gateway.md §11). Operators who want the gateway in front of a TLS terminator on a real network must wait for that follow-on or run it themselves on top of the in-process Starlette app.
+The gateway defaults to loopback bind (`127.0.0.1`). Post-Wave-13 this
+is a **default, not a constraint**: the operator opts into a public
+bind explicitly via `--host 0.0.0.0` once the hardening Wave 13 + Wave
+11 layered on top of v1 is wired ([`gateway-hardening.md §2.1`](gateway-hardening.md)):
 
-This decision reverses the original draft's "default `0.0.0.0`" plan. The reason for the change: until per-key rate limits and audit logging exist, exposing the gateway on a real network gives an attacker with one leaked key a wide blast radius (unbounded model spend on the operator's provider account, plus unmetered prompt exfiltration). Loopback is a conservative starting point; the surface can be widened deliberately.
+| Hardening layer | Status | Owner |
+|---|---|---|
+| Per-key + per-IP rate limiting | Shipped (Wave 11, opt-in via `RateLimitConfig.enabled=True`) | In-process |
+| Audit-log export | Shipped (Wave 12, `metis audit export`) | In-process |
+| Connection-rate cap | Shipped (Wave 13, default 1000 concurrent) | In-process |
+| TLS termination | Shipped (Wave 13, `--tls-cert/--tls-key` for in-process; sidecar still recommended) | In-process or sidecar |
+| Key rotation / revocation | Shipped (Wave 10, `metis gateway rotate-key` / `revoke-key`) | In-process |
+| WAF / volumetric DDoS | **Buyer-owned** (edge CDN / cloud LB) | Upstream |
+
+Pre-Wave-13, `run_gateway()` silently rewrote any non-loopback bind to
+`127.0.0.1` because per-key rate limits and audit logging hadn't shipped
+yet. Both have since landed; the rewrite is removed. The operator
+opts in deliberately and gets a one-time `WARN` log line at boot
+summarizing whether in-process TLS / rate-limit middleware are on so
+the perimeter checklist stays honest.
 
 ### 3.3 Authentication
 
@@ -456,7 +473,119 @@ is a follow-on for operators.
 
 ---
 
-## 12. Follow-ons (next-up after Wave 10)
+## 12. Self-serve signup (Wave 14)
+
+Pre-Wave-14 the only way for a buyer to get a gateway key was for an
+operator to run `metis gateway issue-key` on the host. That works for
+in-VPC deployments where buyer-owned operators provision their own
+accounts, but it's friction for a SaaS-style on-ramp where the buyer
+arrives at a hosted gateway, wants to create an account themselves,
+get a key, and point their client at it — without filing a ticket.
+
+Wave 14 adds a thin self-serve surface on top of the existing keystore.
+Accounts are a Metis-issued record (no SSO in v1; SSO remains the v2
+upgrade from [`multi-user.md §8.1`](multi-user.md)); the first key on
+an account is issued the moment the account verifies its email. The
+account session token is then enough to manage subsequent keys via
+the same shape `metis gateway issue-key` / `revoke-key` already use,
+without ever touching the operator's shell.
+
+### 12.1 Endpoints
+
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/signup` | POST | none | Create a pending account; mint + email a verification magic link. |
+| `/signup/verify` | POST | magic-link token (one-shot) | Mark account verified, issue first gateway key, return key plaintext + session token. |
+| `/account/keys` | GET | session bearer | List the keys this account owns (joins on the keystore's `key_id`). |
+| `/account/keys` | POST | session bearer | Issue another key for this account, scoped to the account's workspace. |
+| `/account/keys/{key_id}` | DELETE | session bearer | Revoke a key the account owns. Wraps the existing `keystore_admin.revoke_key`. |
+
+All five mount only when the gateway is launched with
+`SignupConfig(enabled=True)` (CLI: `--enable-signup`; helm: `signup.enabled`).
+The endpoints return 404 when signup is off so in-VPC deployments don't
+have to firewall a public surface.
+
+### 12.2 Account record
+
+`accounts.json` lives at `~/.metis/gateway/accounts.json` (mode `0o600`,
+mirroring the keystore). Per-record shape:
+
+```python
+class Account(frozen=True):
+    account_id: str         # "acc_<ulid>"
+    email: str              # plaintext; only place it lives
+    email_sha256: str       # derived; used for dedup / future SSO bridge
+    workspace_path: str     # synthetic, "/metis/accounts/<account_id>/<name>"
+    user_id: str | None     # echoed onto every issued key
+    team_id: str | None     # same
+    created_at: datetime
+    verified_at: datetime | None
+    key_ids: tuple[str, ...]  # foreign keys into keys.json
+```
+
+The trace store never carries plaintext email (matches
+[`multi-user.md §3.3`](multi-user.md)). The signup payload carries email
+for the magic-link sender; the key it issues references the account via
+`user_id` only.
+
+### 12.3 Magic-link transport (stubbed in v1)
+
+The magic-link "email" is **logged to stdout** in Wave 14:
+
+```
+[magic-link signup] email=alice@example.com url=<dashboard>/signup/verify?token=mlk_... expires_in_seconds=1800
+```
+
+Wave 15 swaps in a real transport (SES / SendGrid pluggable). Logging
+to stdout is a development affordance — the operator MUST swap in real
+email before exposing `/signup` on the open internet. The logged URL
+isn't a security hole on a private network (only the operator can read
+stdout), but it would be one on a public host without the swap.
+
+Tokens are 32-byte URL-safe randoms, SHA-256-hashed before persisting.
+Defaults: magic-link TTL 30 minutes, session TTL 24 hours. Magic links
+are single-use; re-posting `/signup` against a still-pending account
+re-mints (so a user who lost the first email isn't stuck).
+
+### 12.4 Account session
+
+Verifying the magic link returns a `sess_<random>` token. The token is
+SHA-256-hashed before persisting (same shape as gateway keys). The
+account uses this token in `Authorization: Bearer sess_…` to call
+`/account/keys`. Sessions expire after `session_ttl` and are deleted
+on the next access; there is no refresh path in v1 (request another
+magic link to extend).
+
+### 12.5 What the operator still owns
+
+- **Real email delivery.** The Wave-14 stub is a placeholder, not a
+  feature; Wave 15 wires SES/SendGrid.
+- **Rate limiting `/signup`.** The existing per-IP rate limiter
+  ([`gateway-hardening.md §3`](gateway-hardening.md)) applies to signup
+  endpoints too; operators exposing the surface publicly should enable
+  it.
+- **Account-level billing / quota propagation.** Wave 15 territory.
+  Accounts in v1 inherit whatever quotas the operator embedded in the
+  underlying gateway-key issuance (none by default).
+- **Storage durability.** `accounts.json` is a local-FS file; SaaS
+  deployments running multi-pod must mount it on durable shared
+  storage (same RWX caveat as the trace DB; helm `signup.accountsPath`
+  is the mount point).
+
+### 12.6 Non-goals (still)
+
+1. **No SSO / OIDC / SAML in v1.** Same posture as multi-user.md §8.1 —
+   the IdP bridge lands when a buyer specifically asks.
+2. **No password auth.** Magic link is the only credential.
+3. **No HTTP key-rotation endpoint.** `metis gateway rotate-key` remains
+   CLI-only; `/account/keys` POST is mint-new, DELETE is revoke. A
+   rotation surface lands when there's evidence buyers want one.
+4. **No per-account dashboard UI.** `dashboard_url` is a placeholder
+   field on the verification response — the SPA itself ships later.
+
+---
+
+## 13. Follow-ons (next-up after Wave 14)
 
 1. **Multi-user / team-level rollups.** v1 stamps `gateway_key_id` per call; teams of keys, multi-workspace per key, and tenant aggregation are Phase 3 follow-on. Requires both a keystore schema change (group/team membership) and an analytics rollup dimension (`group_by=team` or a `team_id` filter).
 2. **Production-bind hardening.** Audit logging (who called what when — partially landed via `gateway.key_*` events in §11), per-key rate limiting, and CIDR allowlists are the gating items before the gateway can default to a non-loopback bind.
@@ -466,7 +595,7 @@ is a follow-on for operators.
 
 ---
 
-## 13. References
+## 14. References
 
 - [`canonical-message-format.md`](canonical-message-format.md) — `Message`, `ContentBlock`, persistence schema.
 - [`provider-adapter-contract.md`](provider-adapter-contract.md) — adapter interface, retry, error classes.

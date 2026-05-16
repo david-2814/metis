@@ -711,6 +711,26 @@ This is the worker-mode analogue of
 recommendation by default). The decision log records the rationale
 (§15).
 
+### 11.1 Validation workload
+
+A dedicated benchmark workload exercises the planner-driven delegation
+path end-to-end: [`benchmarks/workloads/multi-step-with-delegation/`](../../benchmarks/workloads/multi-step-with-delegation/).
+The workspace is a small auth module with three providers that share
+duplicated boilerplate; the prompt walks the planner through a
+plan-then-delegate refactor and the workload's `expect.min_delegate_calls`
+assertion gates on `delegate.started count ≥ 3`. The validation run
+(Wave 11; [`benchmarks/RESULTS.md §multi-step-with-delegation`](../../benchmarks/RESULTS.md))
+confirmed the full surface fires end-to-end: 3 worker sessions
+spawned, `parent_session_id` stamped correctly, slot 5 wins inside
+worker re-entry, slot 4 defers with `reason="delegate_request_in_flight"`
+on every worker, `delegate.completed` returns `success=True`, and the
+planner-deep / workers-fast cost shape lands ~23% savings against a
+sonnet-only baseline. The validation also surfaced the §5.6 active-model
+filter gotcha (see RESULTS.md): `--no-active-model` silently hides the
+`delegate` tool because `session.active_model is None` short-circuits
+the `can_delegate` check, so this workload must be invoked with
+`--model sonnet --delegation-policy sonnet-planner-haiku-worker`.
+
 ---
 
 ## 12. Evaluator integration

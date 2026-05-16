@@ -35,6 +35,7 @@ from metis_core.canonical.ids import new_message_id
 from metis_core.canonical.messages import Message
 from metis_core.events.envelope import Actor
 from metis_core.events.payloads import SessionEnded, make_event
+from metis_core.observability import METRICS_CONTENT_TYPE, MetricsCollector
 from metis_core.sessions.manager import UnknownAliasError
 from metis_core.tools.confirmation import ConfirmationDecision
 from starlette.applications import Starlette
@@ -86,6 +87,7 @@ class _AppState:
     executor: TurnExecutor
     confirmation_handler: RemoteConfirmationHandler
     analytics: AnalyticsStore
+    metrics: MetricsCollector
     started_at: datetime
 
 
@@ -100,6 +102,15 @@ def build_app(runtime: ChatRuntime) -> Starlette:
     hub = StreamingHub()
     confirmation = RemoteConfirmationHandler()
     runtime.dispatcher.set_confirmation_handler(confirmation)
+    metrics = MetricsCollector(
+        bus=runtime.bus,
+        session_count_getter=lambda: len(runtime.session_store.list_sessions()),
+        # docs/operations/trace-performance.md §WAL: gauge on the trace
+        # DB's WAL file size. Operators alert on sustained growth past
+        # 2-3x the auto-checkpoint threshold (default 32 MB).
+        trace_wal_bytes_getter=lambda: runtime.trace.wal_size_bytes(),
+    )
+    metrics.attach()
     state = _AppState(
         runtime=runtime,
         tokens=AttachTokenRegistry(),
@@ -107,6 +118,7 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         executor=TurnExecutor(runtime.manager, hub=hub),
         confirmation_handler=confirmation,
         analytics=AnalyticsStore(runtime.db_file),
+        metrics=metrics,
         started_at=datetime.now(UTC),
     )
 
@@ -124,6 +136,7 @@ def build_app(runtime: ChatRuntime) -> Starlette:
 
     routes = [
         Route("/health", _health, methods=["GET"]),
+        Route("/metrics", _metrics, methods=["GET"]),
         Route("/server/version", _server_version, methods=["GET"]),
         Route("/sessions", _post_session, methods=["POST"]),
         Route("/sessions", _list_sessions, methods=["GET"]),
@@ -162,6 +175,17 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         Route("/analytics/by_key", analytics_handlers.by_key, methods=["GET"]),
         Route("/analytics/by_team", analytics_handlers.by_team, methods=["GET"]),
         Route("/analytics/quality", analytics_handlers.quality, methods=["GET"]),
+        # GDPR portability + forget (analytics-api.md §4.10)
+        Route(
+            "/analytics/user/{user_id}/export",
+            analytics_handlers.user_export,
+            methods=["GET"],
+        ),
+        Route(
+            "/analytics/user/{user_id}/forget",
+            analytics_handlers.user_forget,
+            methods=["POST"],
+        ),
         WebSocketRoute("/sessions/{session_id}/stream", _stream),
         # Dashboard SPA — vanilla HTML + JS, served as static files from
         # `metis_server/static/`. Mounted last so API/WS routes take priority.
@@ -203,6 +227,18 @@ async def _health(request: Request) -> Response:
             ),
         }
     )
+
+
+async def _metrics(request: Request) -> Response:
+    """GET /metrics — Prometheus exposition for in-cluster scrapers.
+
+    Loopback-only by virtue of `metis serve`'s bind posture
+    (server-api.md §3.1). Production scrape goes through a
+    ServiceMonitor (helm chart `monitoring.enabled`).
+    """
+    st = _state(request)
+    body = st.metrics.expose()
+    return Response(content=body, media_type=METRICS_CONTENT_TYPE)
 
 
 async def _server_version(_request: Request) -> Response:

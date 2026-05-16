@@ -738,7 +738,7 @@ class SessionManager:
         max_output_tokens: int = 4096,
         memory_factory: Callable[[str], MemoryStore] | None = None,
         skill_store_factory: Callable[[str], Any] | None = None,
-        fingerprint_inputs_hook: Callable[[str, TurnContext], None] | None = None,
+        fingerprint_inputs_hook: Callable[[str, TurnContext], Awaitable[None] | None] | None = None,
     ) -> None:
         self._registry = registry
         self._routing = routing
@@ -1228,7 +1228,15 @@ class SessionManager:
         )
         if self._fingerprint_inputs_hook is not None:
             try:
-                self._fingerprint_inputs_hook(turn_id, ctx)
+                hook_result = self._fingerprint_inputs_hook(turn_id, ctx)
+                if inspect.isawaitable(hook_result):
+                    # v2 hooks await embedding compute here (pattern-store.md
+                    # §16; benchmarks/RESULTS.md §A3-rev4 Q1). Awaiting BEFORE
+                    # turn.started fires keeps the eval cascade race surface
+                    # closed: no `turn.completed` is in flight yet, so an
+                    # `eval.completed` cannot race ahead of `_turn_outcomes`
+                    # being set by the pattern subscriber.
+                    await hook_result
             except Exception:
                 logger.exception("fingerprint_inputs_hook failed for turn %s", turn_id)
         turn_started_event = self._emit_turn_started(

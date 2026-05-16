@@ -1351,6 +1351,44 @@ inherited identity dimensions so the rotation surfaces in
 }
 ```
 
+### 6.14 Trace domain
+
+#### `trace.swept`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 3 (Wave 12)
+> **Actor:** SYSTEM
+> **Parent:** none (one-shot operator action)
+> **Audit-flagged:** true (preserved by future sweeps; see §7.3)
+
+Emitted once per `metis trace prune` invocation (or per `CronJob`
+firing) after the `DELETE` statement returns. Reports the cutoff that
+was used, how many rows were removed, how many audit-flagged rows were
+exempted, and the oldest timestamp still in the DB so dashboards can
+chart "retention floor over time." `session_id` is the bus-lifecycle
+sentinel (`"system"`); `turn_id` is `null`.
+
+The event is itself audit-flagged in `PAYLOAD_REGISTRY`, so the
+sweep-history audit trail survives subsequent sweeps. See
+`trace-retention.md` for the operator contract and the retention
+sweep mechanics.
+
+```python
+{
+    "rows_deleted": int,
+    "rows_audit_exempt": int,
+    "cutoff_timestamp": datetime,
+    "oldest_kept_timestamp": datetime | None,  # None if DB is empty after sweep
+    "dry_run": bool,
+    "swept_at": datetime,
+}
+```
+
+In `dry_run=True` mode, the event is **not** emitted — only the
+in-memory `PurgeResult` is returned to the caller. Operators who want
+to record dry-run activity can grep CLI stdout or wire their own
+audit-trail outside the bus.
+
 ---
 
 ## 7. Persistence
@@ -1393,18 +1431,35 @@ The `sessions` table is defined in `canonical-message-format.md` §9.1 (sessions
 
 ### 7.3 Retention
 
-V1: unbounded retention. At single-user scale, even 100k events/month is small.
+Wave 12 lands time-based retention with a single global `retention_days`
+knob (default 90). Full contract in [`trace-retention.md`](trace-retention.md);
+the points relevant to this spec:
 
-Phase 3+: optional retention policy in config:
-```yaml
-trace_retention:
-  default_days: 365
-  by_type:
-    "llm.call_started": 90       # short retention for high-volume types
-    "llm.call_completed": 90
-```
+- **Sweep is out-of-process.** `metis trace prune` invoked by an
+  operator or a Kubernetes `CronJob` — never an in-process background
+  task in the gateway/server hot path.
+- **Cutoff predicate** is a single SQL `DELETE WHERE timestamp_us < ?
+  AND type NOT IN (<audit_types>)`, riding the
+  `idx_events_timestamp_us` index added in trace-retention.md §4.
+- **Audit exemption.** Event types whose `PAYLOAD_REGISTRY` entry is
+  flagged `audit=True` (Wave 12a-1) are never deleted, regardless of
+  age. This is the bridge between the per-event sensitivity floor
+  (§4.4) and the compliance posture in STRATEGY.md §2 — sensitivity
+  controls *how* an event can be projected; the audit flag controls
+  *when* it can be deleted.
+- **`trace.swept` records every sweep** (§6.14) with row counts, the
+  cutoff, and the oldest kept timestamp. The event is itself
+  audit-flagged so the sweep history survives subsequent sweeps.
+- **Per-type retention** (the pre-Wave-12 placeholder sketched a
+  `by_type` map) is deferred. v1 ships a single global cutoff;
+  per-type overrides revisit only if an operator names a specific
+  compliance need.
 
-Retention runs as a batch task, deletes oldest events past the threshold. Pattern store outcomes are computed before retention purges, so analytics are not lost.
+Pattern-store outcomes are unaffected — `PatternStore` already has its
+own bounded eviction (pattern-store.md §6) and writes per-row
+aggregates that survive trace-event pruning. Session-message retention
+is a separate concern owned by `SqliteSessionStore` and is not touched
+by trace sweeps.
 
 ### 7.4 Virtual columns
 
@@ -1423,6 +1478,18 @@ The trace DB is a single SQLite file. Backups use SQLite's `VACUUM INTO` (atomic
 **Overwrite protection.** Both backup and restore refuse to clobber an existing destination by default. The CLI exposes `--force` on `metis restore` for the "replace a corrupt DB" flow; the library's `restore(..., allow_overwrite=True)` is the matching opt-in.
 
 **Backup metadata.** `BackupResult` (returned by `backup()` and printed by the CLI) captures: source path, dest path, byte count, schema version, event count, oldest/newest event timestamps. The CLI output is deterministic — no random ids — so operators can checksum it alongside the backup as a paper trail.
+
+### 7.6 Audit subset
+
+The Wave 12 audit log ([`audit-log.md`](audit-log.md)) is a filtered projection of this trace store. An **audit event** is a trace event whose type appears in `metis_core.events.payloads.AUDIT_EVENT_TYPES` — the security/compliance-relevant subset. The v1 set is nine types: `gateway.key_issued`, `gateway.key_revoked`, `gateway.key_rotated`, `gateway.quota_exceeded`, `quota.alert`, `routing.policy_invalid`, `memory.eviction`, `pattern.evicted`, `tool.confirmation_resolved`. See [`audit-log.md §4`](audit-log.md) for the per-type rationale.
+
+Three properties bind the audit subset to this spec:
+
+1. **Storage is shared.** Audit events live in the same `events` table as operational events; the (`type`, `timestamp_us`) index in §7.1 covers the audit query directly. No parallel write path, no migration.
+2. **Retention exempts audit events.** Per §7.3, the retention sweep's `DELETE` filters `type NOT IN (<AUDIT_EVENT_TYPES>)`. Audit events outlive every operational sweep.
+3. **Sensitivity is orthogonal to audit-relevance.** The per-event sensitivity floor (§4.4) controls *projection*; the audit flag controls *retention*. Every audit event in v1 happens to be `pseudonymous`-floor, but that's an outcome of the v1 subset, not a rule.
+
+Audit-export shape (JSONL / CSV) is owned by [`audit-log.md §7`](audit-log.md); the CLI is `metis audit export` ([`audit-log.md §9`](audit-log.md)). Adding a type to `AUDIT_EVENT_TYPES` requires a deliberate spec change with a CHANGES.md entry — `audit-log.md` is the source of truth for the subset; this section is the cross-reference.
 
 ---
 

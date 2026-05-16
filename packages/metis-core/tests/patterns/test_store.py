@@ -232,6 +232,79 @@ def test_recommend_a3_rev2_unblock_min_confidence_default_05_fires_slot4(
     assert rec_new.sample_size == 5
 
 
+def test_recommend_a3_rev5_unblock_cost_weight_default_05_inverts_chooser(
+    store: PatternStore,
+) -> None:
+    """§A3-rev5 finding (benchmarks/RESULTS.md): with the v2 HYBRID
+    fingerprint wiring landed (Wave 11 11b-1) and the §A3-rev3 `cost_weight=0.1`
+    + `min_confidence=0.05` defaults in place, Pass C still picks haiku on
+    every routed turn — including `regex-with-edge-cases` where haiku
+    rubric-fails on the hard "16 edge case tests" turn (q=0.19) and sonnet
+    rubric-passes (q=1.00).
+
+    Diagnosis (this file's docstring + benchmarks/RESULTS.md §A3-rev5 Q1):
+    `cost_efficiency` normalizes per cluster to `[0.0, 1.0]`, so at
+    `cost_weight=0.1` whichever model is cheapest gets a *flat* `+0.10`
+    floor on its score regardless of cluster geometry. The §A3-rev5 regex
+    cluster (haiku q=0.91 vs sonnet q=1.00, cost_haiku << cost_sonnet)
+    produces:
+      haiku  score = 0.9 * 0.91 + 0.1 * 1.0 = 0.919
+      sonnet score = 0.9 * 1.00 + 0.1 * 0.0 = 0.900
+      -> haiku wins by 0.019 (chooser flipped to haiku, conf 0.021); below
+      the `min_confidence=0.05` gate, slot 4 emits `not_applicable`.
+
+    Wave 12 unblock (this test): lower `PatternConfig.cost_weight` from
+    `0.1` -> `0.05`. The cost floor halves to `+0.05` so the same cluster
+    produces:
+      haiku  score = 0.95 * 0.91 + 0.05 * 1.0 = 0.9145
+      sonnet score = 0.95 * 1.00 + 0.05 * 0.0 = 0.9500
+      -> sonnet wins by 0.0355, conf 0.037; still below the gate at this
+      exact ratio but the chooser at least *flips*. With the slightly
+      richer §A3-rev5 sub-cluster shape (haiku q=0.87 + the extra
+      `intent=('test',)` rows that pulled the haiku mean down), the
+      observed cluster math reaches conf=0.076 and slot 4 actively picks
+      sonnet.
+
+    Test setup: this fixture uses the cluster shape that *clearly* shows
+    the chooser flip at the boundary between the two defaults - 5 haiku
+    samples at 0.91, 5 sonnet samples at 1.00, with a 10x cost asymmetry
+    to make cost_efficiency saturate. (The tighter §A3-rev5 q=0.87
+    shape is exercised in the `test_aggregation.py::test_a3rev5_unblock_*`
+    pure-math test where the gate isn't applied.) Two-stage assertion:
+    the legacy `cost_weight=0.1` produces haiku-wins (the §A3-rev5
+    diagnosis); the new `cost_weight=0.05` flips to sonnet-wins.
+    """
+    fp = compute_fingerprint(_inputs())
+    for _ in range(5):
+        # haiku — cheap, slightly worse quality.
+        store.record(fp, "anthropic:claude-haiku-4-5", 0.91, Decimal("0.01"), 1000.0, "v1")
+    for _ in range(5):
+        # sonnet - 10x more expensive, perfect quality.
+        store.record(fp, "anthropic:claude-sonnet-4-6", 1.00, Decimal("0.10"), 2000.0, "v1")
+
+    # Legacy `cost_weight=0.1`: cost floor swamps the 0.09 quality delta;
+    # haiku wins the cluster (the §A3-rev5 diagnosis).
+    rec_legacy = store.recommend(fp, cost_weight=0.1, min_confidence=0.0, min_sample_size=5)
+    assert rec_legacy.chosen_model == "anthropic:claude-haiku-4-5"
+    haiku_alt = next(a for a in rec_legacy.alternatives if a.model == "anthropic:claude-haiku-4-5")
+    sonnet_alt = next(
+        a for a in rec_legacy.alternatives if a.model == "anthropic:claude-sonnet-4-6"
+    )
+    assert haiku_alt.score == pytest.approx(0.9 * 0.91 + 0.1 * 1.0)  # 0.919
+    assert sonnet_alt.score == pytest.approx(0.9 * 1.00 + 0.1 * 0.0)  # 0.900
+
+    # New `cost_weight=0.05`: cost floor halved; the 0.09 quality delta
+    # now exceeds the 0.05 cost margin and inverts the chooser.
+    rec_new = store.recommend(fp, cost_weight=0.05, min_confidence=0.0, min_sample_size=5)
+    assert rec_new.chosen_model == "anthropic:claude-sonnet-4-6"
+    haiku_alt_new = next(a for a in rec_new.alternatives if a.model == "anthropic:claude-haiku-4-5")
+    sonnet_alt_new = next(
+        a for a in rec_new.alternatives if a.model == "anthropic:claude-sonnet-4-6"
+    )
+    assert haiku_alt_new.score == pytest.approx(0.95 * 0.91 + 0.05 * 1.0)  # 0.9145
+    assert sonnet_alt_new.score == pytest.approx(0.95 * 1.00 + 0.05 * 0.0)  # 0.9500
+
+
 def test_soft_cap_signal_without_eviction() -> None:
     # Build a store with tight caps so we cross soft cap quickly.
     caps = PatternCaps(soft_cap_rows=2, hard_cap_rows=10, max_age_days=180)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import array
 import logging
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -265,6 +266,23 @@ class PatternStore:
         self._conn = sqlite3.connect(
             str(self._db_path), isolation_level=None, check_same_thread=False
         )
+        # Single sqlite3.Connection across threads is not safe for cursor-result
+        # interleaving (the `check_same_thread=False` flag only disables the
+        # Python-side guard). The store's documented invariant is one writer
+        # per workspace (pattern-store.md §11.9), but concurrent reads from
+        # routing slot 4 and writes from the subscriber can interleave on the
+        # same asyncio task switch — and a future caller may share the store
+        # across threads. This RLock serializes every public method as
+        # defense-in-depth; under the single-task asyncio architecture it is
+        # uncontended.
+        self._lock = threading.RLock()
+        # v2 embedding-cache hit/miss counters (pattern-store.md §16.7.2).
+        # Bus subscribers (observability/metrics.py) read these to surface
+        # `metis_pattern_embedding_cache_hits_total` /
+        # `metis_pattern_embedding_cache_misses_total`. The pure counters are
+        # process-local; durable counts are recoverable from trace events.
+        self._cache_hits = 0
+        self._cache_misses = 0
         self._configure()
         self._conn.executescript(_SCHEMA)
         self._conn.execute(
@@ -300,7 +318,28 @@ class PatternStore:
         self._conn.execute("PRAGMA foreign_keys = ON")
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
+
+    # ---- Embedding-cache counters (v2; observability/metrics.py reads these) ----
+
+    def cache_hit_count(self) -> int:
+        """Process-local count of `lookup_embedding` calls that returned a row."""
+        with self._lock:
+            return self._cache_hits
+
+    def cache_miss_count(self) -> int:
+        """Process-local count of `lookup_embedding` calls that returned None."""
+        with self._lock:
+            return self._cache_misses
+
+    def cache_hit_ratio(self) -> float | None:
+        """Process-local `hits / (hits + misses)`. None if no lookups yet."""
+        with self._lock:
+            total = self._cache_hits + self._cache_misses
+            if total == 0:
+                return None
+            return self._cache_hits / total
 
     def __enter__(self) -> PatternStore:
         return self
@@ -324,7 +363,20 @@ class PatternStore:
             raise TypeError("cost_usd must be Decimal")
         if success_score is not None and not (0.0 <= success_score <= 1.0):
             raise ValueError("success_score must be in [0, 1] or None")
+        with self._lock:
+            return self._record_locked(
+                fingerprint, primary_model, success_score, cost_usd, latency_ms, pricing_version
+            )
 
+    def _record_locked(
+        self,
+        fingerprint: Fingerprint,
+        primary_model: str,
+        success_score: float | None,
+        cost_usd: Decimal,
+        latency_ms: float,
+        pricing_version: str,
+    ) -> RecordResult:
         sig = structural_signature(fingerprint.structural)
         provider = fingerprint.embedding_provider
         existing_fp_id = self._lookup_fingerprint_by_sig(sig, provider)
@@ -454,7 +506,28 @@ class PatternStore:
         """
         if not (0.0 <= score <= 1.0):
             raise ValueError("score must be in [0, 1]")
+        with self._lock:
+            return self._update_score_locked(
+                turn_id=turn_id,
+                fingerprint_id=fingerprint_id,
+                primary_model=primary_model,
+                score=score,
+                confidence=confidence,
+                eval_id=eval_id,
+                pricing_version=pricing_version,
+            )
 
+    def _update_score_locked(
+        self,
+        *,
+        turn_id: str,
+        fingerprint_id: str,
+        primary_model: str,
+        score: float,
+        confidence: float,
+        eval_id: str,
+        pricing_version: str | None,
+    ) -> UpdateScoreResult:
         before = self._lookup_outcome(fingerprint_id, primary_model)
         if before is None:
             logger.warning(
@@ -591,8 +664,28 @@ class PatternStore:
         Always returns the full ranked alternatives so the routing engine
         can fall to the next-best capability-validated option.
         """
+        # Single lock acquisition wraps the K-NN scan + aggregation so
+        # readers don't observe a partially-written outcome row mid-update.
+        with self._lock:
+            return self._recommend_locked(
+                fingerprint,
+                cost_weight=cost_weight,
+                min_confidence=min_confidence,
+                min_sample_size=min_sample_size,
+                k=k,
+            )
+
+    def _recommend_locked(
+        self,
+        fingerprint: Fingerprint,
+        *,
+        cost_weight: float,
+        min_confidence: float,
+        min_sample_size: int,
+        k: int,
+    ) -> PatternRecommendation:
         start = now_ms()
-        neighbors = self.find_k_nearest(fingerprint, k=k)
+        neighbors = self._find_k_nearest_locked(fingerprint, k=k)
         if not neighbors:
             return PatternRecommendation(
                 chosen_model=None,
@@ -688,6 +781,10 @@ class PatternStore:
         score on any (query, neighbor) pair where either side lacks an
         embedding — see §16.5.3.
         """
+        with self._lock:
+            return self._find_k_nearest_locked(fingerprint, k=k)
+
+    def _find_k_nearest_locked(self, fingerprint: Fingerprint, k: int) -> tuple[NeighborMatch, ...]:
         if k <= 0:
             return ()
         rows = self._conn.execute(
@@ -762,20 +859,23 @@ class PatternStore:
         path) or fall back to v1 jaccard (routing query path; §16.6).
         """
         sha = text_sha256(text)
-        row = self._conn.execute(
-            "SELECT embedding_blob, embedding_dim FROM embedding_cache "
-            "WHERE text_sha256 = ? AND provider_id = ?",
-            (sha, provider_id),
-        ).fetchone()
-        if row is None:
-            return None
-        now_us = _to_micros(self._now())
-        self._conn.execute(
-            "UPDATE embedding_cache SET last_used_at_us = ?, use_count = use_count + 1 "
-            "WHERE text_sha256 = ? AND provider_id = ?",
-            (now_us, sha, provider_id),
-        )
-        return _decode_embedding_blob(row[0], int(row[1]))
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT embedding_blob, embedding_dim FROM embedding_cache "
+                "WHERE text_sha256 = ? AND provider_id = ?",
+                (sha, provider_id),
+            ).fetchone()
+            if row is None:
+                self._cache_misses += 1
+                return None
+            now_us = _to_micros(self._now())
+            self._conn.execute(
+                "UPDATE embedding_cache SET last_used_at_us = ?, use_count = use_count + 1 "
+                "WHERE text_sha256 = ? AND provider_id = ?",
+                (now_us, sha, provider_id),
+            )
+            self._cache_hits += 1
+            return _decode_embedding_blob(row[0], int(row[1]))
 
     def store_embedding(self, text: str, provider_id: str, vector: tuple[float, ...]) -> None:
         """Write a vector to the cache, then trim if past caps.
@@ -789,32 +889,37 @@ class PatternStore:
         sha = text_sha256(text)
         now_us = _to_micros(self._now())
         blob = _encode_embedding_blob(vector)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO embedding_cache(text_sha256, provider_id, "
-            "embedding_blob, embedding_dim, created_at_us, last_used_at_us, use_count) "
-            "VALUES (?, ?, ?, ?, ?, ?, 1)",
-            (sha, provider_id, blob, len(vector), now_us, now_us),
-        )
-        self._trim_embedding_cache(now_us)
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO embedding_cache(text_sha256, provider_id, "
+                "embedding_blob, embedding_dim, created_at_us, last_used_at_us, use_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, 1)",
+                (sha, provider_id, blob, len(vector), now_us, now_us),
+            )
+            self._trim_embedding_cache(now_us)
 
     def cache_size(self) -> EmbeddingCacheSize:
-        rows = int(self._conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0])
-        oldest = self._conn.execute("SELECT MIN(created_at_us) FROM embedding_cache").fetchone()[0]
-        total = int(
-            self._conn.execute(
-                "SELECT COALESCE(SUM(LENGTH(embedding_blob)), 0) FROM embedding_cache"
+        with self._lock:
+            rows = int(self._conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0])
+            oldest = self._conn.execute(
+                "SELECT MIN(created_at_us) FROM embedding_cache"
             ).fetchone()[0]
-        )
-        oldest_age: float | None = None
-        if oldest is not None:
-            now_us = _to_micros(self._now())
-            oldest_age = max(0.0, (now_us - int(oldest)) / 1_000_000 / 86_400)
-        return EmbeddingCacheSize(rows=rows, oldest_row_age_days=oldest_age, total_bytes=total)
+            total = int(
+                self._conn.execute(
+                    "SELECT COALESCE(SUM(LENGTH(embedding_blob)), 0) FROM embedding_cache"
+                ).fetchone()[0]
+            )
+            oldest_age: float | None = None
+            if oldest is not None:
+                now_us = _to_micros(self._now())
+                oldest_age = max(0.0, (now_us - int(oldest)) / 1_000_000 / 86_400)
+            return EmbeddingCacheSize(rows=rows, oldest_row_age_days=oldest_age, total_bytes=total)
 
     def cache_clear(self) -> int:
-        before = int(self._conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0])
-        self._conn.execute("DELETE FROM embedding_cache")
-        return before
+        with self._lock:
+            before = int(self._conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0])
+            self._conn.execute("DELETE FROM embedding_cache")
+            return before
 
     def _trim_embedding_cache(self, now_us: int) -> int:
         """Age-first + LRU + use-count tie-break trim, per §16.4.3."""
@@ -843,14 +948,17 @@ class PatternStore:
     # ---- Maintenance ---------------------------------------------------
 
     def size(self) -> StoreSize:
-        fps = int(self._conn.execute("SELECT COUNT(*) FROM fingerprints").fetchone()[0])
-        outs = int(self._conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0])
-        oldest = self._conn.execute("SELECT MIN(last_updated_at_us) FROM outcomes").fetchone()[0]
-        oldest_age: float | None = None
-        if oldest is not None:
-            now_us = _to_micros(self._now())
-            oldest_age = max(0.0, (now_us - oldest) / 1_000_000 / 86_400)
-        return StoreSize(fingerprints=fps, outcomes=outs, oldest_outcome_age_days=oldest_age)
+        with self._lock:
+            fps = int(self._conn.execute("SELECT COUNT(*) FROM fingerprints").fetchone()[0])
+            outs = int(self._conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0])
+            oldest = self._conn.execute("SELECT MIN(last_updated_at_us) FROM outcomes").fetchone()[
+                0
+            ]
+            oldest_age: float | None = None
+            if oldest is not None:
+                now_us = _to_micros(self._now())
+                oldest_age = max(0.0, (now_us - oldest) / 1_000_000 / 86_400)
+            return StoreSize(fingerprints=fps, outcomes=outs, oldest_outcome_age_days=oldest_age)
 
     def evict(
         self,
@@ -859,40 +967,42 @@ class PatternStore:
         older_than: timedelta | None = None,
     ) -> int:
         """Manual eviction. Returns rows removed."""
-        now_us = _to_micros(self._now())
-        evicted = 0
-        if older_than is not None:
-            cutoff_us = now_us - int(older_than.total_seconds() * 1_000_000)
-            cursor = self._conn.execute(
-                "DELETE FROM outcomes WHERE last_updated_at_us < ?", (cutoff_us,)
-            )
-            evicted += cursor.rowcount or 0
-        if max_rows is not None:
-            current = int(self._conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0])
-            excess = current - max_rows
-            if excess > 0:
+        with self._lock:
+            now_us = _to_micros(self._now())
+            evicted = 0
+            if older_than is not None:
+                cutoff_us = now_us - int(older_than.total_seconds() * 1_000_000)
                 cursor = self._conn.execute(
-                    """
-                    DELETE FROM outcomes WHERE rowid IN (
-                      SELECT rowid FROM outcomes
-                      ORDER BY last_updated_at_us ASC, sample_size ASC
-                      LIMIT ?
-                    )
-                    """,
-                    (excess,),
+                    "DELETE FROM outcomes WHERE last_updated_at_us < ?", (cutoff_us,)
                 )
                 evicted += cursor.rowcount or 0
-        if evicted > 0:
-            self._cleanup_orphan_fingerprints()
-        return evicted
+            if max_rows is not None:
+                current = int(self._conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0])
+                excess = current - max_rows
+                if excess > 0:
+                    cursor = self._conn.execute(
+                        """
+                        DELETE FROM outcomes WHERE rowid IN (
+                          SELECT rowid FROM outcomes
+                          ORDER BY last_updated_at_us ASC, sample_size ASC
+                          LIMIT ?
+                        )
+                        """,
+                        (excess,),
+                    )
+                    evicted += cursor.rowcount or 0
+            if evicted > 0:
+                self._cleanup_orphan_fingerprints()
+            return evicted
 
     def clear(self) -> int:
         """Delete all rows. Used by `/patterns clear`."""
-        before = int(self._conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0])
-        self._conn.execute("DELETE FROM outcome_score_history")
-        self._conn.execute("DELETE FROM outcomes")
-        self._conn.execute("DELETE FROM fingerprints")
-        return before
+        with self._lock:
+            before = int(self._conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0])
+            self._conn.execute("DELETE FROM outcome_score_history")
+            self._conn.execute("DELETE FROM outcomes")
+            self._conn.execute("DELETE FROM fingerprints")
+            return before
 
     def reprice(self, _price_table: object) -> None:
         """v1 noop per `pattern-store.md §15.3 / Open Questions §13.8`.

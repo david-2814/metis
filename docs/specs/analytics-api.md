@@ -569,6 +569,7 @@ The `gateway_key` filter is passed via parameterized SQL placeholder; the HTTP l
 
 Rows are sorted by `cost_usd` DESC. The `by_inbound_shape` sub-array is also `cost_usd` DESC. `inbound_shape: null` is the natural shape for in-process agent traffic (no inbound translator ran).
 
+
 ### 4.9 `GET /analytics/by_team`
 
 Per-(team) cost / token / call-count rollup with a per-user breakdown. Companion to `/analytics/by_key`; the buyer surface for the multi-user.md §5.2 contract. The gateway stamps `team_id` (and `user_id`) onto every `llm.call_completed` it serves (multi-user.md §4.4); this endpoint is where the budget owner consumes the rollup.
@@ -628,6 +629,187 @@ Rows sorted by `cost_usd` DESC; `by_user` sub-array is also `cost_usd` DESC.
 
 ---
 
+### 4.10 User data export + forget (GDPR portability / right-to-be-forgotten)
+
+The "buyer can hand a departing user all their data" surface, paired with the
+"buyer can honor a forget request" surface. Both are stable id-keyed by
+`user_id` and compose with the redaction policy owned by [`redaction.md`](redaction.md):
+
+- The export half is read-only and PRIVATE-tier *included* — this is the
+  subject's own data, not a shared dump (the "right to data portability"
+  half of the contract).
+- The forget half delegates pseudonymization to the
+  `metis_core.redaction.Redactor` protocol; the analytics surface owns
+  the audit-event emission and the HTTP error mapping.
+
+Both endpoints close the gap multi-user.md §11.5 surfaced as deferred and
+§7.4.4 sketched as the "right-to-delete pathway."
+
+#### 4.10.1 `GET /analytics/user/{user_id}/export`
+
+Streams every trace event stamped with `user_id` as JSONL (one JSON
+object per line). Suitable for piping to `grep` / `jq` or saving as the
+artifact a buyer hands the data subject.
+
+**Path parameter:**
+
+| Parameter   | Type                        | Shape guard                              |
+|-------------|-----------------------------|------------------------------------------|
+| `user_id`   | `usr_<ulid>` or human alias | `^[A-Za-z0-9_-]{1,200}$`; 400 `invalid_user_id` on miss |
+
+**Query parameters:**
+
+| Parameter   | Type           | Required | Default |
+|-------------|----------------|----------|---------|
+| `from`,`to` | ISO 8601 UTC   | no       | all-time (no window) |
+
+**Source:** `events` table, every row whose `json_extract(payload_json,
+'$.user_id') = ?`. The matcher is **agnostic to event type** so future
+additive `user_id`-bearing payloads (e.g. new gateway audit events) land
+in the export automatically without code changes.
+
+**Streaming:** the response uses Starlette's `StreamingResponse`. The
+handler iterates the SQLite cursor row-by-row and emits one JSONL line
+at a time; the full result set is never materialized in Python memory.
+A 10k-event export costs O(1) RAM.
+
+**Sensitivity-tier handling:** PRIVATE-tier fields are passed through
+**verbatim**. This is the subject's own data — they have, by definition,
+already consented to its capture (the data is *about them*). Audit
+exports for SOC2 / SIEM consumption use a separate surface
+([`redaction.md §6`](redaction.md)) that pseudonymizes / drops PRIVATE
+fields; do not conflate the two.
+
+**Deterministic ordering:** rows are returned in `events.id` (ULID)
+order. Two consecutive exports of the same window produce byte-identical
+output (modulo any audit events written between calls).
+
+**Response:**
+
+- `200` with `Content-Type: application/jsonl` and one event per line:
+
+  ```jsonl
+  {"id":"01HZ...","timestamp":"2026-05-12T12:00:00+00:00","session_id":"sess_a","turn_id":"turn_a","parent_event_id":null,"type":"llm.call_completed","actor":"agent","sensitivity":"pseudonymous","payload":{"model":"anthropic:claude-sonnet-4-6",...,"user_id":"usr_alice"}}
+  {"id":"01HZ...","timestamp":"2026-05-12T12:00:00+00:00","session_id":"sess_a","turn_id":"turn_b","parent_event_id":null,"type":"turn.completed","actor":"agent","sensitivity":"pseudonymous","payload":{...,"user_id":"usr_alice"}}
+  ```
+
+- An empty body when the user has no events (200, not 404 — the user may
+  simply not have run anything in the window).
+- `Content-Disposition: attachment; filename="{user_id}.jsonl"` so
+  `curl -OJ` / browser saves land on a sensible filename.
+- `X-Metis-Row-Count` header with the count at request-arrival time
+  (computed via a cheap pre-stream `SELECT COUNT(*)`; the stream itself
+  may diverge if a concurrent client writes events during the response).
+
+**Audit event:** after the body has been fully drained, one
+`analytics.user_exported` event is emitted onto the bus carrying the
+realized row count, byte count, and window bounds. A client that
+disconnects mid-stream sees the audit event reflect what was actually
+delivered, not what was requested.
+
+**Cost is `Decimal`-faithful.** `llm.call_completed` events stamp
+`cost_usd` as the string-form of a `Decimal`; the export passes the
+JSON column through unchanged, so cost values land as JSON strings (e.g.
+`"0.0143"`) and a downstream JSONL consumer can round-trip back to
+`Decimal` without float drift. The convention matches `analytics-api.md
+§5.1`.
+
+#### 4.10.2 `POST /analytics/user/{user_id}/forget`
+
+Triggers redaction.md's pseudonymization flow against every event
+stamped with `user_id`. The request body is intentionally empty — the
+URL identifies the subject; there is no other input.
+
+**Path parameter:** same shape guard as §4.10.1.
+
+**Algorithm:**
+
+1. Resolve the `Redactor` on `request.app.state.app_state.redactor`,
+   falling back to `PseudonymizingRedactor(db_path)` if none is
+   configured. The default impl performs `UPDATE events SET payload_json
+   = json_set(payload_json, '$.user_id', :pseudonym) WHERE
+   json_extract(payload_json, '$.user_id') = :user_id`. redaction.md §5
+   defines the canonical policy (free-text scrubbing, rationale-redacted
+   opt-in fields, etc.) that replaces this default impl when wired.
+2. Compute the deterministic pseudonym via `pseudonym_for(user_id)`
+   (SHA-256 → 12-hex with `redacted_` prefix).
+3. Emit one `analytics.user_forgotten` event onto the bus carrying the
+   subject, pseudonym, and rowcount.
+4. Return the JSON body below.
+
+**Response (`200`):**
+
+```json
+{
+  "user_id": "usr_alice",
+  "pseudonym": "redacted_a1b2c3d4e5f6",
+  "pseudonymized_rows": 42,
+  "completed_at": "2026-05-15T12:00:00+00:00"
+}
+```
+
+**Idempotent:** a second call for the same `user_id` returns
+`pseudonymized_rows = 0` (the original id is no longer present after the
+first call). The audit event fires either way so the audit trail
+records every request, not just the first one.
+
+**Append-only safety:** no row is deleted; only `user_id` is rewritten
+in place. The append-only trace-store invariant
+([event-bus-and-trace-catalog.md §7](event-bus-and-trace-catalog.md))
+holds.
+
+**Errors:**
+
+| Code              | HTTP | When                                            |
+|-------------------|------|-------------------------------------------------|
+| `invalid_user_id` | 400  | Path parameter fails the shape guard.           |
+
+#### 4.10.3 CLI mirrors
+
+Both endpoints have local-FS CLI mirrors for admin shells:
+
+- `metis analytics user-export <user_id> [--from] [--to] [--out file.jsonl] [--db-path …]`
+- `metis user forget <user_id> --confirm [--db-path …]`
+
+The CLI forget command refuses without `--confirm` (returns exit code 2
+and prints the warning). The export command streams to stdout by default
+so `metis analytics user-export usr_alice | jq` works without an
+intermediate file. Both commands operate on the trace DB directly via
+the same `AnalyticsStore` / `Redactor` primitives the HTTP surface uses,
+and produce the same `analytics.user_exported` / `analytics.user_forgotten`
+audit events (so a buyer's compliance review sees a uniform audit trail
+regardless of entry point).
+
+#### 4.10.4 Authentication posture
+
+Loopback-only inherits from the rest of `/analytics/*` (§2.1.4). The
+HTTP surface trusts the local operator. Multi-user authenticated
+dashboards (which would let a non-admin user request their own export)
+are downstream of the [`STRATEGY.md §3`](../STRATEGY.md) fork and out of
+scope for v1.
+
+When per-key gateway auth lands on the dashboard surface (future
+spec), the export endpoint will reject any caller whose principal
+neither (a) matches `user_id` nor (b) holds an admin / workspace-owner
+scope. The forget endpoint will reject any non-admin caller outright.
+Until then, the CLI is the only sanctioned non-localhost surface.
+
+#### 4.10.5 Composition with redaction.md
+
+This spec defines the **endpoint shape**; redaction.md defines the
+**policy**. The two compose:
+
+- `forget`'s `Redactor` injection point lets redaction.md ship a richer
+  impl (rationale-redacted opt-in fields, free-text scrubbing) without
+  changing the HTTP contract.
+- `export`'s default is "verbatim" because the subject is the data owner;
+  redaction.md's `EventRedactor` modes (`pseudonymize`, `redact_private`,
+  `aggregate_only`) are intended for the *audit-export* surface, not the
+  *portability* surface.
+
+
+---
+
 ## 5. Pricing semantics
 
 Recapping §2.1.3 in concrete terms:
@@ -669,6 +851,7 @@ Follows [server-api.md §5](server-api.md) conventions. New error codes specific
 | `invalid_gateway_key`     | 400  | `gateway_key` filter value violates the `^[A-Za-z0-9_-]{1,200}$` shape guard. |
 | `invalid_user`            | 400  | `user` filter value violates the shape guard.                       |
 | `invalid_team`            | 400  | `team` filter value violates the shape guard.                       |
+| `invalid_user_id`         | 400  | `{user_id}` path parameter on `/analytics/user/...` fails the shape guard (§4.10). |
 | `turn_not_found`          | 404  | No events match the given `turn_id`.                                |
 
 Naming follows the symmetric convention `invalid_<param>` for value-rejection errors and `unknown_<resource>` / `<resource>_not_found` for lookup failures, matching [server-api.md §5](server-api.md).

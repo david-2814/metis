@@ -1,0 +1,66 @@
+name: refactor-with-contract-preservation
+description: >-
+  Refactor `api.fetch` to use keyword-only parameters and update every
+  caller that breaks. Six call sites across three files exercise four
+  distinct call shapes (single positional, two-positional, mixed
+  positional+kwarg, positional `functools.partial`, positional+kwarg
+  `partial`, and `endpoint + **options` unpacking). `test_callers.py`
+  ships 9 tests: 2 prove the refactor is real (the signature is
+  keyword-only and a positional call raises TypeError) and 7 invoke
+  every caller through to api.fetch's instrumented record. Smaller
+  models tend to miss at least one caller — typically the
+  `functools.partial` site (the bound positional argument is no longer
+  acceptable) or the second `partial` with a mixed positional+kwarg
+  binding. Objective verification (pytest 9 passed).
+suite_version: 1
+# 13a-1 smoke (2026-05-15, 4 runs: 2 haiku + 2 sonnet, --judge
+# heuristic, plus 1 hybrid spot-check; one hybrid run hit a
+# transient anthropic NetworkError and was dropped): haiku mean
+# 0.917 (0.917, 0.917) / sonnet mean 0.917 (0.917, 0.917) — gap
+# **+0.000**. The sonnet hybrid spot-check scored 1.000.
+# Pre-refactor: 2 failed / 7 passed; both models correctly update
+# every caller (positional, partial, partial+kwarg, **options
+# unpacking) and produce `9 passed`. The shape works objectively
+# (the keyword-only-signature gate + 7 caller invocation tests)
+# but at temperature=0 both models complete it cleanly. Kept on
+# disk for future iteration. Documented in RESULTS.md §13a-1.
+signal_strength: marginal
+turns:
+  - prompt: >-
+      Read every `.py` file in this workspace. Then run
+      `python -m pytest -v` from the workspace root and report the
+      exact final summary line. Don't make any edits yet.
+    expect:
+      min_tool_calls: 4
+      max_tool_calls: 12
+  - prompt: >-
+      Refactor `api.fetch` so every named parameter is keyword-only
+      (positional invocations must raise TypeError). Then update every
+      caller in this workspace so the existing behavior is preserved —
+      after your edits, each caller invokes `api.fetch` with exactly
+      the same effective arguments it did before. Look at every file
+      that imports `fetch`, including how `tasks.py` uses
+      `functools.partial` and how `cli.py` mixes a positional endpoint
+      with a `**options` dict. Make the smallest set of edits that
+      makes pytest report `9 passed`. After your edits, run
+      `python -m pytest -v` from the workspace root and report the
+      exact final summary line. If anything still fails, iterate.
+    expect:
+      min_tool_calls: 4
+      max_tool_calls: 25
+      contains_substring: "9 passed"
+expect:
+  max_total_cost_usd: 1.00
+  min_llm_calls: 2
+  max_hard_failures: 0
+evaluate:
+  rubric: heuristic
+  # Partial-credit replaces the pass/fail "9 passed" substring check
+  # (evaluator.md §5.4 v1.2). The pytest summary reports
+  # `N passed[, M failed]` across 9 tests. Smaller models tend to miss
+  # at least one caller (typically functools.partial); 8/9 = 0.89 now
+  # scores 0.89 rather than the prior 0 the boolean check produced.
+  partial_credit:
+    enabled: true
+    criterion: test_pass_count_ratio
+    map: linear

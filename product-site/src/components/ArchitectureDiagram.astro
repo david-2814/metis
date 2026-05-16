@@ -1,0 +1,52 @@
+---
+// ASCII architecture diagram. Render in a code block with monospace
+// font so the rules line up. Mirrors the deployment shapes documented
+// at docs/specs/gateway.md and docs/specs/deployment-shape.md.
+---
+
+<div
+  class="overflow-x-auto rounded-lg border border-border-strong bg-bg-elev p-6 shadow-2xl"
+>
+  <pre
+    class="text-[11px] leading-[1.4] text-fg-muted sm:text-xs sm:leading-[1.5]"><span class="text-fg">  your devs (claude code / cursor / openai-python / anthropic-python)</span>
+                              │
+                              │  one env var flipped:
+                              │  ANTHROPIC_BASE_URL=https://gw.your-co.com
+                              │  OPENAI_BASE_URL=https://gw.your-co.com/v1
+                              ▼
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  <span class="text-accent">metis gateway</span>   (transparent /v1/chat/completions + /v1/messages)│
+  │                                                                    │
+  │   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐           │
+  │   │ <span class="text-accent">canonical IR</span> │ → │   <span class="text-accent">routing</span>    │ → │   <span class="text-accent">adapter</span>    │ → upstream│
+  │   │ (lossless)   │   │ (7-slot chain)│  │ (anthropic / │           │
+  │   └──────────────┘   └──────┬───────┘   │  openai /    │           │
+  │                             │           │  openrouter) │           │
+  │   ┌─────────────────────────▼────────┐  └──────────────┘           │
+  │   │  <span class="text-accent">pattern store</span>  (slot 4)        │                          │
+  │   │  K-NN over task fingerprints +   │   ┌──────────────┐           │
+  │   │  cost-weighted outcome history   │ ← │  <span class="text-accent">evaluator</span>   │           │
+  │   └──────────────────────────────────┘   │ (hybrid LLM- │           │
+  │                                          │  as-judge)   │           │
+  │   ┌──────────────────────────────────┐   └──────────────┘           │
+  │   │  <span class="text-accent">prompt cache discipline</span>        │                          │
+  │   │  stable prefix · 4500-5500 tok   │                              │
+  │   │  cache-floor padding             │                              │
+  │   └──────────────────────────────────┘                              │
+  └────────────────┬───────────────────────────────────────────────────┘
+                   │   every turn writes
+                   ▼
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  <span class="text-accent">trace store</span>  (SQLite WAL, ~4,800 events/sec, indexed expressions) │
+  │  · route.decided  · llm.call_completed  · pattern.matched          │
+  │  · eval.completed · turn.completed      · gateway.key_*            │
+  └────────────────┬───────────────────────────────────────────────────┘
+                   │   read by
+                   ▼
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  <span class="text-accent">analytics</span> · /analytics/by_user · by_team · by_key · cost · quality│
+  │  <span class="text-accent">audit</span>     · metis audit export · 12-event compliance subset      │
+  │  <span class="text-accent">metrics</span>   · Prometheus /metrics on gateway and server            │
+  └────────────────────────────────────────────────────────────────────┘
+</pre>
+</div>

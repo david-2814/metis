@@ -10,12 +10,14 @@ from metis_core.trace.backup import (
     backup,
     restore,
 )
+from metis_core.trace.retention import PurgeResult
 from metis_core.trace.store import TRACE_SCHEMA_VERSION, TraceStore
 
 __all__ = [
     "TRACE_SCHEMA_VERSION",
     "BackupError",
     "BackupResult",
+    "PurgeResult",
     "RestoreResult",
     "TraceStore",
     "backup",

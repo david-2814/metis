@@ -654,7 +654,7 @@ The routing engine's pattern policy, evaluating slot 4, calls:
 ```python
 recommendation = pattern_store.recommend(
     fingerprint = compute_fingerprint(turn_context),
-    cost_weight = workspace_config.pattern.cost_weight,    # default 0.1
+    cost_weight = workspace_config.pattern.cost_weight,    # default 0.05
     min_confidence = workspace_config.pattern.min_confidence,  # default 0.05
     min_sample_size = workspace_config.pattern.min_sample_size,  # default 5
     k = 10,
@@ -1321,7 +1321,7 @@ Example workspace config:
 
 ```yaml
 pattern:
-  cost_weight: 0.1              # default 0.1 since 2026-05-14 (§A3-rev)
+  cost_weight: 0.05             # default 0.05 since 2026-05-15 (§A3-rev5; was 0.1 from 2026-05-14, was 0.3 prior)
   min_confidence: 0.05          # default 0.05 since 2026-05-14 (§A3-rev2)
   min_sample_size: 5
   min_eval_confidence: 0.5      # default 0.5
@@ -2227,7 +2227,264 @@ excluded.value` so a v1 process never downgrades the version).
 
 ---
 
-## 17. References
+## 17. Production tuning
+
+**Status:** Drafted 2026-05-15 (Wave 13a-4, sustained-load audit). Findings
+from a production-readiness audit of the v1 + v2 pattern store under
+multi-tenant pressure. None of the findings invalidate the v1 / v2
+semantics; they document where the implementation has measurable
+operating bounds.
+
+The sibling Wave 13a-5 audit covers the trace store's analogous bounds
+(`docs/operations/trace-performance.md`). Operators wiring `/metrics`
+into alerting should follow both.
+
+### 17.1 K-NN query latency curve
+
+The slot 4 scan in `find_k_nearest` is **O(N) in the outcomes table**:
+every call walks every row, decodes its `structural_json`, computes
+either weighted-Jaccard (v1) or the blended cosine+Jaccard score (v2),
+and partial-sorts the top K. v2's per-row cosine adds a dim-sized dot
+product in pure Python.
+
+Measured p50 / p95 on a quiet MacBook (SQLite WAL, default
+`PRAGMA synchronous=NORMAL`, k=10):
+
+| Outcomes  | v1 p50  | v1 p95  | v2 (384-dim) p50 | v2 (384-dim) p95 |
+|-----------|---------|---------|------------------|------------------|
+| 200       | 2.0ms   | 3.1ms   | 16.9ms           | 19.6ms           |
+| 1,000     | 6.1ms   | 7.1ms   | 47.5ms           | 48.8ms           |
+| 5,000     | 6.1ms   | 6.6ms   | 47.5ms           | 50.6ms           |
+| 20,000    | 6.4ms   | 7.3ms   | 47.8ms           | 50.4ms           |
+
+**Breakpoint vs the spec's slot-4 latency budget (§2.1.6, ≤3ms at
+≤1000 fingerprints):**
+
+- **v1** clears the 3ms budget at 200 outcomes; at 1,000 outcomes the
+  scan already takes ~6ms. The slot-4 budget is **exceeded by the
+  pattern slot alone at v1's documented scale**; the larger routing
+  budget (≤5ms total per `routing-engine.md §2.1.8`) is also exceeded.
+- **v2** runs ~7-8× slower than v1 at every size (the cosine dominates).
+  A 384-dim embedding (the `local:sentence-transformers` provider) lands
+  K-NN p50 at ~47ms; a 1536-dim embedding (the `openai:text-embedding-3-small`
+  provider) would scale linearly to ~190ms p50.
+
+**Operator guidance:**
+
+- The K-NN scan is **CPU-bound on Python**, not SQLite. The fix is not
+  an index; it is rewriting the inner loop. Phase 4 candidates: emit a
+  `__pyx`-compiled cosine helper, fold the `weighted_jaccard` weights
+  into the SQL `CASE` projection, or store an extracted-column index
+  per structural field. v1 ships without any of these — the documented
+  scale targets a single-user laptop, not multi-tenant gateway QPS.
+- Workspaces that breach the budget should **lower `hard_cap_rows`**.
+  Cutting `hard_cap_rows: 10_000 → 2_500` keeps the steady-state scan
+  under 10ms (v1) / 25ms (v2 at 384-dim) at the cost of more aggressive
+  eviction. The age-first eviction policy (§6.3) preserves recent
+  signal so the tighter cap doesn't lose the differentiator.
+- v2 stores can opt out of slot-4 entirely via
+  `min_confidence = 1.0` — slot 4 then always emits `not_applicable`
+  and slot 7 wins. Useful as a circuit breaker if the K-NN scan is
+  observed to dominate request latency at scrape time.
+
+The test `test_knn_latency_smoke_under_500_fingerprints` in
+`tests/patterns/test_production_readiness.py` pins a generous bound
+(p95 < 100ms at 400 fingerprints) so CI catches a 10× regression. The
+tighter bound is operational, not architectural.
+
+### 17.2 Embedding-cache throughput collapse at cap
+
+The v2 embedding cache (§16.4) is keyed by `(provider_id,
+SHA-256(user_message_text))` and bounded by `embedding_cache_max_rows`
+(default 10,000). The cap is enforced by `_trim_embedding_cache`, which
+runs on **every `store_embedding` call**:
+
+1. Age-first delete (`WHERE created_at_us < cutoff`).
+2. `SELECT COUNT(*)` over the cache.
+3. If over cap: `DELETE FROM embedding_cache WHERE rowid IN (SELECT
+   rowid FROM embedding_cache ORDER BY last_used_at_us ASC, use_count
+   ASC, created_at_us ASC LIMIT excess)`.
+
+The third query is **O(N log N)** in the cap on every saturated write
+— SQLite has to sort the full table to find the LRU row. Measured
+write throughput on a quiet MacBook:
+
+| Cap     | Writes before cap | Writes after cap |
+|---------|-------------------|------------------|
+| 1,000   | 4,800/s           | 1,200/s          |
+| 10,000  | 7,000/s           | **~150/s**       |
+
+**Operational consequence.** At 100 active gateways with one
+embedding-per-turn each, the per-pod cache saturates inside the first
+10k turns (~hours of moderate load). Once saturated, sustained writes
+hold throughput at ~150/s, which is a regime where **slot-4 routing
+latency on cache miss can spike to seconds** while the writer waits
+its turn. The v1 architectural mitigation (cache lookup at routing
+time is sync cache-only; the embed-on-miss path is async, §16.13) is
+load-bearing — without it, slot 4 would block on the cache write
+during steady-state pressure.
+
+**Operator guidance:**
+
+- Each `PatternStore` runs an **independent cache**. A cluster with
+  N workspaces gets N × `embedding_cache_max_rows` aggregate vectors.
+  Sizing the per-workspace cap to `expected unique turns × 1.2` over
+  the workload "vocabulary stabilization window" (≥100 turns per
+  §16.7.2) keeps the cache out of the saturated regime.
+- The miss-path embed cost dominates the LRU trim cost by ~50× even
+  on the hosted-cheapest provider (`openai:text-embedding-3-small` at
+  50-150ms / call vs ~6ms LRU trim at 10k cap). So a *bigger* cache
+  is always strictly cheaper than the embed it replaces — until disk
+  footprint matters (10k × 1536 × 4 = 60 MB per workspace; 100
+  workspaces = 6 GB).
+- For multi-tenant deployments, **disable v2 at the workspace level**
+  on workspaces that haven't asked for it. `PatternConfig.fingerprint_version
+  = "v1"` is the default; the gateway path doesn't write patterns at
+  all (per `gateway.md §2`) so the gateway never pays this cost.
+
+The test `test_cache_eviction_holds_at_cap_under_sustained_writes`
+pins that the cap is enforced; the throughput-curve numbers above are
+a measurement, not a CI gate.
+
+### 17.3 Concurrent recording — defense in depth
+
+§11.9 invariant pins "one process writer per workspace." The current
+agent-loop architecture honors this by construction: `PatternEventSubscriber`
+runs on a single asyncio task on a single event loop, and routing
+slot 4's read path runs on the same loop. So in production, `record()`
+and `recommend()` calls are naturally serialized.
+
+The previous build of `PatternStore` opened the SQLite connection with
+`check_same_thread=False` but **did not guard against concurrent use
+of the shared cursor**. A multi-threaded caller (a future worker pool,
+a test fixture that shares one store, a misconfigured gateway that
+runs the subscriber on a thread pool) would see two failure modes:
+
+- `sqlite3.InterfaceError: bad parameter or other API misuse` when two
+  threads interleave statements on the same connection.
+- `TypeError: 'NoneType' object is not subscriptable` when one thread's
+  `fetchone()` reads `None` because another thread's cursor advanced
+  past its result.
+
+Measured failure rate without the lock: ~36% of `record()` calls fail
+with 100 concurrent threads × 10 calls each. With the lock added
+(Wave 13a-4), the same workload lands 1000/1000 writes with zero errors
+in <0.5s.
+
+The fix is a `threading.RLock` wrapping every public method of
+`PatternStore`. Under the single-task asyncio architecture the lock
+is uncontended; it only serializes when a caller actually crosses
+threads. The lock is **defense in depth** — the architectural single-
+writer invariant remains the contract.
+
+The test `test_concurrent_record_lands_all_writes` pins this
+(100 threads × 10 records, 1000 writes, zero errors).
+
+### 17.4 Retention coordination with `trace-retention.md`
+
+The pattern store and the trace store have **independent retention
+policies**:
+
+| Store      | Default retention                    | Mechanism                                  |
+|------------|--------------------------------------|--------------------------------------------|
+| Trace DB   | 90 days (cutoff, audit-exempt)       | `metis trace prune` (Wave 12a-2)            |
+| Pattern DB | 180 days age cap + 5k/10k row caps   | `record()` continuous trim + `evict()`     |
+
+The two stores live in different files (trace at `~/.metis/metis.db`,
+patterns at `<workspace>/.metis/patterns.db`) and the sweeps run
+against different SQLite handles. **There is no transactional
+coordination between them.**
+
+The audit identified three coordination concerns; all resolve as
+"working as intended" but operators should know the shape:
+
+1. **Patterns outlive their trace events.** A 180-day-old outcome row
+   can reference a `turn_id` whose `route.decided` / `turn.completed`
+   events were pruned 90 days ago. The outcome row stays valid for
+   K-NN purposes (Welford means + sample counts are self-contained);
+   the audit *trail* of how the row got there is gone. If forensics
+   requires "show me the sessions backing this recommendation," it
+   has to be answered from the pattern store alone (`outcome_score_history`
+   carries the `turn_id` → `eval_id` chain) — the trace cross-reference
+   is lost.
+
+2. **Late `eval.completed` for a pruned turn is a no-op.** The
+   `PatternEventSubscriber._on_eval_completed` handler maintains an
+   in-memory `_turn_outcomes: dict[turn_id, (fp_id, model)]` for the
+   lifetime of the process. A trace-store prune doesn't affect the
+   map. If `metis evaluate` re-runs over a window predating both
+   stores' retention and emits a late `eval.completed`, the handler
+   logs "unknown turn" and skips. Not a corruption — just a missed
+   late-update. This is consistent with the §10.4 idempotence
+   contract (a verdict for an unknown turn returns
+   `RecordResult(applied=False)`).
+
+3. **GDPR `metis user forget` does not cascade.** The redaction layer
+   (`redaction.md` v1) pseudonymizes user-identifying fields in the
+   trace DB. The pattern store records `workspace_hash` (per-workspace
+   SHA) and `text_sha256(user_message_text)` on the embedding cache
+   row — neither field is `user_id` material, so the spec does not
+   require the pattern store to participate. In multi-user-per-workspace
+   deployments (Phase 3+; out of scope for v1) this would need to be
+   revisited.
+
+**Operator guidance:**
+
+- If `metis trace prune --days N` is run with `N < 180`, expect a
+  permanent asymmetry: pattern outcomes will be queryable in K-NN
+  without a corresponding trace entry. This is correct.
+- If a stricter coordination is wanted, set `PatternCaps.max_age_days
+  = retention_days` in the pattern-store constructor so the two ages
+  match. The runtime accepts a `caps=` kwarg; the helm chart does
+  not yet surface it. Phase 4 candidate.
+
+### 17.5 Audit-flag posture (confirmed correct)
+
+| Event             | Audit-flagged? | Survives `trace prune` | Rationale                                                                              |
+|-------------------|----------------|------------------------|----------------------------------------------------------------------------------------|
+| `pattern.evicted` | **Yes**        | Yes                    | Bounded-store enforcement record. Same shape as `memory.eviction`. Cap pressure is operationally meaningful long after the immediate cause (audit-log.md §4). |
+| `pattern.recorded`| No             | Pruned at retention    | Operational telemetry. Recovering "did this row get recorded?" forensically reads `outcomes.last_updated_at_us` + `outcome_score_history` directly.           |
+| `pattern.matched` | No             | Pruned at retention    | Operational telemetry. Per-match audit is already in `route.decided.chain[]`, which is *also* pruned — both ages together preserve the audit invariant.       |
+
+The Wave 13a-4 audit confirmed the existing posture is correct. A
+spec change would be required to flip `pattern.recorded` or
+`pattern.matched`; the test
+`test_pattern_recorded_and_matched_are_not_audit_flagged` pins the
+current state so a drift causes CI failure.
+
+### 17.6 Observability: `metis_pattern_embedding_cache_hit_ratio`
+
+Wave 13a-4 adds three Prometheus gauges, polled at `/metrics` scrape
+time via the new `pattern_cache_getter` on `MetricsCollector`:
+
+| Metric                                          | Type  | Labels         | Source                                                                |
+|-------------------------------------------------|-------|----------------|-----------------------------------------------------------------------|
+| `metis_pattern_embedding_cache_hit_ratio`       | Gauge | `workspace_id` | `PatternStore.cache_hit_ratio()` — process-local hits/(hits+misses).  |
+| `metis_pattern_embedding_cache_hits_total`      | Gauge | `workspace_id` | `PatternStore.cache_hit_count()` — process-local cumulative.          |
+| `metis_pattern_embedding_cache_misses_total`    | Gauge | `workspace_id` | `PatternStore.cache_miss_count()` — process-local cumulative.         |
+
+Hits and misses are **process-local** counters reset on `PatternStore`
+construction. They are not durable across process restarts; the v2
+cache itself is durable (SQLite) but the counters are not. This is
+intentional — durable counts are recoverable from the bus event
+stream (count `pattern.matched.fingerprint_kind="hybrid"` over a
+window) if forensics requires it.
+
+**Alert recipe.** The §16.7.2 target is ≥80% hit ratio within 100 turns
+of a workload. Operators should alert when:
+
+- `metis_pattern_embedding_cache_hit_ratio{workspace_id} < 0.5` for
+  >5 minutes after the first 100 turns of the workload **and**
+- `rate(metis_pattern_embedding_cache_misses_total[5m]) > 0.1` (i.e.
+  the workspace is actually using v2).
+
+A sustained low ratio means the cache is undersized (raise
+`embedding_cache_max_rows`) or thrashed (lower workspace traffic, or
+opt out of v2 with `fingerprint_version=v1`).
+
+---
+
+## 18. References
 
 - `routing-engine.md §4.1`, §5.5, §11.6 — slot 4 ordering, K-NN math,
   open question on pattern-driven tier resolution.

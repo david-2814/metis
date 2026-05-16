@@ -10,6 +10,17 @@ description: >-
   can't paper over those gaps by trial-and-error. Objective verification
   (no self-report).
 suite_version: 1
+# Per the §A3-rev6 cross-run audit (RESULTS.md §A3-rev6): haiku 0.852 /
+# sonnet 0.971 / gap +0.119 across §A3-rev3..rev6 patterns DBs — below
+# the 0.4 signal-strength threshold but kept on disk because the
+# §A3-rev3 Pass C inversion (haiku 0.784 / sonnet 0.833) — the single
+# end-to-end demonstration that the routing K-NN inverts when the
+# cluster aggregate flips — happened on this workload. The new
+# default suite uses subtle-bug-fix-with-test / recursive-data-
+# structure-traversal / refactor-with-contract-preservation as the
+# high-signal generalization targets; this workload is runnable by
+# name so the §A3 series can reproduce historical results.
+signal_strength: marginal
 turns:
   - prompt: >-
       Read `test_cases.txt` and `runner.py` in this workspace. In one short
@@ -46,4 +57,12 @@ expect:
   max_hard_failures: 0
 evaluate:
   rubric: heuristic
-  expect_substring_in_final_response: "PASS 16/16"
+  # Partial-credit replaces the pass/fail "PASS 16/16" substring check
+  # (evaluator.md §5.4 v1.2 / §A3-rev6 / 13a-1 follow-up). The runner.py
+  # prints `PASS N/16` or `FAIL N/16`; the heuristic parses the ratio and
+  # scores 0.0..1.0 linearly. Surfaces mid-range outcomes (haiku at 12/16,
+  # sonnet at 16/16) the prior pass/fail check collapsed to 0 or 1.
+  partial_credit:
+    enabled: true
+    criterion: test_pass_count_ratio
+    map: linear

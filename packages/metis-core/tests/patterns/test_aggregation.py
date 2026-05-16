@@ -155,10 +155,56 @@ def test_a3rev_unblock_lowering_cost_weight_flips_chooser() -> None:
     assert old.ranked[0].score == pytest.approx(0.79)
     assert old.ranked[1].score == pytest.approx(0.63)
 
-    # New default: quality delta of 0.2 clears the 0.1 cost margin.
+    # 2026-05-14 default (cw=0.1): quality delta of 0.2 clears the 0.1
+    # cost margin.
     #   haiku  = 0.9*0.7 + 0.1*1.0 = 0.73
     #   sonnet = 0.9*0.9 + 0.1*0.0 = 0.81
-    new = aggregate_recommendation(rows, cost_weight=0.1)
+    intermediate = aggregate_recommendation(rows, cost_weight=0.1)
+    assert intermediate.chosen_model == "anthropic:claude-sonnet-4-6"
+    assert intermediate.ranked[0].score == pytest.approx(0.81)
+    assert intermediate.ranked[1].score == pytest.approx(0.73)
+
+
+def test_a3rev5_unblock_lowering_cost_weight_inverts_chooser_at_smaller_delta() -> None:
+    # The §A3-rev5 follow-up: at cost_weight=0.10 the cost-efficiency term
+    # adds a flat +0.10 floor to whichever model is cheapest (since
+    # cost_efficiency normalizes to [0.0, 1.0] across the cluster), so a
+    # quality delta below ~0.10 cannot flip the chooser. With the §A3-rev5
+    # patterns DB the regex-with-edge-cases cluster shape was haiku=0.91
+    # vs sonnet=1.00 — a 0.09 delta below the cost floor; slot 4 picked
+    # haiku. Lowering cost_weight to 0.05 halves the floor to +0.05 so a
+    # 0.07 quality delta inverts the ranking. The scoring formula is
+    # unchanged — only the constant moves. See benchmarks/RESULTS.md §A3-rev5
+    # Q1 finding and routing-engine.md §5.5 "Default rationale".
+    rows = (
+        _row(
+            model="anthropic:claude-haiku-4-5",
+            success_mean=0.78,
+            success_count=10,
+            sample_size=10,
+            avg_cost="0.01",  # cheap → cost_efficiency = 1.0
+        ),
+        _row(
+            model="anthropic:claude-sonnet-4-6",
+            success_mean=0.85,
+            success_count=10,
+            sample_size=10,
+            avg_cost="0.10",  # expensive → cost_efficiency = 0.0
+        ),
+    )
+    # 2026-05-14 default (cw=0.1): cost floor swamps the 0.07 quality delta.
+    #   haiku  = 0.9*0.78 + 0.1*1.0 = 0.802
+    #   sonnet = 0.9*0.85 + 0.1*0.0 = 0.765
+    old = aggregate_recommendation(rows, cost_weight=0.1)
+    assert old.chosen_model == "anthropic:claude-haiku-4-5"
+    assert old.ranked[0].score == pytest.approx(0.802)
+    assert old.ranked[1].score == pytest.approx(0.765)
+
+    # 2026-05-15 default (cw=0.05): cost floor halved; the 0.07 quality
+    # delta now exceeds the 0.05 cost margin and inverts the ranking.
+    #   haiku  = 0.95*0.78 + 0.05*1.0 = 0.791
+    #   sonnet = 0.95*0.85 + 0.05*0.0 = 0.8075
+    new = aggregate_recommendation(rows, cost_weight=0.05)
     assert new.chosen_model == "anthropic:claude-sonnet-4-6"
-    assert new.ranked[0].score == pytest.approx(0.81)
-    assert new.ranked[1].score == pytest.approx(0.73)
+    assert new.ranked[0].score == pytest.approx(0.8075)
+    assert new.ranked[1].score == pytest.approx(0.791)

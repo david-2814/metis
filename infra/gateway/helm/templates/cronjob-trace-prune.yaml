@@ -1,0 +1,75 @@
+{{- if and .Values.traceRetention.enabled .Values.persistence.enabled -}}
+{{/*
+  Trace-DB retention sweep (trace-retention.md §8).
+  Runs `metis trace prune --days <N>` against the trace-DB PVC on a
+  schedule. Separate pod, not in-process — keeps the sweep off the
+  gateway's request hot path. Concurrency forbidden so a long
+  catch-up sweep doesn't overlap itself.
+
+  Requires the gateway to be on a ReadWriteMany volume *or* the
+  operator to accept that the CronJob mounts the PVC while the
+  gateway also has it mounted (ReadWriteOnce filesystems will
+  reject the second mount; in that case either move to RWX or
+  pause the gateway during the prune window). The chart does not
+  enforce one or the other — the trade-off lives in
+  trace-retention.md §8.
+*/}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "metis-gateway.fullname" . }}-trace-prune
+  labels:
+    {{- include "metis-gateway.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.traceRetention.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.traceRetention.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.traceRetention.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            {{- include "metis-gateway.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: trace-prune
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "metis-gateway.serviceAccountName" . }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: trace-prune
+              image: {{ printf "%s:%s"
+                (default .Values.image.repository .Values.traceRetention.image.repository)
+                (default .Values.image.tag .Values.traceRetention.image.tag)
+                | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              command:
+                - metis
+                - trace
+                - prune
+                - --days
+                - {{ .Values.traceRetention.days | quote }}
+                - --db-path
+                - {{ .Values.persistence.dbFile | quote }}
+                {{- if .Values.traceRetention.dryRun }}
+                - --dry-run
+                {{- end }}
+              volumeMounts:
+                - name: data
+                  mountPath: {{ .Values.persistence.mountPath }}
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                {{- toYaml .Values.traceRetention.resources | nindent 16 }}
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ include "metis-gateway.pvcName" . }}
+            - name: tmp
+              emptyDir:
+                medium: Memory
+{{- end }}

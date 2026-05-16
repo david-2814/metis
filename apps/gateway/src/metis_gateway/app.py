@@ -14,13 +14,16 @@ provider quirk in one shape can't bleed into the other.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import socket
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Literal
 
 import msgspec
 from metis_core.adapters.tool_id_map import ToolIdMap
+from metis_core.observability import METRICS_CONTENT_TYPE, MetricsCollector
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
@@ -48,6 +51,7 @@ from metis_gateway.harness import (
     UpstreamProviderError,
     make_disconnect_probe,
 )
+from metis_gateway.middleware_ratelimit import RateLimitConfig, RateLimitMiddleware
 from metis_gateway.middleware_versioning import VersioningMiddleware
 from metis_gateway.quotas import (
     QuotaExceeded,
@@ -55,6 +59,18 @@ from metis_gateway.quotas import (
     enforce_quotas,
 )
 from metis_gateway.runtime import GatewayRuntime
+from metis_gateway.signup import (
+    SignupConfig,
+    SignupError,
+    SignupState,
+    account_keys_create_handler,
+    account_keys_list_handler,
+    account_keys_revoke_handler,
+    build_signup_state,
+    signup_error_response,
+    signup_handler,
+    signup_verify_handler,
+)
 from metis_gateway.translators import (
     InboundTranslationError,
     parse_openai_request,
@@ -66,42 +82,208 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8422
+# gateway-hardening.md §2.1 / §3 — connection-rate hardening defaults.
+# `limit_concurrency` is what uvicorn calls a per-process cap on in-flight
+# requests + connections; gateway-hardening.md §2.1 names "per-IP concurrent
+# connections" but the realistic mitigation under in-process uvicorn is the
+# per-process ceiling (the per-IP slice is what the buyer's edge LB / WAF
+# does). Default 1000 matches the spec recommendation.
+DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1000
+# uvicorn's default backlog is 2048; we restate it as a config knob so
+# graceful-restart tuning (SO_REUSEPORT + larger backlog) is one place.
+DEFAULT_BACKLOG = 2048
+
+
+class GatewayConfigError(ValueError):
+    """Raised when a `GatewayConfig` is internally inconsistent.
+
+    Examples: `tls_cert` set without `tls_key`, cert file missing on disk.
+    Surfacing this as a typed exception lets the CLI render a clean
+    diagnostic instead of an opaque uvicorn stacktrace.
+    """
 
 
 @dataclass
 class GatewayConfig:
+    """Configuration for `run_gateway`.
+
+    Bind posture (gateway-hardening.md §2.1):
+
+    - `host` defaults to `127.0.0.1` (loopback-only). Setting it to
+      `0.0.0.0` exposes the gateway on every interface; the rate-limit
+      middleware (§3), audit logging (audit-log.md), and TLS termination
+      (either in-process via `tls_cert`/`tls_key` or via an upstream
+      terminator per §2) MUST be in place before doing so on the open
+      internet. `run_gateway` no longer silently rewrites a non-loopback
+      host — it logs a one-time warning summarizing the hardening checklist.
+
+    Connection-rate hardening (gateway-hardening.md §2.1 / §6):
+
+    - `max_concurrent_connections` caps in-flight requests + open
+      connections per process (uvicorn's `limit_concurrency`). Excess
+      connections are answered with HTTP 503 immediately rather than
+      queued, which is the right shape for a transparent proxy: a leaked
+      key flooding the gateway hits the cap before exhausting the event
+      loop. The buyer's edge layer (CDN/WAF) handles volumetric DDoS;
+      this is the in-process backstop.
+    - `backlog` sets the listen-socket queue depth; 2048 matches
+      uvicorn's default and is plenty for the connection-cap shape above.
+    - `reuse_port` opts into `SO_REUSEPORT` on the listen socket so two
+      gateway processes can bind the same port for graceful restarts /
+      blue-green rollouts. Single-process operation doesn't need it;
+      the helm chart's multi-pod / multi-process recipe does.
+
+    TLS-in-process (gateway-hardening.md §2):
+
+    - `tls_cert` + `tls_key` (both or neither). When both are set,
+      uvicorn terminates TLS in-process. The recommended posture is
+      still a sidecar terminator (nginx-ingress / Caddy / cloud LB) per
+      §2 — running TLS in-process is for buyers who don't want a
+      sidecar in their topology.
+    """
+
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    # gateway-hardening.md §3 — opt-in until Wave 12+ promotes to default.
+    rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
+    # Wave 13 — connection-rate hardening + in-process TLS.
+    max_concurrent_connections: int = DEFAULT_MAX_CONCURRENT_CONNECTIONS
+    backlog: int = DEFAULT_BACKLOG
+    reuse_port: bool = False
+    tls_cert: Path | None = None
+    tls_key: Path | None = None
+    # Wave 14 — self-serve signup. Off by default; SaaS deployments opt in.
+    signup: SignupConfig | None = None
+
+    def __post_init__(self) -> None:
+        if (self.tls_cert is None) != (self.tls_key is None):
+            raise GatewayConfigError(
+                "tls_cert and tls_key must be set together (got one without the other)"
+            )
+        if self.tls_cert is not None and not self.tls_cert.exists():
+            raise GatewayConfigError(f"tls_cert file not found: {self.tls_cert}")
+        if self.tls_key is not None and not self.tls_key.exists():
+            raise GatewayConfigError(f"tls_key file not found: {self.tls_key}")
+        if self.max_concurrent_connections < 1:
+            raise GatewayConfigError(
+                f"max_concurrent_connections must be >= 1 (got {self.max_concurrent_connections})"
+            )
+        if self.backlog < 1:
+            raise GatewayConfigError(f"backlog must be >= 1 (got {self.backlog})")
+
+    @property
+    def tls_enabled(self) -> bool:
+        return self.tls_cert is not None and self.tls_key is not None
 
 
 @dataclass
 class _AppState:
     runtime: GatewayRuntime
     started_at: datetime
+    metrics: MetricsCollector
+    signup: SignupState | None = None
 
 
-def build_app(runtime: GatewayRuntime) -> Starlette:
-    """Build the Starlette ASGI app bound to a fully-wired GatewayRuntime."""
-    state = _AppState(runtime=runtime, started_at=datetime.now(UTC))
+def build_app(
+    runtime: GatewayRuntime,
+    *,
+    rate_limit: RateLimitConfig | None = None,
+    signup: SignupConfig | None = None,
+) -> Starlette:
+    """Build the Starlette ASGI app bound to a fully-wired GatewayRuntime.
+
+    `rate_limit` follows gateway-hardening.md §3 — off by default; pass
+    `RateLimitConfig(enabled=True, ...)` to engage the per-key / per-IP
+    buckets in front of the provider-shape paths.
+
+    `signup` follows gateway.md §"Self-serve signup" (Wave 14) — off by
+    default; passing a `SignupConfig(enabled=True, ...)` mounts the
+    ``/signup``, ``/signup/verify``, and ``/account/keys`` routes. Magic
+    links are logged to stdout in v1 (no real email transport); flipping
+    this on in production requires the operator to swap in a real email
+    sender before the endpoints face the open internet.
+    """
+    metrics = MetricsCollector(
+        bus=runtime.bus,
+        gateway_keys_getter=lambda: _count_gateway_keys(runtime),
+        # docs/operations/trace-performance.md §WAL: gauge on the trace
+        # DB's WAL file size. The gateway is the highest-throughput
+        # writer, so the WAL gauge belongs here above all.
+        trace_wal_bytes_getter=lambda: runtime.trace.wal_size_bytes(),
+    )
+    metrics.attach()
+    # Resolve signup paths against the runtime's db_path / keystore so a
+    # caller that only passes `enabled=True` still gets the right wiring.
+    signup_config = _resolve_signup_config(signup, runtime)
+    signup_state = build_signup_state(signup_config)
+    state = _AppState(
+        runtime=runtime,
+        started_at=datetime.now(UTC),
+        metrics=metrics,
+        signup=signup_state,
+    )
 
     async def _err_handler(_request: Request, exc: Exception) -> Response:
+        if isinstance(exc, SignupError):
+            return signup_error_response(exc)
         if isinstance(exc, HTTPException):
             return _error_response(exc.detail or "request rejected", status=exc.status_code)
         logger.exception("unhandled error in gateway endpoint")
         return _error_response("internal server error", status=500, code="internal_error")
 
+    async def _signup_err_handler(_request: Request, exc: Exception) -> Response:
+        assert isinstance(exc, SignupError)
+        return signup_error_response(exc)
+
     routes = [
         Route("/healthz", _health, methods=["GET"]),
+        Route("/metrics", _metrics, methods=["GET"]),
         Route("/v1/chat/completions", chat_completions, methods=["POST"]),
         Route("/v1/messages", messages, methods=["POST"]),
     ]
+    if signup_state is not None:
+        routes.extend(
+            [
+                Route("/signup", signup_handler, methods=["POST"]),
+                Route("/signup/verify", signup_verify_handler, methods=["POST"]),
+                Route("/account/keys", account_keys_list_handler, methods=["GET"]),
+                Route("/account/keys", account_keys_create_handler, methods=["POST"]),
+                Route(
+                    "/account/keys/{key_id}",
+                    account_keys_revoke_handler,
+                    methods=["DELETE"],
+                ),
+            ]
+        )
+    middleware_stack: list[Middleware] = [Middleware(VersioningMiddleware)]
+    if rate_limit is not None and rate_limit.enabled:
+        middleware_stack.append(Middleware(RateLimitMiddleware, config=rate_limit))
     app = Starlette(
         routes=routes,
-        exception_handlers={Exception: _err_handler},
-        middleware=[Middleware(VersioningMiddleware)],
+        exception_handlers={
+            SignupError: _signup_err_handler,
+            Exception: _err_handler,
+        },
+        middleware=middleware_stack,
     )
     app.state.app_state = state
     return app
+
+
+def _resolve_signup_config(
+    config: SignupConfig | None, runtime: GatewayRuntime
+) -> SignupConfig | None:
+    """Fill defaults that depend on the runtime (db path, keystore path).
+
+    The signup module ships with home-relative fallbacks for both, but a
+    caller that wires the runtime against a non-default DB / keystore
+    expects signup to honor those without restating them.
+    """
+    if config is None or not config.enabled:
+        return config
+    if config.db_path is None:
+        config.db_path = runtime.db_file
+    return config
 
 
 def _state(request: Request) -> _AppState:
@@ -112,6 +294,36 @@ async def _health(request: Request) -> Response:
     st = _state(request)
     uptime = (datetime.now(UTC) - st.started_at).total_seconds()
     return _json({"status": "ok", "uptime_seconds": round(uptime, 3)})
+
+
+async def _metrics(request: Request) -> Response:
+    """GET /metrics — Prometheus exposition for in-cluster scrapers.
+
+    Loopback-only by virtue of the gateway's bind posture (see
+    `run_gateway`); production scrape goes through the proxy sidecar
+    + ServiceMonitor (helm chart `monitoring.enabled`).
+    """
+    st = _state(request)
+    body = st.metrics.expose()
+    return Response(content=body, media_type=METRICS_CONTENT_TYPE)
+
+
+def _count_gateway_keys(runtime: GatewayRuntime) -> tuple[int, int]:
+    """Tally `(active, revoked)` for the keystore at scrape time.
+
+    Grace-period-expired keys are still on disk as `status="active"`
+    but `is_active(now=…)` returns False until the next admin sweep
+    persists the revocation; the gauge reflects the auth-time view.
+    """
+    now = datetime.now(UTC)
+    active = 0
+    revoked = 0
+    for key in runtime.keystore.keys():
+        if key.is_active(now=now):
+            active += 1
+        else:
+            revoked += 1
+    return active, revoked
 
 
 async def chat_completions(request: Request) -> Response:
@@ -492,35 +704,119 @@ async def _stream_messages(
 # ---------------------------------------------------------------------------
 
 
+def _is_loopback_host(host: str) -> bool:
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
+def _log_non_loopback_warning(cfg: GatewayConfig) -> None:
+    """Emit a one-time hardening-checklist line when binding non-loopback.
+
+    The check is advisory, not blocking — Wave 13 lifts the loopback-only
+    bind in favor of explicit opt-in (gateway-hardening.md §2.1). Whether
+    the hardening layers are *actually* in place is the operator's
+    responsibility; this log line names them so a quick `grep WARN`
+    surfaces the checklist at boot.
+    """
+    have_tls = cfg.tls_enabled
+    have_rl = cfg.rate_limit.enabled
+    logger.warning(
+        "gateway bound to non-loopback host=%s port=%d — verify perimeter: "
+        "tls_in_process=%s rate_limit=%s. "
+        "If TLS is terminated upstream (nginx-ingress/Caddy/cloud LB) and "
+        "rate limiting is enforced there, this is fine. Otherwise, see "
+        "docs/specs/gateway-hardening.md §2.",
+        cfg.host,
+        cfg.port,
+        "on" if have_tls else "off",
+        "on" if have_rl else "off",
+    )
+
+
+def _make_listen_socket(cfg: GatewayConfig) -> socket.socket:
+    """Create a bound + listening TCP socket with SO_REUSEADDR (+ SO_REUSEPORT
+    when `cfg.reuse_port`).
+
+    Returned to uvicorn via `Server.serve(sockets=[sock])` so that two
+    gateway processes can hold the same `(host, port)` for graceful
+    restart / rolling deploy. Single-process operation never needs this;
+    the helm chart multi-pod recipe enables it via the entrypoint.
+    """
+    family = socket.AF_INET6 if ":" in cfg.host else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if cfg.reuse_port:
+        # SO_REUSEPORT is Linux 3.9+ / macOS / BSD. The attribute may be
+        # absent on Windows; we read via getattr so the import is harmless.
+        reuse_port_const = getattr(socket, "SO_REUSEPORT", None)
+        if reuse_port_const is None:
+            raise GatewayConfigError(
+                "reuse_port=True requested but SO_REUSEPORT is not available on this platform"
+            )
+        sock.setsockopt(socket.SOL_SOCKET, reuse_port_const, 1)
+    sock.bind((cfg.host, cfg.port))
+    sock.listen(cfg.backlog)
+    sock.set_inheritable(True)
+    return sock
+
+
+def _build_uvicorn_config(app: Starlette, cfg: GatewayConfig):
+    """Project a `GatewayConfig` onto a `uvicorn.Config`.
+
+    Extracted from `run_gateway` so tests can inspect the projection
+    without actually serving.
+    """
+    import uvicorn
+
+    kwargs: dict = {
+        "host": cfg.host,
+        "port": cfg.port,
+        "log_level": "info",
+        "lifespan": "off",
+        "limit_concurrency": cfg.max_concurrent_connections,
+        "backlog": cfg.backlog,
+    }
+    if cfg.tls_enabled:
+        kwargs["ssl_certfile"] = str(cfg.tls_cert)
+        kwargs["ssl_keyfile"] = str(cfg.tls_key)
+    return uvicorn.Config(app, **kwargs)
+
+
 async def run_gateway(runtime: GatewayRuntime, config: GatewayConfig | None = None) -> None:
     """Run the gateway HTTP server until shutdown.
 
-    v1 binds loopback-only, matching `metis serve`'s safety posture. The
-    public-facing deployment shape (TLS terminator in front of the gateway)
-    is operator responsibility per gateway.md §3.2 — the production-bind
-    path is gated behind future hardening (auth/rate limiting/audit) before
-    v1 will accept non-loopback binds.
+    Bind posture (gateway-hardening.md §2.1):
+
+    - Default `host="127.0.0.1"` (loopback-only). Pre-Wave-13 the gateway
+      silently rewrote any non-loopback host to 127.0.0.1; that constraint
+      is lifted. The operator opts into a public bind explicitly via
+      `--host 0.0.0.0`, which logs a one-time hardening-checklist warning
+      and then trusts the operator.
+    - In-process TLS engages when `tls_cert` + `tls_key` are both set.
+      The recommended posture remains an upstream terminator (see §2);
+      in-process TLS is a convenience for buyers who don't want a sidecar.
+    - `SO_REUSEPORT` engages when `reuse_port=True`, allowing graceful
+      restart by letting an old + new process bind the same port.
     """
     import uvicorn
 
     cfg = config or GatewayConfig()
-    if cfg.host not in ("127.0.0.1", "localhost", "::1"):
-        logger.warning(
-            "non-loopback bind %r requested; forcing 127.0.0.1 (v1 safety guarantee)",
-            cfg.host,
-        )
-        cfg.host = "127.0.0.1"
-    app = build_app(runtime)
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host=cfg.host,
-            port=cfg.port,
-            log_level="info",
-            lifespan="off",
-        )
-    )
-    await server.serve()
+    if not _is_loopback_host(cfg.host):
+        _log_non_loopback_warning(cfg)
+
+    app = build_app(runtime, rate_limit=cfg.rate_limit, signup=cfg.signup)
+    uvicorn_config = _build_uvicorn_config(app, cfg)
+    server = uvicorn.Server(uvicorn_config)
+
+    sockets: list[socket.socket] | None = None
+    if cfg.reuse_port:
+        sockets = [_make_listen_socket(cfg)]
+
+    try:
+        await server.serve(sockets=sockets)
+    finally:
+        if sockets is not None:
+            for sock in sockets:
+                sock.close()
 
 
 # ---------------------------------------------------------------------------
@@ -730,9 +1026,12 @@ def _quota_exceeded_response(verdict: QuotaExceeded, *, shape: str) -> Response:
 
 
 __all__ = [
+    "DEFAULT_BACKLOG",
     "DEFAULT_HOST",
+    "DEFAULT_MAX_CONCURRENT_CONNECTIONS",
     "DEFAULT_PORT",
     "GatewayConfig",
+    "GatewayConfigError",
     "build_app",
     "chat_completions",
     "messages",

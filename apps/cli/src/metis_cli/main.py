@@ -109,8 +109,80 @@ def build_parser() -> argparse.ArgumentParser:
         "Default: anthropic:claude-sonnet-4-6",
         default="anthropic:claude-sonnet-4-6",
     )
-    gateway.add_argument("--host", default="127.0.0.1", help="Bind host (loopback-only in v1).")
+    gateway.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Bind host. Default 127.0.0.1 (loopback). Pass 0.0.0.0 to expose "
+            "on every interface; gateway-hardening.md §2.1 lists the perimeter "
+            "checklist (TLS termination, rate-limit middleware, audit logging) "
+            "the operator owns when binding non-loopback."
+        ),
+    )
     gateway.add_argument("--port", type=int, default=8422, help="Bind port.")
+    gateway.add_argument(
+        "--tls-cert",
+        default=None,
+        help=(
+            "Path to a PEM-encoded TLS certificate. Enables in-process TLS "
+            "termination (requires --tls-key). Default: no TLS; terminate at "
+            "an upstream sidecar (nginx-ingress / Caddy / cloud LB) per "
+            "gateway-hardening.md §2."
+        ),
+    )
+    gateway.add_argument(
+        "--tls-key",
+        default=None,
+        help="Path to the PEM-encoded TLS private key. Required when --tls-cert is set.",
+    )
+    gateway.add_argument(
+        "--max-connections",
+        type=int,
+        default=1000,
+        help=(
+            "Per-process cap on in-flight requests + open connections (uvicorn "
+            "limit_concurrency). Excess connections return HTTP 503 immediately. "
+            "Default 1000; gateway-hardening.md §2.1."
+        ),
+    )
+    gateway.add_argument(
+        "--reuse-port",
+        action="store_true",
+        default=False,
+        help=(
+            "Bind the listen socket with SO_REUSEPORT so a second gateway "
+            "process can hold the same port for graceful restart. Default off; "
+            "single-process operation does not need it."
+        ),
+    )
+    gateway.add_argument(
+        "--enable-signup",
+        action="store_true",
+        default=False,
+        help=(
+            "Mount the self-serve `/signup` + `/account/keys` endpoints "
+            "(gateway.md §Self-serve signup). Off by default — flip on for "
+            "SaaS deployments. Magic links are logged to stdout in v1 (no "
+            "real email transport); operators MUST swap in an email sender "
+            "before exposing /signup on the open internet."
+        ),
+    )
+    gateway.add_argument(
+        "--signup-dashboard-url",
+        default=None,
+        help=(
+            "Base URL embedded in magic-link emails / responses. Default: "
+            "the gateway's own bind URL. Override to a public hostname when "
+            "running behind a reverse proxy."
+        ),
+    )
+    gateway.add_argument(
+        "--signup-accounts-path",
+        default=None,
+        help=(
+            "Path to the accounts JSON store. Default: ~/.metis/gateway/accounts.json (mode 0o600)."
+        ),
+    )
 
     issue = gateway_sub.add_parser(
         "issue-key",
@@ -246,6 +318,168 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
 
+    trace = sub.add_parser(
+        "trace",
+        help="Trace-DB administrative operations (prune; future: stats / size).",
+    )
+    trace_sub = trace.add_subparsers(dest="trace_command", required=True)
+
+    prune = trace_sub.add_parser(
+        "prune",
+        help=(
+            "Delete trace events older than --days (default 90); preserves "
+            "audit-flagged events. CLI defaults to apply; pass --dry-run "
+            "to preview. See docs/specs/trace-retention.md."
+        ),
+    )
+    prune.add_argument(
+        "--days",
+        type=int,
+        default=90,
+        help="Retention cutoff in days. Default: 90.",
+    )
+    prune.add_argument(
+        "--db-path",
+        help="Trace DB path. Default: ~/.metis/metis.db",
+        default=None,
+    )
+    prune.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report counts without deleting any rows (no trace.swept event emitted).",
+    )
+
+    vacuum = trace_sub.add_parser(
+        "vacuum",
+        help=(
+            "Reclaim free pages by rebuilding the DB in place (SQLite VACUUM). "
+            "Run from a separate pod / CronJob — see "
+            "docs/operations/trace-performance.md §4."
+        ),
+    )
+    vacuum.add_argument(
+        "--db-path",
+        help="Trace DB path. Default: ~/.metis/metis.db",
+        default=None,
+    )
+
+    audit = sub.add_parser(
+        "audit",
+        help="Audit-log operations (export the audit subset for SIEM ingest).",
+    )
+    audit_sub = audit.add_subparsers(dest="audit_command", required=True)
+    audit_export = audit_sub.add_parser(
+        "export",
+        help="Export audit events in a window to JSONL or CSV (audit-log.md §9).",
+    )
+    audit_export.add_argument("dest", help="Destination path for the export file.")
+    audit_export.add_argument(
+        "--db-path",
+        help="Source trace DB. Default: ~/.metis/metis.db",
+        default=None,
+    )
+    audit_export.add_argument(
+        "--format",
+        choices=("jsonl", "csv"),
+        default="jsonl",
+        help="Export format. Default: jsonl.",
+    )
+    audit_export.add_argument(
+        "--since",
+        default=None,
+        help="ISO 8601 UTC start of window (inclusive). Default: 7 days ago.",
+    )
+    audit_export.add_argument(
+        "--until",
+        default=None,
+        help="ISO 8601 UTC end of window (exclusive). Default: now.",
+    )
+    audit_export.add_argument(
+        "--event-type",
+        action="append",
+        default=None,
+        dest="event_types",
+        help="Restrict the export to a specific audit event type (repeat for multiple).",
+    )
+    audit_export.add_argument(
+        "--redact",
+        choices=("passthrough", "pseudonymize", "redact_private", "aggregate_only"),
+        default="passthrough",
+        help=(
+            "Redaction mode (redaction.md §2). `pseudonymize` hashes "
+            "identity fields; `redact_private` also strips PRIVATE-tier "
+            "text; `aggregate_only` produces a single JSON rollup."
+        ),
+    )
+
+    analytics = sub.add_parser(
+        "analytics",
+        help="Analytics admin subcommands (user-export, ...).",
+    )
+    analytics_sub = analytics.add_subparsers(dest="analytics_command", required=True)
+
+    user_export = analytics_sub.add_parser(
+        "user-export",
+        help=(
+            "Stream every trace event stamped with `user_id` as JSONL "
+            "(GDPR / CCPA portability — analytics-api.md §4.10.1)."
+        ),
+    )
+    user_export.add_argument(
+        "user_id",
+        help="Stable principal id whose events should be exported.",
+    )
+    user_export.add_argument(
+        "--from",
+        dest="from_",
+        default=None,
+        help="ISO 8601 UTC start of window (inclusive). Omit for all-time.",
+    )
+    user_export.add_argument(
+        "--to",
+        default=None,
+        help="ISO 8601 UTC end of window (exclusive). Omit for all-time.",
+    )
+    user_export.add_argument(
+        "--out",
+        default=None,
+        help="Output file path. Omit to stream to stdout (suitable for | jq).",
+    )
+    user_export.add_argument(
+        "--db-path",
+        default=None,
+        help="Trace DB path. Default: ~/.metis/metis.db",
+    )
+
+    user = sub.add_parser(
+        "user",
+        help="User-admin subcommands (forget, ...).",
+    )
+    user_sub = user.add_subparsers(dest="user_command", required=True)
+
+    user_forget = user_sub.add_parser(
+        "forget",
+        help=(
+            "Pseudonymize every trace event stamped with `user_id` "
+            "(GDPR / CCPA right-to-be-forgotten — analytics-api.md §4.10.2)."
+        ),
+    )
+    user_forget.add_argument(
+        "user_id",
+        help="Stable principal id to forget.",
+    )
+    user_forget.add_argument(
+        "--confirm",
+        action="store_true",
+        default=False,
+        help="Required. Without this flag the command refuses to act.",
+    )
+    user_forget.add_argument(
+        "--db-path",
+        default=None,
+        help="Trace DB path. Default: ~/.metis/metis.db",
+    )
+
     restore = sub.add_parser(
         "restore",
         help="Restore a trace-DB backup over the live DB (schema-version checked).",
@@ -260,6 +494,58 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="Overwrite an existing destination DB (default: refuse).",
+    )
+
+    trial = sub.add_parser(
+        "trial",
+        help=(
+            "Run a pre-baked buyer-trial workload (under benchmarks/workloads-trial/) "
+            "and print actual / baseline / savings_pct. See docs/operations/quickstart.md."
+        ),
+    )
+    trial.add_argument(
+        "--workload",
+        default="refactor-extract-helper",
+        help="Trial workload name. Default: refactor-extract-helper.",
+    )
+    trial.add_argument(
+        "--model",
+        default="anthropic:claude-haiku-4-5",
+        help="Actual model (canonical id or alias). Default: anthropic:claude-haiku-4-5.",
+    )
+    trial.add_argument(
+        "--baseline",
+        default="anthropic:claude-sonnet-4-6",
+        help=(
+            "Baseline model for the savings counterfactual (priced from the "
+            "trial trace via the same PriceTable). Default: anthropic:claude-sonnet-4-6."
+        ),
+    )
+    trial.add_argument(
+        "--db-path",
+        default=None,
+        help=(
+            "SQLite path for the trial's local trace DB. Default: a fresh "
+            "/tmp/metis-trial-<UTC-ts>.db. Pass an explicit path to keep it."
+        ),
+    )
+    trial.add_argument(
+        "--gateway-url",
+        default=None,
+        help=(
+            "Run through a gateway (e.g. http://127.0.0.1:8422). Sets "
+            "ANTHROPIC_BASE_URL so the SDK routes through it. Per-key cost "
+            "lands in the gateway's trace DB; the local DB is used for the "
+            "savings counterfactual only. Requires --gateway-key."
+        ),
+    )
+    trial.add_argument(
+        "--gateway-key",
+        default=None,
+        help=(
+            "Gateway-issued bearer token (gw_…). Replaces ANTHROPIC_API_KEY "
+            "for the duration of the trial. Required with --gateway-url."
+        ),
     )
 
     return parser
@@ -330,6 +616,63 @@ def main(argv: list[str] | None = None) -> int:
             from metis_cli.backup import run_restore_command
 
             return run_restore_command(source=args.source, db_path=args.db_path, force=args.force)
+        if args.command == "trial":
+            from metis_cli.trial import run_trial_command
+
+            return run_trial_command(
+                workload=args.workload,
+                model=args.model,
+                baseline=args.baseline,
+                db_path=args.db_path,
+                gateway_url=args.gateway_url,
+                gateway_key=args.gateway_key,
+            )
+        if args.command == "analytics":
+            if args.analytics_command == "user-export":
+                from metis_cli.user import run_user_export_command
+
+                return run_user_export_command(
+                    user_id=args.user_id,
+                    from_=args.from_,
+                    to=args.to,
+                    out=args.out,
+                    db_path=args.db_path,
+                )
+        if args.command == "user":
+            if args.user_command == "forget":
+                from metis_cli.user import run_user_forget_command
+
+                return run_user_forget_command(
+                    user_id=args.user_id,
+                    confirm=args.confirm,
+                    db_path=args.db_path,
+                )
+        if args.command == "audit":
+            from metis_cli.audit import run_audit_export_command
+
+            if args.audit_command == "export":
+                return run_audit_export_command(
+                    dest=args.dest,
+                    db_path=args.db_path,
+                    format=args.format,
+                    since=args.since,
+                    until=args.until,
+                    event_types=args.event_types,
+                    redact=args.redact,
+                )
+        if args.command == "trace":
+            from metis_cli.trace_admin import run_trace_prune_command
+
+            if args.trace_command == "prune":
+                return run_trace_prune_command(
+                    db_path=args.db_path,
+                    days=args.days,
+                    dry_run=args.dry_run,
+                )
+            if args.trace_command == "vacuum":
+                from metis_cli.trace_admin import run_trace_vacuum_command
+
+                return run_trace_vacuum_command(db_path=args.db_path)
         if args.command == "gateway":
             if args.gateway_command == "issue-key":
                 from pathlib import Path
@@ -407,6 +750,13 @@ def main(argv: list[str] | None = None) -> int:
                     global_default_model=args.global_default,
                     host=args.host,
                     port=args.port,
+                    tls_cert=args.tls_cert,
+                    tls_key=args.tls_key,
+                    max_connections=args.max_connections,
+                    reuse_port=args.reuse_port,
+                    signup_enabled=args.enable_signup,
+                    signup_dashboard_url=args.signup_dashboard_url,
+                    signup_accounts_path=args.signup_accounts_path,
                 )
             )
     except KeyboardInterrupt:

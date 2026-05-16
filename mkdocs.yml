@@ -1,0 +1,216 @@
+# MkDocs configuration for the Metis documentation site.
+#
+# Built from the existing docs/ corpus (specs + operations + strategy +
+# getting-started). This file is pure config — no doc content lives here;
+# all pages resolve to existing files under docs/. To preview locally:
+#
+#   uv run --with mkdocs-material mkdocs serve
+#
+# Or via the docs service in docker-compose.yml (mirrors the gateway shape):
+#
+#   docker compose --profile docs up docs
+
+site_name: Metis
+site_description: >-
+  Local-first AI dev agent — provider-agnostic, self-improving, cost-aware.
+  Canonical message format, layered routing, bounded memory, transparent
+  cost attribution.
+site_url: https://docs.metis.dev/
+site_author: Metis maintainers
+
+# Source links — each page renders an "Edit this page" + "View source"
+# action that lands the reader on GitHub at the right line.
+repo_name: 2sumAI/metis
+repo_url: https://github.com/2sumAI/metis
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+# Exclude non-doc artifacts that live alongside the markdown.
+exclude_docs: |
+  .DS_Store
+  **/.DS_Store
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - navigation.footer
+    - search.highlight
+    - search.share
+    - search.suggest
+    - content.action.edit
+    - content.action.view
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+
+plugins:
+  - search
+
+# Link / nav validation tuning.
+#
+# Specs intentionally cross-reference source code (e.g.
+# `../../packages/metis-core/...`) and top-level repo files (`AGENTS.md`,
+# `benchmarks/RESULTS.md`) that aren't part of the docs/ tree but render
+# fine on GitHub. We downgrade those to `info` so they don't fail a
+# --strict build, while keeping nav-level mistakes (missing files,
+# misplaced files) at `warn` so a real reorg regression still trips.
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: info
+    absolute_links: info
+    unrecognized_links: info
+    anchors: info
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.snippets
+  - pymdownx.smartsymbols
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/2sumAI/metis
+
+# Nav structure — Getting Started / Specs / Operations / Strategy.
+# Files stay in their current paths (specs in docs/specs/, ops in
+# docs/operations/, market research in docs/market-research/); this nav
+# is the only place they are organized into the four-section hierarchy.
+nav:
+  - Home: index.md
+
+  - Getting Started:
+      - Project overview: project-overview.md
+      - First savings number: operations/quickstart.md
+      - Customer trial recipe: customer-trial-recipe.md
+      - Gateway client quickstart: gateway-client-quickstart.md
+      - Savings demo: savings-demo.md
+      - Standard model profiles: standard-model-profiles.md
+
+  - Specs:
+      - Foundation:
+          - Canonical message format: specs/canonical-message-format.md
+          - Event bus & trace catalog: specs/event-bus-and-trace-catalog.md
+          - Project overview (spec): specs/project-overview.md
+      - Routing & adapters:
+          - Routing engine: specs/routing-engine.md
+          - Provider adapter contract: specs/provider-adapter-contract.md
+          - Tool dispatcher: specs/tool-dispatcher.md
+          - Delegation: specs/delegation.md
+          - Pricing: specs/pricing.md
+      - Sessions & memory:
+          - Memory store: specs/memory-store.md
+          - Context assembler: specs/context-assembler.md
+          - Pattern store: specs/pattern-store.md
+          - Skill format: specs/skill-format.md
+          - Skill curator: specs/skill-curator.md
+      - Server & gateway:
+          - Server API: specs/server-api.md
+          - Streaming protocol: specs/streaming-protocol.md
+          - Gateway: specs/gateway.md
+          - Gateway hardening: specs/gateway-hardening.md
+          - Multi-user: specs/multi-user.md
+          - API versioning: specs/api-versioning.md
+          - Deployment shape: specs/deployment-shape.md
+      - Quality & evidence:
+          - Evaluator: specs/evaluator.md
+          - Benchmark: specs/benchmark.md
+          - Analytics API: specs/analytics-api.md
+          - Observability: specs/observability.md
+      - Compliance & retention:
+          - Audit log: specs/audit-log.md
+          - Trace retention: specs/trace-retention.md
+          - Redaction: specs/redaction.md
+      - Change log: specs/CHANGES.md
+
+  - Operations:
+      - Quickstart: operations/quickstart.md
+      - Gateway deployment: gateway-deployment.md
+      - Upgrade guide: operations/upgrade-guide.md
+      - Incident response: operations/incident-response.md
+      - Status page: operations/status-page.md
+      - SLA template: operations/sla-template.md
+      - Trace performance: operations/trace-performance.md
+      - Compliance overview: operations/compliance-overview.md
+      - SOC2 readiness: operations/soc2-readiness.md
+      - Phase claim proposal: operations/phase-claim-proposal.md
+
+  - Strategy:
+      - Strategy: STRATEGY.md
+      - Known issues: KNOWN_ISSUES.md
+      - Sales:
+          - One-pager: sales/one-pager.md
+          - Buyer FAQ: sales/faq.md
+          - Competitive comparison: sales/competitive-comparison.md
+          - Objection handling: sales/objection-handling.md
+          - Case study template: sales/case-study-template.md
+      - Market research:
+          - Synthesis: market-research/synthesis.md
+          - Coding agents: market-research/01-coding-agents.md
+          - Local-first platforms: market-research/02-local-first-platforms.md
+          - Routing layers: market-research/03-routing-layers.md
+          - Skills & memory: market-research/04-skills-and-memory.md

@@ -14,6 +14,7 @@ opt into the audit trail (`signals`).
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -31,6 +32,7 @@ from metis_core.eval.rubric import (
     TURN_HEURISTIC_RUBRIC_VERSION,
     WORKLOAD_HEURISTIC_RUBRIC_ID,
     WORKLOAD_HEURISTIC_RUBRIC_VERSION,
+    PartialCreditConfig,
     RubricSet,
     WorkloadRubric,
 )
@@ -381,9 +383,30 @@ class HeuristicJudge:
         else:
             base = 0.5
 
+        # Partial-credit primitive (evaluator.md §5.4 v1.2, §A3-rev6 / 13a-1
+        # follow-up): when configured, parse a mid-score from the final
+        # response text (e.g. `passed/total` for pytest runs) and bypass the
+        # pass/fail substring assertion entirely. Substring-only rubrics
+        # collapse partial successes (3/4 tests pass) to 0; partial-credit
+        # surfaces the gradient haiku and sonnet actually produce.
+        partial_credit_active = rubric.partial_credit is not None and rubric.partial_credit.enabled
+        partial_credit_score: float | None = None
+        partial_credit_signal: dict[str, Any] | None = None
+        if partial_credit_active:
+            (
+                partial_credit_score,
+                partial_credit_signal,
+                pc_flags,
+                pc_neg_flags,
+            ) = _partial_credit_score(rubric.partial_credit, final_response_text)
+            flags.extend(pc_flags)
+            flags_negative.extend(pc_neg_flags)
+
         # Substring assertion (evaluator.md §5.4 special-case heuristic).
+        # Bypassed when partial_credit is active — the criterion is the new
+        # signal source. Workloads should pick one or the other.
         substring_present: bool | None = None
-        if rubric.expect_substring_in_final_response:
+        if rubric.expect_substring_in_final_response and not partial_credit_active:
             substring_present = (
                 rubric.expect_substring_in_final_response.lower() in final_response_text.lower()
             )
@@ -411,7 +434,7 @@ class HeuristicJudge:
             flags.append("workload_assertions_passed")
 
         # Compose: base score is the mean turn score; assertions and the
-        # substring assertion shift it.
+        # substring assertion (or partial-credit ratio) shift it.
         score = base
         if assertion_failures:
             score = score * 0.5
@@ -419,6 +442,14 @@ class HeuristicJudge:
             score = (score + 1.0) / 2.0
         elif substring_present is False:
             score = score * 0.5
+        elif partial_credit_score is not None:
+            # Average the partial-credit ratio into the base. A perfect
+            # partial-credit ratio (1.0) recovers the same boost as a
+            # passing substring assertion ((base + 1.0)/2); a zero ratio
+            # produces the same penalty as a failing one (base/2 ≡
+            # (base + 0)/2). Mid-ratios produce mid-scores — the whole
+            # point of this primitive.
+            score = (score + partial_credit_score) / 2.0
 
         # Grounding score (when configured) is averaged into the composed
         # score with equal weight — a workload that fully grounds in real
@@ -436,12 +467,17 @@ class HeuristicJudge:
         score = score * content_penalty
 
         # Workload-level confidence: high when we have per-turn signal AND
-        # at least one explicit assertion (substring, assertion-set, or
-        # grounding tokens).
+        # at least one explicit assertion (substring, assertion-set,
+        # grounding tokens, or a partial-credit signal with a real test
+        # parse).
+        partial_credit_has_signal = partial_credit_signal is not None and bool(
+            partial_credit_signal.get("test_signal_found")
+        )
         has_explicit = (
             substring_present is not None
             or bool(extra.get("assertions_checked"))
             or grounding_score is not None
+            or partial_credit_has_signal
         )
         if per_turn_scores and has_explicit:
             confidence = 0.8
@@ -464,6 +500,14 @@ class HeuristicJudge:
             signals["grounding_tokens_present"] = grounding_signal["tokens_present"]
             signals["grounding_tokens_missing"] = grounding_signal["tokens_missing"]
             signals["forbidden_grounding_present"] = grounding_signal["forbidden_present"]
+        if partial_credit_signal is not None:
+            signals["partial_credit_score"] = partial_credit_signal["score"]
+            signals["partial_credit_ratio"] = partial_credit_signal["ratio"]
+            signals["partial_credit_criterion"] = partial_credit_signal["criterion"]
+            signals["partial_credit_map"] = partial_credit_signal["map"]
+            signals["partial_credit_passed"] = partial_credit_signal["passed"]
+            signals["partial_credit_total"] = partial_credit_signal["total"]
+            signals["partial_credit_test_signal_found"] = partial_credit_signal["test_signal_found"]
         return score, confidence, signals
 
 
@@ -586,3 +630,117 @@ def _grounding_score(
         "forbidden_present": forbidden_present,
     }
     return score, pos_flags, neg_flags, signal
+
+
+# Pytest summary line: matches `N passed`, `M failed`, `K error(s)`. These
+# appear independently across the final line; the parser picks the LAST
+# occurrence of each, since iterative agents often print intermediate
+# summaries before the final one.
+_PYTEST_PASSED_RE = re.compile(r"(\d+)\s+passed", re.IGNORECASE)
+_PYTEST_FAILED_RE = re.compile(r"(\d+)\s+failed", re.IGNORECASE)
+_PYTEST_ERROR_RE = re.compile(r"(\d+)\s+errors?", re.IGNORECASE)
+
+# `PASS N/M` / `FAIL N/M` runner output. N is the count that passed (or that
+# the line is reporting); M is the total. Both PASS and FAIL forms carry the
+# same ratio shape — for PASS the count up front is the pass count, for FAIL
+# it's also the pass count (the runner.py convention in this repo prints
+# "FAIL N/M" where N is how many passed). We pick the LAST occurrence in the
+# text because iterative outputs often emit per-case lines followed by the
+# final summary.
+_RUNNER_PASS_FAIL_RE = re.compile(r"\b(?:PASS|FAIL)\s+(\d+)\s*/\s*(\d+)\b", re.IGNORECASE)
+
+
+def _partial_credit_score(
+    config: PartialCreditConfig, final_response_text: str
+) -> tuple[float, dict[str, Any], list[str], list[str]]:
+    """Compute the partial-credit score for the configured criterion.
+
+    Returns (score, signal_dict, positive_flags, negative_flags). The score
+    is in [0, 1]; the signal carries the parse details for the audit trail.
+    When no test signal is found in the response, returns score=0 with the
+    `partial_credit_no_test_signal` negative flag — a missing signal is
+    treated as a failure (the agent was asked to run tests and report).
+    """
+    if config.criterion == "test_pass_count_ratio":
+        ratio, passed, total, signal_found = _parse_test_pass_count(final_response_text)
+    else:  # pragma: no cover — Literal exhausts at type-check time
+        raise ValueError(f"unknown partial-credit criterion: {config.criterion}")
+
+    pos_flags: list[str] = []
+    neg_flags: list[str] = []
+    if not signal_found:
+        neg_flags.append("partial_credit_no_test_signal")
+    elif ratio >= 1.0:
+        pos_flags.append("partial_credit_full")
+    elif ratio <= 0.0:
+        neg_flags.append("partial_credit_zero")
+    else:
+        pos_flags.append("partial_credit_partial")
+
+    mapped = _apply_partial_credit_map(ratio, config.map)
+    signal: dict[str, Any] = {
+        "score": mapped,
+        "ratio": ratio,
+        "passed": passed,
+        "total": total,
+        "criterion": config.criterion,
+        "map": config.map,
+        "test_signal_found": signal_found,
+    }
+    return mapped, signal, pos_flags, neg_flags
+
+
+def _apply_partial_credit_map(ratio: float, map_kind: str) -> float:
+    if map_kind == "stepped":
+        # Round to the nearest quarter (0.0, 0.25, 0.5, 0.75, 1.0).
+        # Useful when callers want a stable bucketed score rather than the
+        # continuous linear version. The boundary values stay exact at 0 and 1.
+        clamped = 0.0 if ratio < 0 else (1.0 if ratio > 1 else ratio)
+        return round(clamped * 4) / 4
+    # `linear` (default): pass the ratio through, clamped to [0, 1].
+    return 0.0 if ratio < 0 else (1.0 if ratio > 1 else ratio)
+
+
+def _parse_test_pass_count(text: str) -> tuple[float, int, int, bool]:
+    """Extract (ratio, passed, total, signal_found) from response text.
+
+    Recognized shapes:
+    - `PASS N/M` or `FAIL N/M` runner output (per `runner.py` convention in
+      this repo's workloads).
+    - Pytest summary tokens: `N passed`, `M failed`, `K error(s)`. Total is
+      passed + failed + errors. Skipped tests are excluded from the total
+      (they don't represent successes or failures).
+
+    When both shapes appear, the `PASS N/M` runner line wins — it's the
+    most explicit total. Multiple matches of the same shape: the LAST
+    match wins (iterative agents often print intermediate summaries).
+    """
+    runner_matches = list(_RUNNER_PASS_FAIL_RE.finditer(text))
+    if runner_matches:
+        last = runner_matches[-1]
+        passed = int(last.group(1))
+        total = int(last.group(2))
+        if total <= 0:
+            return 0.0, passed, total, False
+        ratio = passed / total
+        return _clamp01(ratio), passed, total, True
+
+    passed_matches = list(_PYTEST_PASSED_RE.finditer(text))
+    failed_matches = list(_PYTEST_FAILED_RE.finditer(text))
+    error_matches = list(_PYTEST_ERROR_RE.finditer(text))
+    passed = int(passed_matches[-1].group(1)) if passed_matches else 0
+    failed = int(failed_matches[-1].group(1)) if failed_matches else 0
+    errors = int(error_matches[-1].group(1)) if error_matches else 0
+    total = passed + failed + errors
+    if total <= 0:
+        return 0.0, 0, 0, False
+    ratio = passed / total
+    return _clamp01(ratio), passed, total, True
+
+
+def _clamp01(x: float) -> float:
+    if x < 0:
+        return 0.0
+    if x > 1:
+        return 1.0
+    return x

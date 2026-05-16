@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter, defaultdict
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
@@ -28,6 +29,7 @@ from metis_core.analytics.errors import (
 )
 from metis_core.analytics.windows import TimeWindow
 from metis_core.pricing import PriceTable
+from metis_core.redaction import Redactor
 
 # Allowed enums per spec.
 _COST_GROUP_BY_ALLOWED: tuple[str, ...] = (
@@ -810,6 +812,108 @@ class AnalyticsStore:
         if group_by == "none":
             return results[0] if results else _empty_quality_row()
         return results
+
+    # ---- /analytics/user/{user_id}/export ---------------------------------
+
+    def user_export(
+        self,
+        user_id: str,
+        *,
+        window: TimeWindow | None = None,
+    ) -> Iterator[bytes]:
+        """Stream every event stamped with `user_id` as JSONL lines.
+
+        Implements the portability ("right to data portability") half of
+        the GDPR / CCPA contract per analytics-api.md §4.10. Each yielded
+        chunk is one JSON object plus `\\n`, suitable for `grep` / `jq`
+        consumption. Bounded memory: uses SQLite's row-by-row cursor and
+        a server-side fetch; the full result is never materialized in
+        Python memory.
+
+        PRIVATE-tier fields are passed through verbatim — this is the
+        user's *own* data export, not a shared / audit-export view. The
+        caller (HTTP handler / CLI) is responsible for any access
+        control before reaching this method.
+
+        Deterministic ordering: `events.id` (ULID), which is monotonic
+        per process. Two exports of the same window return byte-identical
+        output (modulo trailing newlines).
+
+        Event-type coverage: every payload that carries `user_id` in its
+        JSON column. The matcher uses `json_extract(payload_json,
+        '$.user_id')` — agnostic to which event type carries the field,
+        so future additive `user_id`-bearing payloads (e.g. new gateway
+        audit events) automatically land in the export without code
+        changes.
+
+        Yields:
+            JSONL byte chunks. Each chunk is exactly one event line.
+        """
+        sql = (
+            "SELECT id, timestamp_us, session_id, turn_id, parent_event_id, "
+            "  type, actor, sensitivity, payload_json "
+            "FROM events "
+            "WHERE json_extract(payload_json, '$.user_id') = ?"
+        )
+        params: list = [user_id]
+        if window is not None:
+            sql += " AND timestamp_us >= ? AND timestamp_us < ?"
+            params.extend([window.start_us, window.end_us])
+        sql += " ORDER BY id"
+        cursor = self._conn.execute(sql, params)
+        # Yield rows one at a time. SQLite's cursor lazily fetches in
+        # batches under the hood (`arraysize` default 1), so 10k+ rows
+        # don't materialize as a single Python list.
+        for row in cursor:
+            payload = json.loads(row["payload_json"])
+            obj = {
+                "id": row["id"],
+                "timestamp": _us_to_iso(int(row["timestamp_us"])),
+                "session_id": row["session_id"],
+                "turn_id": row["turn_id"],
+                "parent_event_id": row["parent_event_id"],
+                "type": row["type"],
+                "actor": row["actor"],
+                "sensitivity": row["sensitivity"],
+                "payload": payload,
+            }
+            yield json.dumps(obj, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    def user_event_count(
+        self,
+        user_id: str,
+        *,
+        window: TimeWindow | None = None,
+    ) -> int:
+        """Count events stamped with `user_id` (for audit + empty-export check).
+
+        Cheap COUNT(*) query — separate from the streaming export so the
+        HTTP handler can issue a HEAD-style check without consuming the
+        stream.
+        """
+        sql = "SELECT COUNT(*) FROM events WHERE json_extract(payload_json, '$.user_id') = ?"
+        params: list = [user_id]
+        if window is not None:
+            sql += " AND timestamp_us >= ? AND timestamp_us < ?"
+            params.extend([window.start_us, window.end_us])
+        row = self._conn.execute(sql, params).fetchone()
+        return int(row[0]) if row else 0
+
+    # ---- /analytics/user/{user_id}/forget ---------------------------------
+
+    def forget_user(self, user_id: str, *, redactor: Redactor) -> int:
+        """Pseudonymize every event stamped with `user_id`. Returns the count.
+
+        Delegates the actual mutation to the injected `Redactor`
+        (12a-3 / redaction.md owns the policy). This method exists
+        on `AnalyticsStore` only because the analytics surface is
+        where callers already hold a handle — the contract is the
+        `Redactor` protocol, not the store.
+
+        Idempotent at the protocol level: a second call returns 0
+        (the pseudonym has already replaced the original id).
+        """
+        return int(redactor.forget_user(user_id))
 
     def _chosen_model_by_turn(self, window: TimeWindow) -> dict[str, str | None]:
         """Map `turn_id -> chosen_model` from `route.decided` within `window`.

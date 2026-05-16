@@ -456,6 +456,10 @@ evaluate:
   weight_per_turn: 1.0                           # how turns in the workload aggregate
   grounding_tokens: ["RoutingEngine", "policy=", "PolicyEvaluation"]   # v1.1
   forbidden_grounding: ["PATTERN_LOOKUP", "RouterChain", "ModelSelector"] # v1.1
+  partial_credit:                                    # v1.2
+    enabled: true
+    criterion: test_pass_count_ratio
+    map: linear
 ```
 
 The benchmark harness ([`benchmark.md §9`](benchmark.md)) calls the
@@ -529,6 +533,72 @@ substring match would miss. The LLM judge's score remains a single
 Cost discipline: heuristic-tier grounding is $0; LLM-tier grounding
 escalation is one judge call per workload, governed by the same
 `BudgetTracker` caps as the per-turn LLM judge.
+
+#### Partial-credit primitive (v1.2)
+
+`partial_credit` is the rubric input for workloads where the agent's final
+response carries a **count** (test pass/fail tallies, sub-task scoreboards)
+rather than a single boolean substring. The motivating case is documented
+in [`benchmarks/RESULTS.md §A3-rev6 / §13a-1`](../../benchmarks/RESULTS.md):
+across six A3 iterations the per-workload haiku-vs-sonnet quality gap on
+the v1 suite is below the heuristic judge's resolution. Pass/fail substring
+detection collapses partial successes — 12/16 regex cases, 3/4 pytest
+tests — to 0; partial-credit surfaces the mid-range gradient haiku and
+sonnet actually produce.
+
+Schema:
+
+```yaml
+evaluate:
+  rubric: heuristic
+  partial_credit:
+    enabled: true
+    criterion: test_pass_count_ratio   # only criterion in v1
+    map: linear                        # "linear" | "stepped"
+```
+
+Semantics:
+
+- `enabled: false` (default): partial-credit is off; the workload falls
+  back to the pre-v1.2 substring path.
+- `enabled: true`: the heuristic parses `final_response_text` for the
+  configured criterion, applies `map`, and folds the resulting score into
+  the composed workload score **in place of** the pass/fail substring
+  assertion. `expect_substring_in_final_response` is bypassed when
+  partial-credit is active — pick one or the other.
+- `criterion: test_pass_count_ratio`: the parser recognizes two shapes,
+  preferring whichever produces an explicit total:
+    1. `PASS N/M` / `FAIL N/M` runner output (per the `runner.py`
+       convention used in this repo's workloads). The last occurrence in
+       the text wins, so iterative per-case lines followed by the final
+       summary line are graded correctly.
+    2. Pytest summary tokens: `N passed`, `M failed`, `K error(s)`. Total
+       is `passed + failed + errors`; skipped tests are excluded from
+       the denominator (a skip isn't a pass or a fail).
+   The ratio is `passed / total`. When the response contains no parseable
+   test signal (e.g. the agent never reached the test step), the ratio is
+   `0.0` and the `partial_credit_no_test_signal` negative flag fires — a
+   missing signal is treated as a failure.
+- `map: linear` (default): pass the ratio through unchanged. Mid-ratios
+  produce mid-scores; perfect-pass produces 1.0 (recovering the same
+  composed score as the prior `substring_present=True` path); zero-pass
+  produces 0.0 (matching the prior `substring_present=False` halving).
+- `map: stepped`: round the ratio to the nearest 0.25 (so the only
+  possible mapped scores are 0.0, 0.25, 0.5, 0.75, 1.0). Useful when the
+  caller wants a stable bucketed score rather than the continuous version.
+  Endpoints (0/N and N/N) stay exact.
+
+Composition: when partial-credit is active, the composed score is
+`(base + partial_credit_score) / 2.0`, parallel to how the grounding
+score folds in. The rubric exposes workload-level signals
+`partial_credit_score`, `partial_credit_ratio`, `partial_credit_passed`,
+`partial_credit_total`, `partial_credit_criterion`, `partial_credit_map`,
+and `partial_credit_test_signal_found` for the audit trail. Pre-v1.2
+workloads (no `partial_credit` block) are unaffected.
+
+Cost discipline: heuristic-tier partial-credit is $0 (pure regex over
+the response text). The LLM tier does not consult partial-credit — it
+forms its own [0, 1] judgment.
 
 ### 5.5 Tool-cycle rubric
 

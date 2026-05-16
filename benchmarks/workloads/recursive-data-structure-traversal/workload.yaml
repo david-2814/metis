@@ -1,0 +1,57 @@
+name: recursive-data-structure-traversal
+description: >-
+  Write `solver.find_chain(target_name)` that returns the shortest chain
+  from `org.json`'s root to a named node, honoring tombstoned subtrees
+  (entire subtree is invisible, including for deeper targets), the
+  shallowest-occurrence-wins tie-break, and the empty-list-on-not-found
+  contract. `runner.py` exercises 8 cases (shallow leaf, deep leaf, root
+  itself, depth-7 leaf, duplicate-at-different-depths, name-only-in-
+  tombstoned-subtree, name-in-both-tombstoned-and-live, not-found).
+  Models that miss the tombstoned-pruning constraint or the
+  shortest-tie-break tend to get 4-6/8; models that compose all three
+  constraints correctly score 8/8. Objective verification (no
+  self-report).
+suite_version: 1
+# 13a-1 smoke (2026-05-15, 4 runs: 2 haiku + 2 sonnet, --judge
+# heuristic + 2 hybrid spot-checks): haiku mean 0.833 (0.833,
+# 0.833) / sonnet mean 0.917 (1.000, 0.833) under heuristic — gap
+# **+0.083**. Under hybrid escalation both runs landed 1.000 —
+# the LLM judge agrees both models correctly produced PASS 8/8.
+# At temperature=0 both models reliably emit a correct
+# tombstoned-aware shortest-chain solver. The shape works (8
+# objective test cases including duplicate-at-different-depths,
+# tombstoned-subtree-pruning, and not-found) but isn't strong
+# enough to drive a ≥0.4 cluster delta at the current judge
+# resolution. Kept on disk for future iteration. Documented in
+# RESULTS.md §13a-1.
+signal_strength: marginal
+turns:
+  - prompt: >-
+      Read `README.md`, `org.json`, and `runner.py` in this workspace.
+      Then write `solver.py` exporting a single function
+      `find_chain(target_name: str) -> list[str]` that satisfies the
+      contract in README.md. After writing, run `python runner.py` from
+      the workspace root EXACTLY ONCE and report the final summary line
+      verbatim. You may not edit `solver.py` after the runner has run;
+      the test budget is one shot. Don't change `runner.py` or
+      `org.json`.
+    expect:
+      min_tool_calls: 3
+      max_tool_calls: 10
+      contains_substring: "PASS 8/8"
+expect:
+  max_total_cost_usd: 0.30
+  min_llm_calls: 1
+  max_hard_failures: 0
+evaluate:
+  rubric: heuristic
+  # Partial-credit replaces the pass/fail "PASS 8/8" substring check
+  # (evaluator.md §5.4 v1.2). The runner.py prints `PASS N/8` /
+  # `FAIL N/8` across 8 objective test cases including
+  # duplicate-at-different-depths, tombstoned-subtree-pruning, and
+  # not-found. Models that miss the tombstoned constraint typically
+  # land 4-6/8; the linear map produces 0.5-0.75 instead of 0.
+  partial_credit:
+    enabled: true
+    criterion: test_pass_count_ratio
+    map: linear

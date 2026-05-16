@@ -31,13 +31,21 @@ class TierMap:
 class PatternConfig:
     """Pattern store knobs (routing-engine §5.5).
 
-    `cost_weight` defaults to `0.1` (was `0.3` before 2026-05-14). The §A3-rev
-    benchmark run found 0.3 over-rewards cost when the LLM judge produces
-    real cluster-level quality deltas of 0.15-0.30: the cost-efficiency term
-    required a ~0.43 success delta to flip the chooser, so slot 4 picked
-    haiku on every routed turn. At 0.1 a success delta of ~0.143 inverts
-    the ranking, which the observed deltas do clear. See routing-engine.md
-    §5.5 and benchmarks/RESULTS.md §A3-rev unblock #2.
+    `cost_weight` defaults to `0.05` (was `0.1` before 2026-05-15, `0.3`
+    before 2026-05-14). At `cost_weight=0.1` the cost-efficiency term added
+    a flat `0.10` floor to whichever model was cheapest (since
+    `cost_efficiency` normalizes to `[0.0, 1.0]` across the cluster), which
+    in §A3-rev5 swamped real but small quality deltas (haiku 0.87 vs sonnet
+    1.00 on `regex-with-edge-cases`: at cw=0.10 sonnet score 0.900 vs
+    haiku 0.910, slot 4 picked haiku at conf=0.011 - gated off; at cw=0.05
+    sonnet 0.950 vs haiku 0.905, conf=0.076 -> slot 4 picks sonnet). The
+    floor scales linearly with cost_weight, so reducing to 0.05 halves the
+    cost-bias floor without changing the scoring formula. Confirmed against
+    the `a3rev5-patterns.db` snapshot: cw=0.05 enables 6 sonnet picks
+    (regex x 3, fix-a-bug-small x 3) where cw=0.10 enables 0; haiku-correct
+    decisions on multi-file-refactor (q delta 0.79 vs 0.67) and
+    multi-turn-refactor (1.00 vs 0.95) still pick haiku at high confidence.
+    See routing-engine.md §5.5 and benchmarks/RESULTS.md §A3-rev5 finding.
 
     `min_confidence` defaults to `0.05` (was `0.3` before 2026-05-14). The
     §A3-rev2 benchmark run produced the first cluster-level inversion in
@@ -47,11 +55,11 @@ class PatternConfig:
     well below the legacy `0.3` gate that was calibrated for the older
     `cost_weight=0.3` regime where the cost-efficiency term alone
     produced ~0.35 confidence on tied-quality clusters. With
-    `cost_weight=0.1` the same near-tied data produces ~0.10 confidence,
-    so the gate must scale down with it. At `0.05` slot 4 fires on real
-    cluster inversions; cluster-empty / zero-score / fewer-than-K-cluster
-    cases still gate off in `aggregation.py`. See routing-engine.md §5.5
-    and benchmarks/RESULTS.md §A3-rev2 finding.
+    `cost_weight=0.05` the same near-tied data produces ~0.05-0.10
+    confidence, so the gate must scale down with it. At `0.05` slot 4
+    fires on real cluster inversions; cluster-empty / zero-score /
+    fewer-than-K-cluster cases still gate off in `aggregation.py`. See
+    routing-engine.md §5.5 and benchmarks/RESULTS.md §A3-rev2 finding.
 
     `min_eval_confidence` is the consumer-side confidence gate from
     `pattern-store.md §15.4`: verdicts with `confidence < min_eval_confidence`
@@ -65,7 +73,7 @@ class PatternConfig:
     construction). v1 workspaces are unaffected by the new fields.
     """
 
-    cost_weight: float = 0.1
+    cost_weight: float = 0.05
     min_confidence: float = 0.05
     min_sample_size: int = 5
     min_eval_confidence: float = 0.5
