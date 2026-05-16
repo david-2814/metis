@@ -83,6 +83,22 @@ When changing a spec, the dependent specs (right column whose left column is the
 
 ## Change log
 
+### 2026-05-16 — Wave 16 GA launch sync: Phase 3 shipped sign-off, billing self-service, first-customer concierge artifacts, launch collateral, and operational readiness
+
+- **Specs:** [`gateway.md`](gateway.md) §13 documents the Wave 15 + Wave 16 billing HTTP surface (`/account/billing`, `/account/billing/portal`, `/account/billing/plan`, legacy subscription/payment-method/cancel/pause/resume, `/webhooks/stripe`) plus plan and failed-payment semantics. This is also a top-level launch / implementation sync, plus one owner decision recorded in [`docs/operations/phase-claim-proposal.md`](../operations/phase-claim-proposal.md) §8. No provider-shape endpoint or existing Metis-owned versioned contract is removed.
+- **Change:** (a) Owner ratified the phase-claim proposal's Position B: **Phase 3 shipped**, no "Phase 4 v1 started" claim. AGENTS.md and README status mirrors now use that posture and record Wave 16 as the GA launch milestone. (b) Billing self-service adds `GET /account/billing/portal` and `POST /account/billing/plan`, failed-payment grace / post-grace free-tier downgrade, payment-succeeded restoration, enterprise add-on attach/remove, and a billing operator guide. (c) First-customer concierge tooling adds `metis customer-report --anonymize`, gitignored `benchmarks/customers/` scaffolding, industry case-study templates, and `first-customer-runbook.md`. (d) Launch artifacts add a product-site GA announcement, homepage / compare / pricing refresh, README launch callout, sales one-pager / FAQ / competitive-comparison refresh. (e) Operational readiness adds `status-page-config.yaml`, launch-day playbook, pre-launch dry-run checklist, and support-channel templates. (f) §A3 task-domain workloads are explicitly deferred post-GA; delegation remains the validated routing-surface GTM lever.
+- **Type:** additive docs + additive billing/CLI behavior. Existing billing routes stay mounted under the same opt-in `--enable-billing` posture. Existing `metis customer-report` output is unchanged unless `--anonymize` is supplied. The phase-claim edit is a status decision, not a spec contract.
+- **References to verify:**
+  - `AGENTS.md` Status sentence — Phase 3 shipped + Wave 16 GA milestone + 1841 tests. ✓
+  - `AGENTS.md` "What works" — Wave 16 bullets for billing self-service, first-customer concierge artifacts, launch artifacts, operational readiness, and Wave 16 docs sync. ✓
+  - `AGENTS.md` "What's NOT built" — post-GA deferrals only, including the optional §A3 task-domain wedge. ✓
+  - `README.md` Status block + launch callout + pricing / sales / operations pointers — refreshed for GA. ✓
+  - `docs/STRATEGY.md §1` — GA launch posture and first-customer proof-of-savings gap updated. ✓
+  - `docs/STRATEGY.md §5` — Phase 3 shipped + Wave 16 GA launch entries appended. ✓
+  - `docs/specs/gateway.md §13` — billing endpoints + plan/grace semantics match the Wave 16 implementation. ✓
+  - `docs/operations/phase-claim-proposal.md §8` — owner sign-off recorded. ✓
+- **Status:** verified. Full suite green: `uv run pytest -q` → `1841 passed, 1 skipped in 47.15s` on 2026-05-16.
+
 ### 2026-05-16 — AGENTS.md / README.md test-count + Wave-15 doc-sync (GA-blocker fixes + concierge + status-page + observability v1.1 + billing); phase-claim posture preserved
 
 - **Specs:** none touched. Pure high-level doc housekeeping after the Wave 15 batch landed (15a-1 NETWORK refinement + 15a-2 model normalization + 15a-3 concierge-onboarding flow + 15a-4 status-page live-deployment recipe + 15a-6 observability v1.1 + 15a-7 billing module + §A3-rev7 completion + `pricing.md §5.5.4` ratification). The earlier dated entries in this CHANGES file (the seven `2026-05-16 — …` entries below this one) are the load-bearing spec / event-catalog / payload-registry changes; this entry is the top-level AGENTS.md / README.md / STRATEGY.md §5 reflection of those landings.

@@ -194,9 +194,14 @@ nav:
       - Incident response: operations/incident-response.md
       - Observability runbook: operations/observability-runbook.md
       - Status page: operations/status-page.md
+      - Launch day playbook: operations/launch-day-playbook.md
+      - Pre-launch dry-run checklist: operations/pre-launch-dry-run-checklist.md
+      - Support channels: operations/support-channels.md
       - SLA template: operations/sla-template.md
       - Trace performance: operations/trace-performance.md
       - Concierge onboarding: operations/concierge-onboarding.md
+      - First customer runbook: operations/first-customer-runbook.md
+      - Billing operator guide: operations/billing-operator-guide.md
       - GA readiness audit: operations/ga-readiness-audit.md
       - Compliance overview: operations/compliance-overview.md
       - SOC2 readiness: operations/soc2-readiness.md
@@ -211,6 +216,9 @@ nav:
           - Competitive comparison: sales/competitive-comparison.md
           - Objection handling: sales/objection-handling.md
           - Case study template: sales/case-study-template.md
+          - Case study template (startup SaaS): sales/case-study-startup-saas-template.md
+          - Case study template (dev tools): sales/case-study-dev-tools-company-template.md
+          - Case study template (content platform): sales/case-study-content-platform-template.md
       - Market research:
           - Synthesis: market-research/synthesis.md
           - Coding agents: market-research/01-coding-agents.md

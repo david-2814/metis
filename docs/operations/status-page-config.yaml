@@ -1,0 +1,287 @@
+# Metis status-page seed config
+#
+# Paste this into the status-page provider setup ticket before hosting is
+# provisioned. It is intentionally provider-neutral YAML with exact field
+# values from status-page.md so the owner can copy monitor rows into
+# Uptime Kuma, Better Stack, UptimeRobot, or Statuspage.io without
+# re-interpreting thresholds.
+#
+# Replace every ${...} value before a real deploy. Do not commit a
+# concrete gateway key back into the repo.
+
+schema_version: 1
+owner:
+  primary_doc: "docs/operations/status-page.md"
+  incident_doc: "docs/operations/incident-response.md"
+  support_doc: "docs/operations/support-channels.md"
+  target_status_url: "https://status.2sum.ai"
+  selected_path: "tier_b_uptime_kuma_self_hosted"
+  hosting_state: "not_provisioned_owner_side"
+
+placeholders:
+  status_url: "https://status.2sum.ai"
+  gateway_url: "https://gateway.example.com"
+  metrics_url_internal: "http://metis-gateway.metis-gateway.svc:8422/metrics"
+  synthetic_anthropic_key: "${SYNTHETIC_GATEWAY_KEY}"
+  synthetic_openai_key: "${SYNTHETIC_GATEWAY_KEY}"
+  kuma_push_url: "${KUMA_PUSH_URL}"
+  slack_hook: "${SLACK_HOOK}"
+  status_admin_owner: "${STATUS_ADMIN_OWNER}"
+  incident_channel: "#metis-incidents"
+  support_channel: "#metis-support"
+
+status_page:
+  page_name: "Metis Status"
+  public_url: "https://status.2sum.ai"
+  visibility: "public_read_only"
+  timezone: "UTC"
+  uptime_window_days: 90
+  publish_current_status: true
+  publish_active_incidents: true
+  publish_recent_incidents_days: 30
+  publish_scheduled_maintenance: true
+  redact:
+    - "customer or tenant names"
+    - "internal hostnames or pod names"
+    - "provider account ids"
+    - "prompt or completion content"
+    - "gateway_key_id values"
+    - "raw USD overage amounts"
+  safe_to_publish:
+    - "upstream provider names"
+    - "component-level user-visible impact"
+    - "plain-English root cause summaries"
+
+components:
+  - id: "gateway-http-liveness"
+    display_name: "Gateway (HTTP liveness)"
+    default_status: "operational"
+    owning_probe_ids:
+      - "gateway-healthz"
+  - id: "gateway-anthropic-shape"
+    display_name: "Gateway (Anthropic shape)"
+    default_status: "operational"
+    owning_probe_ids:
+      - "synthetic-anthropic-message"
+  - id: "gateway-openai-shape"
+    display_name: "Gateway (OpenAI shape)"
+    default_status: "operational"
+    owning_probe_ids:
+      - "synthetic-openai-chat-completions"
+  - id: "analytics-surface"
+    display_name: "Analytics surface"
+    default_status: "operational"
+    owning_probe_ids:
+      - "metrics-heartbeat"
+  - id: "keystore-active-keys"
+    display_name: "Keystore (active keys)"
+    default_status: "operational"
+    owning_probe_ids:
+      - "gateway-key-liveness"
+  - id: "status-page-itself"
+    display_name: "Status page itself"
+    default_status: "operational"
+    owning_probe_ids: []
+
+helm_values_overlay:
+  statusPage:
+    enabled: true
+    ingress:
+      enabled: true
+      host: "status.2sum.ai"
+      className: "nginx"
+      tls:
+        - secretName: "status-page-tls"
+          hosts:
+            - "status.2sum.ai"
+
+monitors:
+  - id: "gateway-healthz"
+    display_name: "Metis Gateway - healthz"
+    provider_type: "http"
+    component_id: "gateway-http-liveness"
+    enabled: true
+    url: "${GATEWAY_URL}/healthz"
+    method: "GET"
+    interval_seconds: 60
+    timeout_seconds: 10
+    retries_before_down: 1
+    accepted_statuses:
+      - 200
+    severity_when_down: "SEV1 after two consecutive failures in 60s"
+    status_page_state_when_down: "major-outage"
+    notes: "Canonical gateway liveness signal."
+
+  - id: "synthetic-anthropic-message"
+    display_name: "Metis Gateway - Anthropic synthetic request"
+    provider_type: "http_keyword"
+    component_id: "gateway-anthropic-shape"
+    enabled: true
+    url: "${GATEWAY_URL}/v1/messages"
+    method: "POST"
+    interval_seconds: 300
+    timeout_seconds: 20
+    retries_before_down: 1
+    accepted_statuses:
+      - 200
+    headers:
+      x-api-key: "${SYNTHETIC_GATEWAY_KEY}"
+      anthropic-version: "2023-06-01"
+      content-type: "application/json"
+    body: '{"model":"anthropic:claude-haiku-4-5","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}'
+    keyword: '"type":"message"'
+    severity_when_down: "SEV2 if only Anthropic shape fails; SEV1 if paired with healthz failure"
+    status_page_state_when_down: "partial-outage"
+    notes: "Issue the key with --daily-cap-usd 0.50 and --allow-model anthropic:claude-haiku-4-5."
+
+  - id: "synthetic-openai-chat-completions"
+    display_name: "Metis Gateway - OpenAI synthetic request"
+    provider_type: "http_keyword"
+    component_id: "gateway-openai-shape"
+    enabled: true
+    url: "${GATEWAY_URL}/v1/chat/completions"
+    method: "POST"
+    interval_seconds: 300
+    timeout_seconds: 20
+    retries_before_down: 1
+    accepted_statuses:
+      - 200
+    headers:
+      authorization: "Bearer ${SYNTHETIC_GATEWAY_KEY}"
+      content-type: "application/json"
+    body: '{"model":"anthropic:claude-haiku-4-5","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}'
+    keyword: '"choices"'
+    severity_when_down: "SEV2 if only OpenAI shape fails; SEV1 if paired with healthz failure"
+    status_page_state_when_down: "partial-outage"
+    notes: "Use the same capped synthetic key unless the buyer wants per-shape keys."
+
+  - id: "metrics-heartbeat"
+    display_name: "Metis Gateway - metrics heartbeat"
+    provider_type: "http_keyword_internal"
+    component_id: "analytics-surface"
+    enabled: true
+    url: "${GATEWAY_URL}/metrics"
+    method: "GET"
+    interval_seconds: 60
+    timeout_seconds: 10
+    retries_before_down: 1
+    accepted_statuses:
+      - 200
+    keyword: "metis_gateway_keys_active"
+    severity_when_down: "SEV2 unless all gateway probes fail"
+    status_page_state_when_down: "degraded"
+    notes: "For Tier A external status pages, do not expose /metrics publicly; run this inside the Prometheus namespace or disable it."
+
+  - id: "gateway-key-liveness"
+    display_name: "Metis Gateway - active key count"
+    provider_type: "uptime_kuma_push"
+    component_id: "keystore-active-keys"
+    enabled: true
+    interval_seconds: 60
+    timeout_seconds: 10
+    push_url: "${KUMA_PUSH_URL}"
+    up_condition: "metis_gateway_keys_active >= 1"
+    down_condition: "metis_gateway_keys_active < 1"
+    severity_when_down: "SEV1 because paying tenants cannot authenticate"
+    status_page_state_when_down: "major-outage"
+    cron_user: "gateway-ops"
+    cron: |
+      * * * * * gateway-ops \
+        ACTIVE=$(curl -fsS ${METRICS_URL_INTERNAL} \
+          | awk '/^metis_gateway_keys_active /{print $2}' | head -1) ; \
+        if [ "${ACTIVE:-0}" -lt 1 ]; then \
+          curl -fsS -X POST "$SLACK_HOOK" -d '{"text":"gateway keystore empty"}'; \
+        else \
+          curl -fsS "$KUMA_PUSH_URL?status=up&msg=keys=$ACTIVE"; \
+        fi
+
+severity_mapping:
+  SEV1:
+    overall_status: "major-outage"
+    update_cadence_minutes: 30
+    initial_update_target_minutes: 15
+    post_to_status_page: true
+  SEV2:
+    overall_status: "partial-outage"
+    update_cadence_minutes: 30
+    initial_update_target_minutes: 60
+    post_to_status_page: true
+  SEV3:
+    overall_status: "degraded"
+    update_cadence_minutes: 240
+    initial_update_target: "1 business day"
+    post_to_status_page: "only if user-visible"
+  SEV4:
+    overall_status: "operational"
+    update_cadence: "internal only"
+    post_to_status_page: false
+
+incident_templates:
+  sev1_major_outage:
+    provider_impact: "major"
+    title: "[INVESTIGATING] <Component> - <user-visible symptom>"
+    body: |
+      Posted: <YYYY-MM-DDTHH:MMZ>
+
+      Investigating reports of <symptom> affecting <component>. Customers
+      are unable to <e.g. "complete LLM requests via the Anthropic-shape
+      gateway endpoint">. We are <mitigating action - rollback / failover /
+      restart>. Next update by <YYYY-MM-DDTHH:MMZ (set 30 min out)>.
+
+      Overall status set to: major-outage
+      Affected components: <list>
+
+  sev2_partial_outage:
+    provider_impact: "partial"
+    title: "[INVESTIGATING] <Component> - <user-visible symptom>"
+    body: |
+      Posted: <YYYY-MM-DDTHH:MMZ>
+
+      Investigating elevated <error rate / latency> on <component>. Customers
+      using <impact scope> may experience <impact>. Other components are
+      operating normally. Next update by <YYYY-MM-DDTHH:MMZ (set 30 min out)>.
+
+      Overall status set to: partial-outage
+      Affected components: <one-of, not all>
+
+  sev3_degraded:
+    provider_impact: "minor"
+    title: "[INVESTIGATING] <Component> - <user-visible symptom>"
+    body: |
+      Posted: <YYYY-MM-DDTHH:MMZ>
+
+      Elevated <latency / non-default-model unavailability / quota-alert
+      volume> on <component>. Customer impact is <minimal / single-tenant /
+      confined to non-default routes>. Working on <mitigation>. Next update
+      by <YYYY-MM-DDTHH:MMZ (set 4 hours out)>.
+
+      Overall status set to: degraded
+      Affected components: <component>
+
+  resolved:
+    provider_impact: "resolved"
+    title: "[RESOLVED] <Component> - <symptom>"
+    body: |
+      Posted: <YYYY-MM-DDTHH:MMZ>
+
+      Resolved as of <YYYY-MM-DDTHH:MMZ>. Duration: <HH:MM>. Root cause:
+      <one paragraph>. Post-mortem by <within 7 days>. Service-credit
+      claims per SLA at <link>.
+
+  scheduled_maintenance:
+    provider_impact: "maintenance"
+    title: "[SCHEDULED] <Component> - <maintenance title>"
+    body: |
+      Window: <YYYY-MM-DDTHH:MMZ> to <YYYY-MM-DDTHH:MMZ>
+      Expected impact: <none / brief degradation / brief unavailability>
+
+      During <unavailability window if any>, requests to <endpoint> will
+      <queue / fail / return 503>. Update posted when complete.
+
+owner_provisioning_checklist:
+  - "Provision DNS for status.2sum.ai."
+  - "Provision TLS cert status-page-tls or the SaaS provider equivalent."
+  - "Enable statusPage.enabled=true or create the external status-page account."
+  - "Issue the capped synthetic gateway key and store it outside the repo."
+  - "Paste the monitors and incident templates above into the provider UI."
+  - "Run docs/operations/pre-launch-dry-run-checklist.md before launch day."

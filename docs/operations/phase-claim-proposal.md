@@ -263,6 +263,9 @@ should read approximately (full draft text owner-editable):
 
 ## 7. How to use this document
 
+> **Superseded 2026-05-16:** see §8. The guidance below is preserved as
+> pre-ratification history.
+
 - **Owner:** read, mark up §6 decisions, and either ratify the §5
   sentence or send back redlines. Until the owner approves, the
   AGENTS.md status sentence stays at "Phase 3 in flight."
@@ -272,3 +275,21 @@ should read approximately (full draft text owner-editable):
 - **Future AI agents pre-ratification:** do not bump the status
   sentence based on this proposal alone; it is a draft until §6 is
   signed.
+
+## 8. Owner sign-off
+
+**Signed off:** 2026-05-16, Wave 16 kickoff / GA launch sync.
+
+The owner accepted the recommended Position B:
+
+| # | Decision | Ratified answer |
+|---|----------|-----------------|
+| 1 | Bump to "Phase 3 shipped"? | Yes. |
+| 2 | Reframe MCP support / git sync / in-session adjustment as out-of-scope? | Yes — they are project-overview artifacts, not STRATEGY.md commitments. |
+| 3 | Claim "Phase 4 v1 started" for delegation v1? | No. Delegation v1 is live, but the project-overview Phase 4 scope remains Tauri / public-ready UX / marketplace foundation. |
+| 4 | Ratify a replacement status sentence? | Yes, updated in AGENTS.md and README as part of Wave 16 closure. |
+
+This proposal is now superseded by the Wave 16 GA sync in AGENTS.md,
+README.md, docs/STRATEGY.md §5, and docs/specs/CHANGES.md. Future
+agents should treat "Phase 3 shipped" as the ratified status unless the
+owner records a newer decision.

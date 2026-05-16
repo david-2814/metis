@@ -31,8 +31,8 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
-from typing import Any
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Literal
 
 from metis_core.canonical.ids import new_message_id
 from metis_core.events.bus import EventBus
@@ -79,6 +79,7 @@ class SubscriptionSummary:
 
     account_id: str
     tier: BillingTier
+    subscription_tier: BillingTier | None
     status: SubscriptionStatus | None
     stripe_subscription_id: str | None
     pro_seats: int
@@ -86,6 +87,12 @@ class SubscriptionSummary:
     current_period_end: datetime | None
     cancel_at_period_end: bool
     pause_collection: bool
+    payment_state: Literal["current", "grace", "frozen"]
+    payment_failed_at: datetime | None
+    payment_grace_until: datetime | None
+    access_frozen_at: datetime | None
+    free_daily_cap_usd: Decimal | None
+    free_monthly_cap_usd: Decimal | None
     payment_method_brand: str | None
     payment_method_last4: str | None
 
@@ -93,6 +100,7 @@ class SubscriptionSummary:
         return {
             "account_id": self.account_id,
             "tier": self.tier,
+            "subscription_tier": self.subscription_tier,
             "status": self.status,
             "stripe_subscription_id": self.stripe_subscription_id,
             "pro_seats": self.pro_seats,
@@ -104,6 +112,14 @@ class SubscriptionSummary:
             ),
             "cancel_at_period_end": self.cancel_at_period_end,
             "pause_collection": self.pause_collection,
+            "payment_state": self.payment_state,
+            "payment_failed_at": _iso_or_none(self.payment_failed_at),
+            "payment_grace_until": _iso_or_none(self.payment_grace_until),
+            "access_frozen_at": _iso_or_none(self.access_frozen_at),
+            "free_tier_cap": {
+                "daily_cap_usd": _decimal_string_or_none(self.free_daily_cap_usd),
+                "monthly_cap_usd": _decimal_string_or_none(self.free_monthly_cap_usd),
+            },
             "payment_method": (
                 {"brand": self.payment_method_brand, "last4": self.payment_method_last4}
                 if self.payment_method_brand or self.payment_method_last4
@@ -236,6 +252,91 @@ class BillingService:
         )
         return record
 
+    # ----- Buyer self-service plan changes --------------------------------
+
+    def create_billing_portal_link(
+        self,
+        *,
+        account_id: str,
+        email: str,
+        return_url: str,
+    ) -> str:
+        """Create a Stripe-hosted customer-portal session for this account."""
+        customer = self._ensure_customer(account_id=account_id, email=email)
+        try:
+            return self.client.create_billing_portal_session(
+                customer_id=customer.stripe_customer_id,
+                return_url=return_url,
+            )
+        except BillingClientError as exc:
+            raise BillingError(
+                f"stripe rejected billing portal session: {exc}",
+                status=502,
+                code="stripe_error",
+            ) from exc
+
+    def change_plan(
+        self,
+        *,
+        account_id: str,
+        email: str,
+        plan: BillingTier,
+        seats: int | None = None,
+        payment_method_id: str | None = None,
+    ) -> SubscriptionSummary:
+        """Move an account between Free, Pro, and Enterprise.
+
+        Plan changes reuse the six Wave-15 audit events: new paid plans
+        emit `billing.subscription_created`, paid-plan mutations emit
+        `billing.subscription_updated`, and downgrades to Free emit
+        `billing.subscription_canceled`.
+        """
+        if plan == "free":
+            record = self.store.get_subscription(account_id)
+            if record is not None and record.status not in {"canceled", "incomplete_expired"}:
+                self.cancel_subscription(account_id=account_id, at_period_end=False)
+            else:
+                customer = self.store.get_customer(account_id)
+                if customer is not None and customer.tier != "free":
+                    self.store.set_tier(account_id, "free")
+            return self.summary(account_id=account_id)
+
+        target_seats = seats if seats is not None else self._default_seats(account_id)
+        if target_seats < 1:
+            raise BillingError("seats must be >= 1", status=400, code="invalid_seats")
+
+        if payment_method_id is not None:
+            self.update_payment_method(
+                account_id=account_id,
+                payment_method_id=payment_method_id,
+                email=email,
+            )
+
+        attach_enterprise = plan == "enterprise"
+        existing = self.store.get_subscription(account_id)
+        if existing is None or existing.status in {"canceled", "incomplete_expired"}:
+            self.create_pro_subscription(
+                account_id=account_id,
+                email=email,
+                seats=target_seats,
+                attach_enterprise_addon=attach_enterprise,
+            )
+            return self.summary(account_id=account_id)
+
+        updated = existing
+        if existing.pro_seats != target_seats:
+            updated = self._update_seats(existing, seats=target_seats)
+
+        if plan == "enterprise" and updated.enterprise_metered_item_id is None:
+            updated = self._add_enterprise_addon(updated)
+        elif plan == "pro" and updated.enterprise_metered_item_id is not None:
+            updated = self._remove_enterprise_addon(updated)
+        elif updated.tier != plan:
+            updated = self._record_local_plan_change(updated, tier=plan)
+
+        self.store.set_tier(account_id, plan)
+        return self.summary(account_id=account_id)
+
     # ----- Payment-method ---------------------------------------------------
 
     def ensure_customer(self, *, account_id: str, email: str) -> CustomerRecord:
@@ -321,6 +422,9 @@ class BillingService:
             pause_collection=updated_sub.pause_collection,
             created_at=record.created_at,
             updated_at=now,
+            payment_failed_at=None,
+            payment_grace_until=None,
+            access_frozen_at=None,
         )
         self.store.upsert_subscription(updated)
 
@@ -413,8 +517,13 @@ class BillingService:
                 status=400,
                 code="no_enterprise_addon",
             )
-        rate = Decimal(self.config.enterprise_savings_rate_pct) / Decimal(100)
-        quantity_cents = int((savings_usd * rate * Decimal(100)).to_integral_value())
+        rate = Decimal(self.config.enterprise_savings_rate_pct) / Decimal("100")
+        quantity_cents = int(
+            (savings_usd * rate * Decimal("100")).quantize(
+                Decimal("1"),
+                rounding=ROUND_HALF_UP,
+            )
+        )
         idempotency = deterministic_idempotency_key(
             account_id,
             period_anchor.astimezone(UTC).strftime("%Y-%m"),
@@ -447,6 +556,23 @@ class BillingService:
             logger.exception("failed to refresh subscription %s after webhook", subscription_id)
             return
         now = datetime.now(UTC)
+        payment_failed_at = record.payment_failed_at
+        payment_grace_until = record.payment_grace_until
+        access_frozen_at = record.access_frozen_at
+        if stripe_sub.status == "active":
+            payment_failed_at = None
+            payment_grace_until = None
+            access_frozen_at = None
+            self.store.set_tier(record.account_id, record.tier)
+        elif stripe_sub.status == "past_due" and payment_grace_until is None:
+            payment_failed_at = now
+            payment_grace_until = self._payment_grace_until(now)
+            access_frozen_at = None
+        elif stripe_sub.status in {"unpaid", "canceled", "incomplete_expired"}:
+            payment_failed_at = payment_failed_at or now
+            payment_grace_until = payment_grace_until or now
+            access_frozen_at = access_frozen_at or now
+            self.store.set_tier(record.account_id, "free")
         updated = SubscriptionRecord(
             account_id=record.account_id,
             stripe_subscription_id=record.stripe_subscription_id,
@@ -460,6 +586,9 @@ class BillingService:
             pause_collection=stripe_sub.pause_collection,
             created_at=record.created_at,
             updated_at=now,
+            payment_failed_at=payment_failed_at,
+            payment_grace_until=payment_grace_until,
+            access_frozen_at=access_frozen_at,
         )
         self.store.upsert_subscription(updated)
         self._emit(
@@ -498,6 +627,9 @@ class BillingService:
             pause_collection=False,
             created_at=record.created_at,
             updated_at=now,
+            payment_failed_at=None,
+            payment_grace_until=None,
+            access_frozen_at=None,
         )
         self.store.upsert_subscription(deleted)
         self._emit(
@@ -522,6 +654,28 @@ class BillingService:
         if record is None:
             logger.warning("invoice.paid for unknown subscription %s", subscription_id)
             return
+        now = datetime.now(UTC)
+        if record.status not in {"canceled", "incomplete_expired"}:
+            self.store.set_tier(record.account_id, record.tier)
+            self.store.upsert_subscription(
+                SubscriptionRecord(
+                    account_id=record.account_id,
+                    stripe_subscription_id=record.stripe_subscription_id,
+                    tier=record.tier,
+                    status="active",
+                    pro_seats=record.pro_seats,
+                    pro_item_id=record.pro_item_id,
+                    enterprise_metered_item_id=record.enterprise_metered_item_id,
+                    current_period_end=record.current_period_end,
+                    cancel_at_period_end=record.cancel_at_period_end,
+                    pause_collection=record.pause_collection,
+                    created_at=record.created_at,
+                    updated_at=now,
+                    payment_failed_at=None,
+                    payment_grace_until=None,
+                    access_frozen_at=None,
+                )
+            )
         self._emit(
             "billing.invoice_paid",
             BillingInvoicePaid(
@@ -529,7 +683,7 @@ class BillingService:
                 stripe_subscription_id=subscription_id,
                 stripe_invoice_id=invoice_id,
                 amount_paid_cents=amount_paid_cents,
-                paid_at=datetime.now(UTC),
+                paid_at=now,
             ),
         )
 
@@ -545,6 +699,27 @@ class BillingService:
         if record is None:
             logger.warning("invoice.payment_failed for unknown subscription %s", subscription_id)
             return
+        now = datetime.now(UTC)
+        grace_until = self._payment_grace_until(now)
+        self.store.upsert_subscription(
+            SubscriptionRecord(
+                account_id=record.account_id,
+                stripe_subscription_id=record.stripe_subscription_id,
+                tier=record.tier,
+                status="past_due" if record.status == "active" else record.status,
+                pro_seats=record.pro_seats,
+                pro_item_id=record.pro_item_id,
+                enterprise_metered_item_id=record.enterprise_metered_item_id,
+                current_period_end=record.current_period_end,
+                cancel_at_period_end=record.cancel_at_period_end,
+                pause_collection=record.pause_collection,
+                created_at=record.created_at,
+                updated_at=now,
+                payment_failed_at=now,
+                payment_grace_until=grace_until,
+                access_frozen_at=None,
+            )
+        )
         self._emit(
             "billing.invoice_payment_failed",
             BillingInvoicePaymentFailed(
@@ -553,18 +728,20 @@ class BillingService:
                 stripe_invoice_id=invoice_id,
                 amount_due_cents=amount_due_cents,
                 attempt_count=attempt_count,
-                failed_at=datetime.now(UTC),
+                failed_at=now,
             ),
         )
 
     # ----- Summary ---------------------------------------------------------
 
     def summary(self, *, account_id: str) -> SubscriptionSummary:
+        self.enforce_failed_payment_state(account_id=account_id)
         customer = self.store.get_customer(account_id)
         if customer is None:
             return SubscriptionSummary(
                 account_id=account_id,
                 tier="free",
+                subscription_tier=None,
                 status=None,
                 stripe_subscription_id=None,
                 pro_seats=0,
@@ -572,6 +749,12 @@ class BillingService:
                 current_period_end=None,
                 cancel_at_period_end=False,
                 pause_collection=False,
+                payment_state="current",
+                payment_failed_at=None,
+                payment_grace_until=None,
+                access_frozen_at=None,
+                free_daily_cap_usd=self.config.free_daily_cap_usd,
+                free_monthly_cap_usd=self.config.free_monthly_cap_usd,
                 payment_method_brand=None,
                 payment_method_last4=None,
             )
@@ -584,6 +767,7 @@ class BillingService:
         return SubscriptionSummary(
             account_id=account_id,
             tier=customer.tier,
+            subscription_tier=record.tier if record else None,
             status=record.status if record else None,
             stripe_subscription_id=record.stripe_subscription_id if record else None,
             pro_seats=record.pro_seats if record else 0,
@@ -591,6 +775,12 @@ class BillingService:
             current_period_end=record.current_period_end if record else None,
             cancel_at_period_end=record.cancel_at_period_end if record else False,
             pause_collection=record.pause_collection if record else False,
+            payment_state=_payment_state(customer.tier, record),
+            payment_failed_at=record.payment_failed_at if record else None,
+            payment_grace_until=record.payment_grace_until if record else None,
+            access_frozen_at=record.access_frozen_at if record else None,
+            free_daily_cap_usd=self.config.free_daily_cap_usd,
+            free_monthly_cap_usd=self.config.free_monthly_cap_usd,
             payment_method_brand=pm.brand if pm else None,
             payment_method_last4=pm.last4 if pm else None,
         )
@@ -628,6 +818,11 @@ class BillingService:
             pause_collection=updated_sub.pause_collection,
             created_at=record.created_at,
             updated_at=now,
+            payment_failed_at=None if updated_sub.status == "active" else record.payment_failed_at,
+            payment_grace_until=None
+            if updated_sub.status == "active"
+            else record.payment_grace_until,
+            access_frozen_at=None if updated_sub.status == "active" else record.access_frozen_at,
         )
         self.store.upsert_subscription(updated)
         self._emit(
@@ -646,6 +841,220 @@ class BillingService:
         )
         return updated
 
+    def enforce_failed_payment_state(
+        self,
+        *,
+        account_id: str,
+        now: datetime | None = None,
+    ) -> SubscriptionRecord | None:
+        """Apply the local 7-day failed-payment grace policy.
+
+        During grace the paid tier remains active. Once grace expires,
+        the account's effective tier drops to Free; if its existing spend
+        already exceeds the Free cap, the normal tier-cap path blocks
+        requests with 429. A later `invoice.payment_succeeded` restores
+        the paid tier and clears the frozen marker.
+        """
+        record = self.store.get_subscription(account_id)
+        if record is None or record.payment_grace_until is None:
+            return record
+        if record.access_frozen_at is not None:
+            return record
+        now = now or datetime.now(UTC)
+        if now < record.payment_grace_until:
+            return record
+        frozen = SubscriptionRecord(
+            account_id=record.account_id,
+            stripe_subscription_id=record.stripe_subscription_id,
+            tier=record.tier,
+            status="unpaid" if record.status in {"active", "past_due"} else record.status,
+            pro_seats=record.pro_seats,
+            pro_item_id=record.pro_item_id,
+            enterprise_metered_item_id=record.enterprise_metered_item_id,
+            current_period_end=record.current_period_end,
+            cancel_at_period_end=record.cancel_at_period_end,
+            pause_collection=record.pause_collection,
+            created_at=record.created_at,
+            updated_at=now,
+            payment_failed_at=record.payment_failed_at,
+            payment_grace_until=record.payment_grace_until,
+            access_frozen_at=now,
+        )
+        self.store.upsert_subscription(frozen)
+        self.store.set_tier(account_id, "free")
+        self._emit(
+            "billing.subscription_updated",
+            BillingSubscriptionUpdated(
+                account_id=record.account_id,
+                stripe_subscription_id=record.stripe_subscription_id,
+                previous_status=record.status,
+                status=frozen.status,
+                previous_tier=record.tier,
+                tier="free",
+                pro_seats=record.pro_seats,
+                current_period_end=record.current_period_end,
+                updated_at=now,
+            ),
+        )
+        return frozen
+
+    def _default_seats(self, account_id: str) -> int:
+        existing = self.store.get_subscription(account_id)
+        return existing.pro_seats if existing is not None and existing.pro_seats > 0 else 1
+
+    def _payment_grace_until(self, now: datetime) -> datetime:
+        from datetime import timedelta
+
+        return now + timedelta(days=self.config.failed_payment_grace_days)
+
+    def _update_seats(self, record: SubscriptionRecord, *, seats: int) -> SubscriptionRecord:
+        try:
+            updated_sub = self.client.update_subscription_seats(
+                subscription_id=record.stripe_subscription_id,
+                pro_item_id=record.pro_item_id,
+                seats=seats,
+            )
+        except BillingClientError as exc:
+            raise BillingError(
+                f"stripe rejected seat update: {exc}",
+                status=502,
+                code="stripe_error",
+            ) from exc
+        return self._record_subscription_update(
+            record,
+            updated_sub,
+            tier=record.tier,
+            pro_seats=seats,
+            enterprise_metered_item_id=record.enterprise_metered_item_id,
+        )
+
+    def _add_enterprise_addon(self, record: SubscriptionRecord) -> SubscriptionRecord:
+        price_id = self.config.enterprise_metered_price_id
+        if price_id is None:
+            raise BillingError(
+                "enterprise plan requested but enterprise_metered_price_id is unset",
+                status=400,
+                code="enterprise_unconfigured",
+            )
+        try:
+            updated_sub = self.client.add_subscription_item(
+                subscription_id=record.stripe_subscription_id,
+                price_id=price_id,
+                metered=True,
+            )
+        except BillingClientError as exc:
+            raise BillingError(
+                f"stripe rejected enterprise add-on: {exc}",
+                status=502,
+                code="stripe_error",
+            ) from exc
+        metered_item = _metered_item_id(updated_sub, fallback_price_id=price_id)
+        if metered_item is None:
+            raise BillingError(
+                "stripe returned a subscription without a metered enterprise item",
+                status=502,
+                code="stripe_inconsistency",
+            )
+        return self._record_subscription_update(
+            record,
+            updated_sub,
+            tier="enterprise",
+            pro_seats=record.pro_seats,
+            enterprise_metered_item_id=metered_item,
+        )
+
+    def _remove_enterprise_addon(self, record: SubscriptionRecord) -> SubscriptionRecord:
+        if record.enterprise_metered_item_id is None:
+            return record
+        try:
+            updated_sub = self.client.remove_subscription_item(
+                subscription_id=record.stripe_subscription_id,
+                subscription_item_id=record.enterprise_metered_item_id,
+            )
+        except BillingClientError as exc:
+            raise BillingError(
+                f"stripe rejected enterprise add-on removal: {exc}",
+                status=502,
+                code="stripe_error",
+            ) from exc
+        return self._record_subscription_update(
+            record,
+            updated_sub,
+            tier="pro",
+            pro_seats=record.pro_seats,
+            enterprise_metered_item_id=None,
+        )
+
+    def _record_local_plan_change(
+        self,
+        record: SubscriptionRecord,
+        *,
+        tier: BillingTier,
+    ) -> SubscriptionRecord:
+        try:
+            updated_sub = self.client.get_subscription(
+                subscription_id=record.stripe_subscription_id
+            )
+        except BillingClientError as exc:
+            raise BillingError(
+                f"stripe rejected subscription refresh: {exc}",
+                status=502,
+                code="stripe_error",
+            ) from exc
+        return self._record_subscription_update(
+            record,
+            updated_sub,
+            tier=tier,
+            pro_seats=record.pro_seats,
+            enterprise_metered_item_id=record.enterprise_metered_item_id,
+        )
+
+    def _record_subscription_update(
+        self,
+        record: SubscriptionRecord,
+        updated_sub,
+        *,
+        tier: BillingTier,
+        pro_seats: int,
+        enterprise_metered_item_id: str | None,
+    ) -> SubscriptionRecord:
+        now = datetime.now(UTC)
+        updated = SubscriptionRecord(
+            account_id=record.account_id,
+            stripe_subscription_id=record.stripe_subscription_id,
+            tier=tier,
+            status=updated_sub.status,
+            pro_seats=pro_seats,
+            pro_item_id=record.pro_item_id,
+            enterprise_metered_item_id=enterprise_metered_item_id,
+            current_period_end=updated_sub.current_period_end,
+            cancel_at_period_end=updated_sub.cancel_at_period_end,
+            pause_collection=updated_sub.pause_collection,
+            created_at=record.created_at,
+            updated_at=now,
+            payment_failed_at=None if updated_sub.status == "active" else record.payment_failed_at,
+            payment_grace_until=None
+            if updated_sub.status == "active"
+            else record.payment_grace_until,
+            access_frozen_at=None if updated_sub.status == "active" else record.access_frozen_at,
+        )
+        self.store.upsert_subscription(updated)
+        self._emit(
+            "billing.subscription_updated",
+            BillingSubscriptionUpdated(
+                account_id=record.account_id,
+                stripe_subscription_id=record.stripe_subscription_id,
+                previous_status=record.status,
+                status=updated.status,
+                previous_tier=record.tier,
+                tier=tier,
+                pro_seats=pro_seats,
+                current_period_end=updated.current_period_end,
+                updated_at=now,
+            ),
+        )
+        return updated
+
     def _emit(self, event_type: str, payload) -> None:
         try:
             self.bus.emit(
@@ -659,6 +1068,36 @@ class BillingService:
             )
         except Exception:
             logger.warning("failed to emit %s", event_type, exc_info=True)
+
+
+def _metered_item_id(subscription, *, fallback_price_id: str) -> str | None:
+    for item in subscription.items:
+        if item.metered or item.price_id == fallback_price_id:
+            return item.id
+    return None
+
+
+def _payment_state(
+    customer_tier: BillingTier,
+    record: SubscriptionRecord | None,
+) -> Literal["current", "grace", "frozen"]:
+    if record is None:
+        return "current"
+    if record.access_frozen_at is not None:
+        return "frozen"
+    if customer_tier == "free" and record.payment_grace_until is not None:
+        return "frozen"
+    if record.payment_grace_until is not None:
+        return "grace"
+    return "current"
+
+
+def _iso_or_none(value: datetime | None) -> str | None:
+    return value.astimezone(UTC).isoformat() if value is not None else None
+
+
+def _decimal_string_or_none(value: Decimal | None) -> str | None:
+    return format(value, "f") if value is not None else None
 
 
 __all__ = [

@@ -1,6 +1,8 @@
 """HTTP handlers for the billing surface.
 
   GET    /account/billing                 → SubscriptionSummary
+  GET    /account/billing/portal          → Stripe Customer Portal link
+  POST   /account/billing/plan            → free / pro / enterprise change
   POST   /account/billing/subscribe       → create_pro_subscription
   POST   /account/billing/payment-method  → update_payment_method
   POST   /account/billing/cancel          → cancel_subscription (at-period-end by default)
@@ -28,6 +30,7 @@ from starlette.responses import Response
 
 from metis_gateway.billing.client import WebhookSignatureError
 from metis_gateway.billing.state import BillingState
+from metis_gateway.billing.store import BillingTier
 from metis_gateway.billing.subscriptions import BillingError
 from metis_gateway.billing.webhooks import dispatch_webhook_event
 from metis_gateway.signup import (
@@ -59,6 +62,11 @@ def _require_account(request: Request):
     return _require_session(request, account_store)
 
 
+def _signup_config(request: Request):
+    config, _ = signup_state(request)
+    return config
+
+
 async def _read_json(request: Request, *, allow_empty: bool = False) -> dict[str, Any]:
     raw = await request.body()
     if not raw:
@@ -82,6 +90,40 @@ def _json(body: dict[str, Any], *, status: int = 200) -> Response:
     )
 
 
+def _parse_plan(value: Any) -> BillingTier:
+    if value not in {"free", "pro", "enterprise"}:
+        raise BillingError(
+            "plan must be one of: free, pro, enterprise",
+            status=400,
+            code="invalid_plan",
+        )
+    return value
+
+
+def _parse_optional_seats(value: Any) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or value < 1:
+        raise BillingError(
+            "seats must be a positive integer",
+            status=400,
+            code="invalid_seats",
+        )
+    return value
+
+
+def _parse_optional_payment_method(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise BillingError(
+            "payment_method_id must be a non-empty string",
+            status=400,
+            code="invalid_payment_method",
+        )
+    return value
+
+
 def billing_error_response(exc: BillingError) -> Response:
     return _json(
         {"error": {"code": exc.code, "message": str(exc)}},
@@ -99,6 +141,41 @@ async def billing_status_handler(request: Request) -> Response:
     billing = _billing_state(request)
     account = _require_account(request)
     summary = billing.service.summary(account_id=account.account_id)
+    return _json(summary.to_dict())
+
+
+async def billing_portal_handler(request: Request) -> Response:
+    """GET /account/billing/portal — create a Stripe customer-portal link."""
+    billing = _billing_state(request)
+    account = _require_account(request)
+    return_url = (
+        billing.config.billing_portal_return_url
+        or f"{_signup_config(request).dashboard_base_url.rstrip('/')}/account/billing"
+    )
+    url = billing.service.create_billing_portal_link(
+        account_id=account.account_id,
+        email=account.email,
+        return_url=return_url,
+    )
+    return _json({"account_id": account.account_id, "url": url, "return_url": return_url})
+
+
+async def billing_plan_handler(request: Request) -> Response:
+    """POST /account/billing/plan — switch Free / Pro / Enterprise."""
+    billing = _billing_state(request)
+    account = _require_account(request)
+    body = await _read_json(request)
+
+    plan = _parse_plan(body.get("plan"))
+    seats = _parse_optional_seats(body.get("seats"))
+    payment_method_id = _parse_optional_payment_method(body.get("payment_method_id"))
+    summary = billing.service.change_plan(
+        account_id=account.account_id,
+        email=account.email,
+        plan=plan,
+        seats=seats,
+        payment_method_id=payment_method_id,
+    )
     return _json(summary.to_dict())
 
 
@@ -286,6 +363,8 @@ __all__ = [
     "billing_or_signup_error_response",
     "billing_pause_handler",
     "billing_payment_method_handler",
+    "billing_plan_handler",
+    "billing_portal_handler",
     "billing_resume_handler",
     "billing_status_handler",
     "billing_subscribe_handler",

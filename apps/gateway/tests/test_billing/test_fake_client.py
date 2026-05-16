@@ -185,6 +185,48 @@ def test_update_subscription_seats_changes_quantity() -> None:
     assert updated_pro.quantity == 7
 
 
+def test_add_and_remove_subscription_item_round_trip() -> None:
+    fake = FakeBillingClient()
+    cust = fake.create_customer(email="a@a", metadata={})
+    sub = fake.create_subscription(
+        customer_id=cust.id,
+        pro_price_id="price_pro",
+        pro_seats=1,
+        enterprise_metered_price_id=None,
+        metadata={},
+    )
+    with_item = fake.add_subscription_item(
+        subscription_id=sub.id,
+        price_id="price_metered",
+        metered=True,
+    )
+    metered = next(i for i in with_item.items if i.metered)
+    without_item = fake.remove_subscription_item(
+        subscription_id=sub.id,
+        subscription_item_id=metered.id,
+    )
+    assert all(not i.metered for i in without_item.items)
+
+
+def test_billing_portal_session_requires_customer() -> None:
+    fake = FakeBillingClient()
+    with pytest.raises(BillingClientError):
+        fake.create_billing_portal_session(
+            customer_id="cus_missing",
+            return_url="http://example.test/account/billing",
+        )
+
+
+def test_billing_portal_session_returns_url() -> None:
+    fake = FakeBillingClient()
+    cust = fake.create_customer(email="a@a", metadata={})
+    url = fake.create_billing_portal_session(
+        customer_id=cust.id,
+        return_url="http://example.test/account/billing",
+    )
+    assert url.startswith("https://billing.stripe.test/session/")
+
+
 def test_record_metered_usage_rejects_negative_quantity() -> None:
     fake = FakeBillingClient()
     cust = fake.create_customer(email="a@a", metadata={})

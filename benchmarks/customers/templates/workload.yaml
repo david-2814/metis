@@ -1,0 +1,31 @@
+# Copy to benchmarks/customers/{{customer_slug}}/workload.yaml and replace every
+# placeholder before running. Same schema as benchmarks/workloads/*/workload.yaml.
+
+name: "{{customer_slug}}-paid-concierge"
+description: >-
+  Customer-specific paid concierge workload for {{customer_name_or_anonymous_shape}}.
+  Keep this private unless publication is approved in intake.yaml.
+suite_version: 1
+signal_strength: "{{strong|medium|marginal}}"
+turns:
+  - prompt: >-
+      {{paste_or_describe_customer_prompt_1}}
+    expect:
+      min_tool_calls: 0
+      max_tool_calls: 20
+      contains_substring: "{{grounding_token_or_expected_output}}"
+  - prompt: >-
+      {{paste_or_describe_customer_prompt_2}}
+    expect:
+      min_tool_calls: 0
+      max_tool_calls: 20
+expect:
+  max_total_cost_usd: 5.00
+  min_llm_calls: 2
+  max_hard_failures: 0
+evaluate:
+  rubric: hybrid
+  grounding_tokens:
+    - "{{token_that_should_appear_if_grounded}}"
+  forbidden_grounding:
+    - "{{plausible_but_false_identifier}}"

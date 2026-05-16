@@ -1,0 +1,8 @@
+# Customer benchmark artifacts are private by default.
+*
+
+# Keep the reusable scaffold tracked.
+!.gitignore
+!README.md
+!templates/
+!templates/**

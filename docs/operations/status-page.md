@@ -54,7 +54,9 @@ per deployment:
 5. **First-boot configuration** — paste the monitor + incident
    templates from the "Helm sidecar option" + "Monitoring checks"
    sections below into the Kuma UI (or post via UptimeRobot's API
-   v2 — recipes below).
+   v2 — recipes below). If the hosting account is not provisioned yet,
+   use [`status-page-config.yaml`](status-page-config.yaml) as the exact
+   paste artifact for the owner-side setup ticket.
 
 ---
 

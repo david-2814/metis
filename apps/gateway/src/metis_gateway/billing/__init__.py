@@ -43,6 +43,8 @@ from metis_gateway.billing.routes import (
     billing_cancel_handler,
     billing_pause_handler,
     billing_payment_method_handler,
+    billing_plan_handler,
+    billing_portal_handler,
     billing_status_handler,
     stripe_webhook_handler,
 )
@@ -80,6 +82,8 @@ __all__ = [
     "billing_cancel_handler",
     "billing_pause_handler",
     "billing_payment_method_handler",
+    "billing_plan_handler",
+    "billing_portal_handler",
     "billing_status_handler",
     "build_billing_state",
     "stripe_webhook_handler",

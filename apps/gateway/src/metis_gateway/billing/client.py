@@ -156,6 +156,28 @@ class BillingClient(Protocol):
         seats: int,
     ) -> Subscription: ...
 
+    def add_subscription_item(
+        self,
+        *,
+        subscription_id: str,
+        price_id: str,
+        metered: bool,
+    ) -> Subscription: ...
+
+    def remove_subscription_item(
+        self,
+        *,
+        subscription_id: str,
+        subscription_item_id: str,
+    ) -> Subscription: ...
+
+    def create_billing_portal_session(
+        self,
+        *,
+        customer_id: str,
+        return_url: str,
+    ) -> str: ...
+
     def record_metered_usage(
         self,
         *,
@@ -347,6 +369,83 @@ class FakeBillingClient:
         )
         self.subscriptions[sub.id] = updated
         return updated
+
+    def add_subscription_item(
+        self,
+        *,
+        subscription_id: str,
+        price_id: str,
+        metered: bool,
+    ) -> Subscription:
+        self._log(
+            "add_subscription_item",
+            subscription_id=subscription_id,
+            price_id=price_id,
+            metered=metered,
+        )
+        sub = self.get_subscription(subscription_id=subscription_id)
+        item = SubscriptionItem(
+            id=self._next_id("si"),
+            price_id=price_id,
+            quantity=None if metered else 1,
+            metered=metered,
+        )
+        updated = Subscription(
+            id=sub.id,
+            customer_id=sub.customer_id,
+            status=sub.status,
+            items=(*sub.items, item),
+            current_period_end=sub.current_period_end,
+            cancel_at_period_end=sub.cancel_at_period_end,
+            pause_collection=sub.pause_collection,
+        )
+        self.subscriptions[sub.id] = updated
+        return updated
+
+    def remove_subscription_item(
+        self,
+        *,
+        subscription_id: str,
+        subscription_item_id: str,
+    ) -> Subscription:
+        self._log(
+            "remove_subscription_item",
+            subscription_id=subscription_id,
+            subscription_item_id=subscription_item_id,
+        )
+        sub = self.get_subscription(subscription_id=subscription_id)
+        remaining = tuple(i for i in sub.items if i.id != subscription_item_id)
+        if len(remaining) == len(sub.items):
+            raise BillingClientError(
+                f"item {subscription_item_id} not on subscription {subscription_id}"
+            )
+        updated = Subscription(
+            id=sub.id,
+            customer_id=sub.customer_id,
+            status=sub.status,
+            items=remaining,
+            current_period_end=sub.current_period_end,
+            cancel_at_period_end=sub.cancel_at_period_end,
+            pause_collection=sub.pause_collection,
+        )
+        self.subscriptions[sub.id] = updated
+        return updated
+
+    def create_billing_portal_session(
+        self,
+        *,
+        customer_id: str,
+        return_url: str,
+    ) -> str:
+        self._log(
+            "create_billing_portal_session",
+            customer_id=customer_id,
+            return_url=return_url,
+        )
+        if customer_id not in self.customers:
+            raise BillingClientError(f"unknown customer {customer_id}")
+        session_id = self._next_id("bps")
+        return f"https://billing.stripe.test/session/{session_id}"
 
     def record_metered_usage(
         self,
@@ -595,6 +694,42 @@ class StripeBillingClient:
         self._stripe.SubscriptionItem.modify(pro_item_id, quantity=seats)
         obj = self._stripe.Subscription.retrieve(subscription_id)
         return _to_subscription_dto(obj)
+
+    def add_subscription_item(
+        self,
+        *,
+        subscription_id: str,
+        price_id: str,
+        metered: bool,
+    ) -> Subscription:
+        self._stripe.SubscriptionItem.create(
+            subscription=subscription_id,
+            price=price_id,
+        )
+        obj = self._stripe.Subscription.retrieve(subscription_id)
+        return _to_subscription_dto(obj)
+
+    def remove_subscription_item(
+        self,
+        *,
+        subscription_id: str,
+        subscription_item_id: str,
+    ) -> Subscription:
+        self._stripe.SubscriptionItem.delete(subscription_item_id)
+        obj = self._stripe.Subscription.retrieve(subscription_id)
+        return _to_subscription_dto(obj)
+
+    def create_billing_portal_session(
+        self,
+        *,
+        customer_id: str,
+        return_url: str,
+    ) -> str:
+        obj = self._stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=return_url,
+        )
+        return str(obj.url)
 
     def record_metered_usage(
         self,

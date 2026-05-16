@@ -68,6 +68,9 @@ class SubscriptionRecord:
     pause_collection: bool
     created_at: datetime
     updated_at: datetime
+    payment_failed_at: datetime | None = None
+    payment_grace_until: datetime | None = None
+    access_frozen_at: datetime | None = None
 
 
 _SCHEMA = """
@@ -94,6 +97,9 @@ CREATE TABLE IF NOT EXISTS subscription_records (
     pause_collection             INTEGER NOT NULL,
     created_at_us                INTEGER NOT NULL,
     updated_at_us                INTEGER NOT NULL,
+    payment_failed_at_us         INTEGER,
+    payment_grace_until_us       INTEGER,
+    access_frozen_at_us          INTEGER,
     FOREIGN KEY (account_id) REFERENCES customer_records (account_id)
 );
 CREATE INDEX IF NOT EXISTS idx_subscription_records_subscription_id
@@ -120,9 +126,25 @@ class BillingStore:
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._migrate_schema()
 
     def close(self) -> None:
         self._conn.close()
+
+    def _migrate_schema(self) -> None:
+        """Apply additive migrations for stores created by earlier waves."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(subscription_records)").fetchall()
+        }
+        migrations = {
+            "payment_failed_at_us": "ALTER TABLE subscription_records ADD COLUMN payment_failed_at_us INTEGER",
+            "payment_grace_until_us": "ALTER TABLE subscription_records ADD COLUMN payment_grace_until_us INTEGER",
+            "access_frozen_at_us": "ALTER TABLE subscription_records ADD COLUMN access_frozen_at_us INTEGER",
+        }
+        for column, sql in migrations.items():
+            if column not in columns:
+                self._conn.execute(sql)
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -192,8 +214,9 @@ class BillingStore:
                     (account_id, stripe_subscription_id, tier, status, pro_seats,
                      pro_item_id, enterprise_metered_item_id,
                      current_period_end_us, cancel_at_period_end, pause_collection,
-                     created_at_us, updated_at_us)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     created_at_us, updated_at_us,
+                     payment_failed_at_us, payment_grace_until_us, access_frozen_at_us)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account_id) DO UPDATE SET
                     stripe_subscription_id = excluded.stripe_subscription_id,
                     tier = excluded.tier,
@@ -204,7 +227,10 @@ class BillingStore:
                     current_period_end_us = excluded.current_period_end_us,
                     cancel_at_period_end = excluded.cancel_at_period_end,
                     pause_collection = excluded.pause_collection,
-                    updated_at_us = excluded.updated_at_us
+                    updated_at_us = excluded.updated_at_us,
+                    payment_failed_at_us = excluded.payment_failed_at_us,
+                    payment_grace_until_us = excluded.payment_grace_until_us,
+                    access_frozen_at_us = excluded.access_frozen_at_us
                 """,
                 (
                     record.account_id,
@@ -219,6 +245,9 @@ class BillingStore:
                     1 if record.pause_collection else 0,
                     _to_us(record.created_at),
                     _to_us(record.updated_at),
+                    _to_us_optional(record.payment_failed_at),
+                    _to_us_optional(record.payment_grace_until),
+                    _to_us_optional(record.access_frozen_at),
                 ),
             )
 
@@ -291,9 +320,17 @@ def _to_us(dt: datetime) -> int:
     return delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
 
 
+def _to_us_optional(dt: datetime | None) -> int | None:
+    return _to_us(dt) if dt is not None else None
+
+
 def _from_us(value: int) -> datetime:
     seconds, micros = divmod(value, 1_000_000)
     return datetime.fromtimestamp(seconds, tz=UTC).replace(microsecond=micros)
+
+
+def _from_us_optional(value: int | None) -> datetime | None:
+    return _from_us(value) if value is not None else None
 
 
 def _row_to_customer(row: sqlite3.Row) -> CustomerRecord:
@@ -320,6 +357,9 @@ def _row_to_subscription(row: sqlite3.Row) -> SubscriptionRecord:
         pause_collection=bool(row["pause_collection"]),
         created_at=_from_us(row["created_at_us"]),
         updated_at=_from_us(row["updated_at_us"]),
+        payment_failed_at=_from_us_optional(row["payment_failed_at_us"]),
+        payment_grace_until=_from_us_optional(row["payment_grace_until_us"]),
+        access_frozen_at=_from_us_optional(row["access_frozen_at_us"]),
     )
 
 

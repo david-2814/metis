@@ -582,9 +582,10 @@ magic link to extend).
   ([`gateway-hardening.md §3`](gateway-hardening.md)) applies to signup
   endpoints too; operators exposing the surface publicly should enable
   it.
-- **Account-level billing / quota propagation.** Wave 15 territory.
-  Accounts in v1 inherit whatever quotas the operator embedded in the
-  underlying gateway-key issuance (none by default).
+- **Billing secrets and Stripe live-mode readiness.** Wave 15 / Wave 16
+  ship the billing engine and self-service endpoints, but the operator
+  still owns Stripe account provisioning, webhook secret rotation, tax /
+  invoice policy, and live-mode validation before public exposure.
 - **Storage durability.** `accounts.json` is a local-FS file; SaaS
   deployments running multi-pod must mount it on durable shared
   storage (same RWX caveat as the trace DB; helm `signup.accountsPath`
@@ -603,17 +604,73 @@ magic link to extend).
 
 ---
 
-## 13. Follow-ons (next-up after Wave 14)
+## 13. Billing (Wave 15 + Wave 16)
 
-1. **Multi-user / team-level rollups.** v1 stamps `gateway_key_id` per call; teams of keys, multi-workspace per key, and tenant aggregation are Phase 3 follow-on. Requires both a keystore schema change (group/team membership) and an analytics rollup dimension (`group_by=team` or a `team_id` filter).
-2. **Production-bind hardening.** Audit logging (who called what when — partially landed via `gateway.key_*` events in §11), per-key rate limiting, and CIDR allowlists are the gating items before the gateway can default to a non-loopback bind.
-3. **`--ignore-inbound-model` flag** (§5.3 open question). Lets routing fall through to rule / workspace / global slots even when the client's `model` is set, opting into transparent cost-optimization mode.
-4. **`/v1/models` listing.** OpenAI clients expect this surface; deferred until a Cursor or Continue user asks.
+Billing is opt-in and only mounts when `GatewayConfig.billing` is set
+(CLI: `--enable-billing`; helm: `billing.enabled`). It also requires
+signup/account sessions because every billing mutation is scoped to a
+verified account. Deployments with billing disabled return 404 for the
+billing namespace and preserve the pre-billing gateway surface.
+
+### 13.1 Endpoints
+
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/account/billing` | GET | session bearer | Return the current subscription summary, effective billing tier, payment state, and free-tier cap. |
+| `/account/billing/portal` | GET | session bearer | Create a one-shot Stripe Customer Portal link for payment method, invoice, and cancellation self-service. |
+| `/account/billing/plan` | POST | session bearer | Switch plan with `{"plan": "free" | "pro" | "enterprise"}` plus optional `seats` and `payment_method_id`. |
+| `/account/billing/subscribe` | POST | session bearer | Back-compat Pro-subscription creation endpoint from Wave 15. |
+| `/account/billing/payment-method` | POST | session bearer | Attach or replace a Stripe payment method by id. |
+| `/account/billing/cancel` | POST | session bearer | Cancel the subscription, at period end by default. |
+| `/account/billing/pause` | POST | session bearer | Pause Stripe collection. |
+| `/account/billing/resume` | POST | session bearer | Resume Stripe collection. |
+| `/webhooks/stripe` | POST | Stripe signature | Handle subscription update/delete and invoice paid/payment-failed events idempotently. |
+
+### 13.2 Plan semantics
+
+- **Free** is the entry tier. New signups have no subscription record
+  and inherit the configured Free cap (`free_monthly_cap_usd = 5.00`
+  by default).
+- **Pro** is a per-seat Stripe subscription. `POST /account/billing/plan`
+  creates a subscription if one does not exist, or changes seats on the
+  existing subscription if it does.
+- **Enterprise** is Pro plus the reserved metered %-of-savings add-on.
+  The self-service endpoint can attach/remove the enterprise metered
+  item, but the contract-specific savings rate and monthly cap remain
+  operator-configured.
+
+Plan changes emit the existing `billing.subscription_created`,
+`billing.subscription_updated`, or `billing.subscription_canceled`
+audit events. No new event type is required for Wave 16.
+
+### 13.3 Failed-payment policy
+
+Stripe `invoice.payment_failed` puts the account in a 7-day grace
+window (`failed_payment_grace_days`, default 7). During grace, the
+effective customer tier remains paid so buyers can fix payment without
+interrupting dev workflows. After grace expires, the billing service
+marks the subscription as frozen, sets the effective tier to Free, and
+lets the normal tier-cap path enforce the Free monthly cap. A later
+`invoice.payment_succeeded` restores the paid tier and clears the
+frozen marker.
+
+The v1 email notification is intentionally stubbed: operators should
+send the notification from the billing operator runbook until a real
+transactional-email adapter is installed.
+
+---
+
+## 14. Follow-ons (next-up after Wave 16)
+
+1. **`--ignore-inbound-model` flag** (§5.3 open question). Lets routing fall through to rule / workspace / global slots even when the client's `model` is set, opting into transparent cost-optimization mode.
+2. **`/v1/models` listing.** OpenAI clients expect this surface; deferred until a Cursor or Continue user asks.
+3. **Real billing / signup email adapters.** Magic links and failed-payment notifications are still stdout / operator-runbook stubs in v1; public SaaS exposure needs SES / SendGrid or equivalent.
+4. **SSO / OIDC / SAML.** Magic links are the only account auth mechanism until a buyer asks for an IdP bridge.
 5. **Typed `gateway_key_id` / `inbound_shape` on `TurnCompleted`.** Currently dict-envelope-stamped; promoting them to typed fields keeps the catalog discipline (`event-bus-and-trace-catalog.md`) honest.
 
 ---
 
-## 14. References
+## 15. References
 
 - [`canonical-message-format.md`](canonical-message-format.md) — `Message`, `ContentBlock`, persistence schema.
 - [`provider-adapter-contract.md`](provider-adapter-contract.md) — adapter interface, retry, error classes.

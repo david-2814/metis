@@ -14,9 +14,11 @@ from pathlib import Path
 from metis_cli.customer_report import (
     DEFAULT_BASELINE_MODEL,
     DEFAULT_LOOKBACK_DAYS,
+    anonymize_report,
     build_report,
     render_html,
     render_json,
+    render_report_template,
 )
 from metis_cli.main import build_parser, main
 from metis_core.analytics.windows import TimeWindow
@@ -98,6 +100,7 @@ def test_customer_report_subcommand_parses() -> None:
     assert args.customer_tier == "trial"
     assert args.customer_label == "Acme Corp"
     assert args.baseline == "anthropic:claude-sonnet-4-6"
+    assert args.anonymize is False
 
 
 def test_customer_report_subcommand_defaults() -> None:
@@ -109,6 +112,21 @@ def test_customer_report_subcommand_defaults() -> None:
     assert args.baseline == DEFAULT_BASELINE_MODEL
     assert args.since is None
     assert args.until is None
+    assert args.anonymize is False
+
+
+def test_customer_report_subcommand_parses_anonymize_flag() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "customer-report",
+            "--workspace",
+            "/srv/customer",
+            "--anonymize",
+        ]
+    )
+    assert args.command == "customer-report"
+    assert args.anonymize is True
 
 
 def test_customer_report_rejects_unknown_tier() -> None:
@@ -283,6 +301,125 @@ def test_render_json_is_valid_and_deterministic(tmp_path: Path) -> None:
     assert parsed["window_start"].startswith("2026-05-10")
 
 
+def test_anonymize_report_replaces_customer_identifiers_deterministically(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "metis.db"
+    base = datetime(2026, 5, 10, 12, 0, 0, tzinfo=UTC)
+    _seed_trace(
+        db,
+        base_ts=base,
+        keys=(
+            ("gk_beta", "zoe", "platform", "anthropic:claude-haiku-4-5", 100, 50, 0.001),
+            ("gk_alpha", "amy", "growth", "anthropic:claude-haiku-4-5", 100, 50, 0.001),
+            ("gk_beta", "zoe", "platform", "anthropic:claude-haiku-4-5", 100, 50, 0.001),
+        ),
+    )
+    window = TimeWindow(start=base - timedelta(hours=1), end=base + timedelta(days=1))
+    report = build_report(
+        db_path=db,
+        workspace_path="/srv/acme-private",
+        customer_label="Acme Private",
+        customer_tier="paid",
+        window=window,
+    )
+
+    first = anonymize_report(report)
+    second = anonymize_report(report)
+    assert first == second
+    assert first.customer_label == "Anonymous customer"
+    assert first.workspace_path == "/workspace/anonymous-customer"
+    assert first.db_path == "anonymized-trace.db"
+
+    rendered_json = render_json(first)
+    rendered_html = render_html(first)
+    for leaked in (
+        "Acme Private",
+        "/srv/acme-private",
+        str(db),
+        "gk_alpha",
+        "gk_beta",
+        "amy",
+        "zoe",
+        "growth",
+        "platform",
+    ):
+        assert leaked not in rendered_json
+        assert leaked not in rendered_html
+
+    parsed = json.loads(rendered_json)
+    assert {row["gateway_key_id"] for row in parsed["by_gateway_key"]} == {
+        "gateway_key_001",
+        "gateway_key_002",
+    }
+    assert {row["user_id"] for row in parsed["by_user"]} == {"user_001", "user_002"}
+    assert {row["team_id"] for row in parsed["by_team"]} == {"team_001", "team_002"}
+
+
+def test_report_template_placeholder_substitution_is_deterministic(tmp_path: Path) -> None:
+    db = tmp_path / "metis.db"
+    base = datetime(2026, 5, 10, 12, 0, 0, tzinfo=UTC)
+    _seed_trace(
+        db,
+        base_ts=base,
+        keys=(("gk_x", "alice", "eng", "anthropic:claude-haiku-4-5", 100, 50, 0.001),),
+    )
+    window = TimeWindow(start=base - timedelta(hours=1), end=base + timedelta(days=1))
+    report = anonymize_report(
+        build_report(
+            db_path=db,
+            workspace_path="/srv/acme-private",
+            customer_label="Acme Private",
+            customer_tier="trial",
+            window=window,
+        )
+    )
+
+    template = (
+        "# {{ customer_label }}\n"
+        "Window: {{window_start}} -> {{window_end}}\n"
+        "Spend: ${{total_spend_usd}} across {{ llm_calls }} calls\n"
+        "Owner note: {{owner_note}}\n"
+    )
+    rendered_1 = render_report_template(
+        template,
+        report,
+        extra_values={"owner_note": "approved for anonymized case-study draft"},
+    )
+    rendered_2 = render_report_template(
+        template,
+        report,
+        extra_values={"owner_note": "approved for anonymized case-study draft"},
+    )
+    assert rendered_1 == rendered_2
+    assert "{{" not in rendered_1
+    assert "Anonymous customer" in rendered_1
+    assert "Acme Private" not in rendered_1
+
+
+def test_report_template_missing_placeholder_raises(tmp_path: Path) -> None:
+    db = tmp_path / "metis.db"
+    store = TraceStore(db)
+    store.close()
+    window = TimeWindow(
+        start=datetime(2026, 5, 10, tzinfo=UTC),
+        end=datetime(2026, 5, 17, tzinfo=UTC),
+    )
+    report = build_report(
+        db_path=db,
+        workspace_path="/srv/x",
+        customer_label="X Inc",
+        window=window,
+    )
+
+    try:
+        render_report_template("{{missing_value}}", report)
+    except KeyError as exc:
+        assert "missing_value" in str(exc)
+    else:
+        raise AssertionError("missing template placeholders should fail closed")
+
+
 def test_customer_report_end_to_end_html(tmp_path: Path, capsys) -> None:
     db = tmp_path / "metis.db"
     out = tmp_path / "report.html"
@@ -311,17 +448,20 @@ def test_customer_report_end_to_end_html(tmp_path: Path, capsys) -> None:
             "Acme Corp",
             "--customer-tier",
             "trial",
+            "--anonymize",
         ]
     )
     assert rc == 0
     assert out.exists()
     body = out.read_text(encoding="utf-8")
-    assert "Acme Corp" in body
+    assert "Anonymous customer" in body
+    assert "Acme Corp" not in body
     assert "trial" in body
     stdout = capsys.readouterr().out
     assert "customer-report complete" in stdout
     assert "total spend:" in stdout
     assert "customer_tier:  trial" in stdout
+    assert "anonymized:     true" in stdout
 
 
 def test_customer_report_end_to_end_json_to_stdout(tmp_path: Path, capsys) -> None:

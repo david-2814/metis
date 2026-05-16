@@ -3,36 +3,38 @@ import Layout from "../layouts/Layout.astro";
 import Nav from "../components/Nav.astro";
 import Footer from "../components/Footer.astro";
 
-// Pricing is unratified until Wave 15. docs/specs/pricing.md recommends
-// open-core gateway + per-seat Pro tier + reserved enterprise %-of-savings
-// add-on, but the owner has not signed off. Until then this page is an
-// honest placeholder + signup pull-through.
+// Pricing model ratified 2026-05-16 in docs/specs/pricing.md §5.5.4.
+// Price points are still deferred to first-buyer triangulation; this page
+// names the model shape and the billing surfaces that shipped in Wave 15.
 
-const tentativeTiers = [
+const tiers = [
   {
-    label: "Open-source gateway",
-    price: "free",
-    body: "metis gateway, metis chat, metis serve, the canonical IR, the routing engine, the trace store, the analytics surface. Self-host on your own infra, BYO API keys.",
-    cta: "early access",
+    label: "Metis Community",
+    price: "$0",
+    kicker: "open-core gateway",
+    body: "Self-host the gateway, agent loop, canonical IR, routing engine, trace store, pattern store, heuristic evaluator, and deployment-level analytics. BYO provider keys and infra.",
+    cta: "start free",
   },
   {
-    label: "Pro",
-    price: "TBD",
-    body: "Per-seat. Hosted control plane, managed gateway, multi-team rollups, the pattern store as a service, support SLAs.",
-    cta: "early access",
+    label: "Metis Pro",
+    price: "per active seat",
+    kicker: "team deployment",
+    body: "Per active user per month. Adds full multi-user identity, per-team caps, per-user/team analytics, LLM judge tier, audit export, hosted operations, and the agent upgrade path.",
+    cta: "talk pricing",
   },
   {
-    label: "Enterprise",
-    price: "TBD",
-    body: "Reserved enterprise %-of-savings add-on on top of Pro. SSO, audit-log retention, custom evaluator rubrics, dedicated support.",
+    label: "Metis Enterprise",
+    price: "custom",
+    kicker: "outcome-linked",
+    body: "Pro plus a capped percent-of-savings add-on for procurement-led buyers, custom routing policies, longer audit retention, deployment support, and dedicated success engineering.",
     cta: "talk to us",
   },
 ];
 ---
 
 <Layout
-  title="Pricing — coming soon | Metis by 2sum AI"
-  description="Pricing for Metis from 2sum AI — open-core gateway is free; Pro and Enterprise tiers ratify in Wave 15."
+  title="Pricing | Metis by 2sum AI"
+  description="Pricing for Metis from 2sum AI — open-core gateway, per-seat Pro, and Enterprise savings add-on."
 >
   <div
     class="pointer-events-none fixed inset-0 grid-bg opacity-60 [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]"
@@ -45,17 +47,17 @@ const tentativeTiers = [
     <!-- HERO -->
     <section class="mx-auto max-w-6xl px-6 pb-12 pt-20">
       <div
-        class="mb-6 inline-flex items-center gap-2 rounded-full border border-amber/40 bg-bg-card px-3 py-1 text-xs"
+        class="mb-6 inline-flex items-center gap-2 rounded-full border border-accent/40 bg-bg-card px-3 py-1 text-xs"
       >
         <span class="relative flex h-2 w-2">
           <span
-            class="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber opacity-50"
+            class="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50"
           ></span>
           <span
-            class="relative inline-flex h-2 w-2 rounded-full bg-amber"
+            class="relative inline-flex h-2 w-2 rounded-full bg-accent"
           ></span>
         </span>
-        <span class="text-amber">coming soon &middot; ratifies in Wave 15</span>
+        <span class="text-accent">model ratified &middot; billing module shipped</span>
       </div>
 
       <h1
@@ -66,11 +68,10 @@ const tentativeTiers = [
       <p
         class="mt-6 max-w-3xl text-base leading-relaxed text-fg-muted sm:text-lg"
       >
-        The open-source gateway is and will remain free to self-host. The
-        Pro and Enterprise tiers below are <span class="text-fg">indicative,
-        not committed</span> &mdash; the commercial model ratifies in Wave 15.
-        Sign up for the private beta and you'll get the final pricing
-        sheet plus a 90-day grandfathered rate at GA.
+        The model is now fixed: open-core gateway, per-seat Pro, and a
+        reserved Enterprise savings add-on. Price points stay commercial,
+        but the shape is no longer TBD. Metis never resells provider tokens;
+        you bring your Anthropic / OpenAI / OpenRouter keys.
       </p>
 
       <div class="mt-8">
@@ -78,21 +79,22 @@ const tentativeTiers = [
           href="/signup"
           class="inline-flex items-center gap-2 rounded border border-accent bg-accent px-5 py-3 text-sm font-bold text-bg transition-colors hover:bg-accent/90"
         >
-          reserve a beta seat
+          discuss a Pro pilot
           <span aria-hidden="true">&rarr;</span>
         </a>
       </div>
     </section>
 
-    <!-- TENTATIVE TIER GRID -->
+    <!-- TIER GRID -->
     <section class="mx-auto max-w-6xl px-6 pb-20">
       <div class="grid gap-6 md:grid-cols-3">
         {
-          tentativeTiers.map((tier) => (
+          tiers.map((tier) => (
             <div class="flex flex-col rounded-lg border border-border bg-bg-card p-6">
               <p class="font-mono text-xs uppercase tracking-wider text-accent">
                 {tier.label}
               </p>
+              <p class="mt-2 text-xs text-fg-muted">{tier.kicker}</p>
               <p class="mt-3 text-3xl font-bold tracking-tight">
                 {tier.price}
               </p>
@@ -114,10 +116,9 @@ const tentativeTiers = [
       </div>
 
       <p class="mt-6 text-xs text-fg-dim">
-        Pricing model survey and trade-off analysis at
-        docs/specs/pricing.md; the recommended shape is open-core gateway
-        + per-seat Pro + reserved enterprise %-of-savings add-on. Final
-        numbers await owner ratification (STRATEGY.md §6.8).
+        Model shape ratified in docs/specs/pricing.md §5.5.4 and implemented
+        in Wave 15's opt-in billing module. Dollar price points remain deferred
+        to first-buyer triangulation.
       </p>
     </section>
 
@@ -131,13 +132,13 @@ const tentativeTiers = [
         <div class="mt-10 space-y-8 text-sm leading-relaxed">
           <div>
             <p class="font-bold text-fg">
-              Will the open-source gateway stay free?
+              Will the Community gateway stay free?
             </p>
             <p class="mt-2 text-fg-muted">
               Yes. The gateway, the agent loop, the canonical IR, the
               routing engine, the trace store, the pattern store, and
-              the evaluator ship under an open-source license. Self-host
-              forever; we never see your traffic.
+              the evaluator are in the $0 self-hosted Community path.
+              License text stays owner-side; we never see your traffic.
             </p>
           </div>
 
@@ -156,26 +157,26 @@ const tentativeTiers = [
 
           <div>
             <p class="font-bold text-fg">
-              Why "coming soon"?
+              What shipped in billing?
             </p>
             <p class="mt-2 text-fg-muted">
-              We'd rather ship a price we'll honor than a price we'll
-              walk back. Wave 15 is when the commercial model gets
-              owner ratification; until then, beta seats are free and
-              the trial recipe is a single helm command.
+              Stripe-backed subscription lifecycle, webhook idempotency,
+              Pro per-seat lines, Enterprise savings usage records, six
+              billing audit events, and tier-axis quota composition. Billing
+              is opt-in via deployment config; deployments without it are
+              byte-for-byte free-tier runtime.
             </p>
           </div>
 
           <div>
             <p class="font-bold text-fg">
-              What does a beta seat get me?
+              Does Enterprise mean Metis takes a cut of provider spend?
             </p>
             <p class="mt-2 text-fg-muted">
-              Direct access to the team, a 60-90 minute setup against
-              your own workload, the savings-demo evidence pack
-              (benchmarks/RESULTS.md §A3-rev3 + §A3-rev5 + §A3-rev6),
-              and a 90-day grandfathered rate against whatever pricing
-              ratifies in Wave 15.
+              No. The Enterprise add-on meters verified savings, not raw
+              tokens. Provider invoices still come from the provider. The
+              savings line is reserved for buyers who want an outcome-linked
+              contract on top of the predictable Pro seat floor.
             </p>
           </div>
         </div>
@@ -186,11 +187,11 @@ const tentativeTiers = [
     <section class="border-t border-border">
       <div class="mx-auto max-w-3xl px-6 py-20 text-center">
         <h2 class="text-2xl font-bold tracking-tight sm:text-3xl">
-          Save the rate before it lands.
+          Start free. Convert when the team needs controls.
         </h2>
         <p class="mx-auto mt-4 max-w-xl text-fg-muted">
-          Beta seats get the final pricing sheet first plus a 90-day
-          grandfathered rate at GA.
+          Community is the zero-friction gateway. Pro starts when identity,
+          hard caps, audit export, hosted operations, and the agent matter.
         </p>
         <div class="mt-8">
           <a
