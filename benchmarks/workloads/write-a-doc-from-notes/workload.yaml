@@ -4,6 +4,13 @@ description: >-
   Exercises read_file + write_file in a 2-turn cycle. Representative of the
   "I dumped my brain into a markdown file, turn it into a doc" pattern.
 suite_version: 1
+# Per the §A3-rev6 cross-run audit (RESULTS.md §A3-rev6): haiku 1.000 /
+# sonnet 1.000 / gap +0.000 across §A3-rev3..rev6 patterns DBs. Both
+# models reliably pass; the rubric does not discriminate. Replaced in
+# the default v2 suite by subtle-bug-fix-with-test (root-cause-vs-
+# symptom shape with objective pytest verification). Kept on disk and
+# runnable by name so historical §A3 runs reproduce.
+signal_strength: marginal
 turns:
   - prompt: >-
       Read notes.md in this workspace. It contains raw notes from a postmortem

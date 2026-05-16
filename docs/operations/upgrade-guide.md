@@ -246,3 +246,117 @@ kind delete cluster --name metis-gateway-upgrade
 If step 4 fails or the new pod never reaches Ready, `--atomic` rolls
 the release back and the v0 pod stays in service. `helm history`
 records both the failed upgrade and the rollback.
+
+---
+
+## 6. Migration: loopback-only → Internet-exposed (Wave 13)
+
+Wave 13 lifts the gateway's loopback-only bind constraint
+([`gateway-hardening.md §2.1`](../specs/gateway-hardening.md)). A pre-
+Wave-13 deployment binding `127.0.0.1` continues to work unchanged —
+the default is preserved. This section is the recipe for an operator
+who wants to flip a running deployment from loopback to publicly
+exposed safely.
+
+### 6.1 Pre-flight checklist
+
+Before flipping `--host 0.0.0.0`, confirm each layer is wired. The
+boot-time `WARN` log will surface what's missing; this checklist beats
+that to it.
+
+1. **TLS termination.** Pick one:
+   - **Upstream sidecar (recommended):** an Ingress / Caddy / cloud LB
+     in front of the gateway Service holds the certificate. The gateway
+     speaks plaintext to the sidecar over the pod network. Set
+     `ingress.enabled=true` + `ingress.tls[*].secretName` in the helm
+     values; leave `tls.enabled` off.
+   - **In-process:** mount a cert + key Secret into the gateway pod
+     and pass `--tls-cert /etc/metis/tls/cert.pem --tls-key
+     /etc/metis/tls/key.pem`. Set the helm `tls.enabled` toggle (see
+     [`infra/gateway/helm/values.yaml`](../../infra/gateway/helm/values.yaml));
+     this mounts the Secret and forwards the flags to the entrypoint.
+2. **Rate-limit middleware.** Set `rateLimit.enabled=true` in the helm
+   values. Defaults (60 rpm/key, 1000 rpm/IP) hold a leaked key below
+   its daily cap; tighten per traffic profile.
+3. **Audit log export.** Schedule `metis audit export` somewhere a SIEM
+   ingests it ([`audit-log.md §9`](../specs/audit-log.md)). At minimum,
+   capture the credential-lifecycle events: `gateway.key_issued`,
+   `gateway.key_revoked`, `gateway.key_rotated`. Cron, GitHub Actions
+   schedule, or a sidecar that tails the trace DB — pick the buyer's
+   convention.
+4. **Connection-rate cap.** Default 1000 concurrent. Override via
+   `--max-connections` if upstream LB's keep-alive count justifies it.
+5. **Key rotation cadence.** Wave 10 shipped `metis gateway rotate-key
+   <key_id> --grace-period 24h`. Internet-exposed deployments should
+   rotate at least quarterly; the audit-log catches the rotation in
+   `gateway.key_rotated` for proof-of-control.
+
+### 6.2 Helm migration recipe
+
+Two upgrade steps, atomic each:
+
+```bash
+# Step 1: turn on rate limiting first (no public exposure yet).
+helm upgrade metis-gateway ./infra/gateway/helm/ \
+    --namespace metis-gateway --reuse-values \
+    --set rateLimit.enabled=true \
+    --atomic --timeout 5m
+
+# Confirm 429s fire under intentional flood (single key, 100 reqs in 1s):
+KEY=$(kubectl -n metis-gateway get secret metis-gateway-keystore \
+    -o jsonpath='{.data.keys\.json}' | base64 -d | jq -r '.keys[0].secret_hash')
+# (use the issued plaintext from `metis gateway issue-key`)
+
+# Step 2: flip the Service to LoadBalancer (or wire the Ingress) and
+# expose. The gateway pod still binds 127.0.0.1 in the pod; the proxy
+# sidecar bridges to the pod IP. To bind 0.0.0.0 directly on the pod
+# (skipping the sidecar), override the entrypoint:
+helm upgrade metis-gateway ./infra/gateway/helm/ \
+    --namespace metis-gateway --reuse-values \
+    --set service.type=LoadBalancer \
+    --set ingress.enabled=true \
+    --set ingress.className=nginx \
+    --set ingress.hosts[0].host=gateway.example.com \
+    --set 'ingress.tls[0].secretName=metis-gateway-tls' \
+    --atomic --timeout 5m
+```
+
+### 6.3 Verify after migration
+
+```bash
+# Tail the gateway log for the boot-time hardening WARN.
+kubectl -n metis-gateway logs -l app.kubernetes.io/name=metis-gateway \
+    -c gateway --tail=200 | grep "non-loopback"
+# Expected line shape:
+#   WARN  gateway bound to non-loopback host=0.0.0.0 port=8422 — verify
+#         perimeter: tls_in_process=off rate_limit=on. ...
+
+# Confirm rate limit fires (issue a key first; substitute its token).
+TOKEN=...
+for i in $(seq 1 70); do
+    curl -s -o /dev/null -w "%{http_code} " \
+        -H "Authorization: Bearer $TOKEN" \
+        -d '{"model":"haiku","messages":[{"role":"user","content":"ping"}]}' \
+        https://gateway.example.com/v1/chat/completions
+done
+# Expected: 200 ... 200 429 ... 429 (~60 200s then 429s).
+```
+
+### 6.4 Rollback to loopback-only
+
+`metis gateway` still respects `--host 127.0.0.1` (the default). To
+revert without rolling the helm release back, drop the Ingress / change
+the Service type:
+
+```bash
+helm upgrade metis-gateway ./infra/gateway/helm/ \
+    --namespace metis-gateway --reuse-values \
+    --set service.type=ClusterIP \
+    --set ingress.enabled=false \
+    --atomic --timeout 5m
+```
+
+The gateway pod's bind is unchanged; only the in-cluster routing is
+narrowed. Existing in-flight requests drain on rolling update
+(`maxUnavailable=0`); new requests stop reaching the Service from
+outside the cluster.

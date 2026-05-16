@@ -1,0 +1,73 @@
+{{- if and .Values.traceVacuum.enabled .Values.persistence.enabled -}}
+{{/*
+  Trace-DB VACUUM (docs/operations/trace-performance.md §4).
+  Runs `metis trace vacuum` against the trace-DB PVC on a schedule
+  (default monthly). Separate pod from both the gateway and the
+  retention sweep — VACUUM rewrites the file in place and a long
+  rebuild blocks all writers until it completes.
+
+  Same RWO storage gotcha as the retention CronJob: the VACUUM pod
+  mounts the same PVC the gateway uses. On ReadWriteOnce filesystems
+  this fails because two pods cannot mount the same RWO volume. Move
+  to RWX (Longhorn, NFS, EFS) OR run during a deployment maintenance
+  window when the gateway pod is paused OR vacuum a backup taken via
+  `metis backup` and swap the file back. The chart does not enforce
+  one or the other.
+
+  concurrencyPolicy=Forbid so a slow rebuild on a large DB doesn't
+  overlap itself the next month.
+*/}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "metis-gateway.fullname" . }}-trace-vacuum
+  labels:
+    {{- include "metis-gateway.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.traceVacuum.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.traceVacuum.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.traceVacuum.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            {{- include "metis-gateway.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: trace-vacuum
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "metis-gateway.serviceAccountName" . }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: trace-vacuum
+              image: {{ printf "%s:%s"
+                (default .Values.image.repository .Values.traceVacuum.image.repository)
+                (default .Values.image.tag .Values.traceVacuum.image.tag)
+                | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              command:
+                - metis
+                - trace
+                - vacuum
+                - --db-path
+                - {{ .Values.persistence.dbFile | quote }}
+              volumeMounts:
+                - name: data
+                  mountPath: {{ .Values.persistence.mountPath }}
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                {{- toYaml .Values.traceVacuum.resources | nindent 16 }}
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ include "metis-gateway.pvcName" . }}
+            - name: tmp
+              emptyDir:
+                medium: Memory
+{{- end }}

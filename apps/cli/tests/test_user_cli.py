@@ -226,7 +226,9 @@ def test_user_forget_with_confirm_pseudonymizes_and_audits(tmp_path: Path, capsy
     # An `analytics.user_forgotten` audit event landed.
     conn = sqlite3.connect(str(db), isolation_level=None)
     rows = list(
-        conn.execute("SELECT payload_json FROM events WHERE type = ?", ("analytics.user_forgotten",))
+        conn.execute(
+            "SELECT payload_json FROM events WHERE type = ?", ("analytics.user_forgotten",)
+        )
     )
     conn.close()
     assert len(rows) == 1

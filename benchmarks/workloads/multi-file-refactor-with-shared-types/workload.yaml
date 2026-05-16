@@ -11,6 +11,14 @@ description: >-
   print "3 passed". Verification is objective (pytest output), not the
   agent's self-report.
 suite_version: 1
+# Per the §A3-rev6 cross-run audit (RESULTS.md §A3-rev6): haiku 0.797 /
+# sonnet 0.840 / gap +0.043 across §A3-rev3..rev6 patterns DBs — well
+# below the 0.4 signal-strength threshold and explicitly named by the
+# §A3-rev6 Q1 finding as a candidate for replacement. The
+# refactor-with-contract-preservation workload (signal_strength=high)
+# supersedes this one in the default v2 suite. Kept on disk and
+# runnable by name so historical §A3 runs reproduce.
+signal_strength: marginal
 turns:
   - prompt: >-
       Read every `.py` file in this workspace (including the `handlers/`

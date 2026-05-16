@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -63,6 +64,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKLOADS_DIR = REPO_ROOT / "benchmarks" / "workloads"
 RUNS_DIR = REPO_ROOT / "benchmarks" / ".runs"
 
+# Workloads whose per-(workload, model) quality std exceeds this value are
+# flagged "noisy" in the seed-passes statistical summary, signaling that the
+# single-sample read at the K-NN training layer (`PatternStore.record()`) is
+# dominated by stochastic agent variance rather than a stable model-vs-model
+# delta. See `benchmarks/RESULTS.md §A3-rev6 Q1 finding`.
+NOISY_QUALITY_STD_THRESHOLD = 0.15
+
 
 # ---------------------------------------------------------------------------
 # Workload schema (benchmark.md §3.1)
@@ -80,7 +88,16 @@ _ALLOWED_AGG_EXPECT = {
     "max_hard_failures",
     "min_delegate_calls",
 }
-_ALLOWED_TOP = {"name", "description", "suite_version", "turns", "expect", "evaluate"}
+_ALLOWED_TOP = {
+    "name",
+    "description",
+    "suite_version",
+    "turns",
+    "expect",
+    "evaluate",
+    "signal_strength",
+}
+_ALLOWED_SIGNAL_STRENGTH = {"high", "marginal"}
 
 
 @dataclass(frozen=True)
@@ -97,6 +114,13 @@ class Workload:
     turns: list[TurnSpec]
     expect: dict[str, Any] = field(default_factory=dict)
     evaluate: WorkloadRubric = field(default_factory=WorkloadRubric)
+    # Whether the workload produces a stable haiku-vs-sonnet quality gap
+    # large enough for the routing K-NN to learn from. "high" means the
+    # smoke-validated gap is >= 0.4; "marginal" means the gap is within
+    # run-to-run variance. Defaults to "high" so unannotated workloads
+    # run by default (back-compat for the v1 suite). See benchmark.md
+    # §4.1 / RESULTS.md §A3-rev6 for the methodology.
+    signal_strength: str = "high"
     source_path: Path = field(default_factory=Path)
 
 
@@ -147,6 +171,12 @@ def load_workload(yaml_path: Path) -> Workload:
         evaluate_rubric = parse_workload_rubric(raw.get("evaluate"))
     except ValueError as exc:
         raise WorkloadSchemaError(f"{yaml_path}: {exc}") from exc
+    signal_strength = raw.get("signal_strength", "high")
+    if signal_strength not in _ALLOWED_SIGNAL_STRENGTH:
+        raise WorkloadSchemaError(
+            f"{yaml_path}: signal_strength must be one of "
+            f"{sorted(_ALLOWED_SIGNAL_STRENGTH)}; got {signal_strength!r}"
+        )
     return Workload(
         name=str(raw["name"]),
         description=str(raw["description"]),
@@ -154,19 +184,30 @@ def load_workload(yaml_path: Path) -> Workload:
         turns=turns,
         expect=agg_expect,
         evaluate=evaluate_rubric,
+        signal_strength=str(signal_strength),
         source_path=yaml_path,
     )
 
 
-def discover_workloads() -> list[Workload]:
-    """Load every workload.yaml under benchmarks/workloads/<name>/."""
+def discover_workloads(include_marginal: bool = False) -> list[Workload]:
+    """Load every workload.yaml under benchmarks/workloads/<name>/.
+
+    By default returns only `signal_strength=high` workloads — the
+    suite v2 partition introduced after §A3-rev6 (benchmark.md §4.1).
+    Set ``include_marginal=True`` to include the older marginal-signal
+    workloads (kept on disk so the §A3 series can reproduce historical
+    results).
+    """
     if not WORKLOADS_DIR.is_dir():
         return []
     out: list[Workload] = []
     for child in sorted(WORKLOADS_DIR.iterdir()):
         yaml_path = child / "workload.yaml"
         if yaml_path.is_file():
-            out.append(load_workload(yaml_path))
+            workload = load_workload(yaml_path)
+            if not include_marginal and workload.signal_strength == "marginal":
+                continue
+            out.append(workload)
     return out
 
 
@@ -199,6 +240,7 @@ class Provenance:
     python_version: str
     temperature: float | None
     started_at: str
+    seed_passes: int = 1
     ended_at: str = ""
 
     def finalize(self) -> None:
@@ -241,7 +283,29 @@ class WorkloadResult:
     quality_score: float | None = None
     quality_confidence: float | None = None
     delegate_call_count: int = 0
+    seed_pass_index: int = 0
     error: str | None = None
+
+
+@dataclass
+class WorkloadStats:
+    """Per-(workload, current pass) statistical summary across N seed-passes.
+
+    Populated only when `--seed-passes` > 1. The single-model pass (`--model
+    haiku` or `--model sonnet`) is the unit; one `WorkloadStats` row per
+    workload aggregates the N repetitions of that workload under that one
+    model. See `benchmark.md §6.4` for the rationale (variance the K-NN has
+    to overcome).
+    """
+
+    name: str
+    samples: int
+    quality_mean: float | None
+    quality_std: float | None
+    quality_values: list[float]
+    cost_mean_usd: float
+    cost_values_usd: list[float]
+    noisy: bool
 
 
 # ---------------------------------------------------------------------------
@@ -290,9 +354,7 @@ def _enable_delegation(registry, policy: str) -> None:
         planner = raw.get("planner_model")
         worker = raw.get("worker_model")
         if not planner or not worker:
-            raise RuntimeError(
-                f"delegation-policy {policy}: missing planner_model / worker_model"
-            )
+            raise RuntimeError(f"delegation-policy {policy}: missing planner_model / worker_model")
     for model_id, can_delegate, tier in (
         (planner, True, "balanced"),
         (worker, False, "fast"),
@@ -448,9 +510,7 @@ async def run_workload(
             routing_policy_path = str(shipped_policy)
         elif shipped_policy.is_file():
             routing_policy_path = str(shipped_policy)
-            print(
-                f"  [{workload.name}] using workload-shipped routing.yaml at {shipped_policy}"
-            )
+            print(f"  [{workload.name}] using workload-shipped routing.yaml at {shipped_policy}")
         runtime = await setup_runtime(
             workspace_path=str(ws),
             db_path=str(db_path),
@@ -689,6 +749,65 @@ def _aggregate_savings(store: AnalyticsStore, window: TimeWindow, baseline: str,
     return store.savings(window, baseline=baseline, price_table=pricing)
 
 
+def compute_workload_stats(results: list[WorkloadResult]) -> list[WorkloadStats]:
+    """Group successful per-rep `WorkloadResult`s by workload name and compute
+    sample-population statistics over the N repetitions.
+
+    The std is the sample standard deviation (`statistics.stdev` semantics —
+    N-1 divisor). When N=1 std is undefined and emitted as None. Workloads
+    with std > NOISY_QUALITY_STD_THRESHOLD are flagged `noisy=True`.
+    """
+    by_name: dict[str, list[WorkloadResult]] = {}
+    for r in results:
+        if r.error is not None:
+            continue
+        by_name.setdefault(r.name, []).append(r)
+    out: list[WorkloadStats] = []
+    for name, group in by_name.items():
+        quality_values = [float(r.quality_score) for r in group if r.quality_score is not None]
+        cost_values = [float(r.actual_repriced_usd) for r in group]
+        n = len(quality_values)
+        if n == 0:
+            mean = None
+            std: float | None = None
+        elif n == 1:
+            mean = quality_values[0]
+            std = None
+        else:
+            mean = sum(quality_values) / n
+            variance = sum((v - mean) ** 2 for v in quality_values) / (n - 1)
+            std = math.sqrt(variance)
+        cost_mean = sum(cost_values) / len(cost_values) if cost_values else 0.0
+        out.append(
+            WorkloadStats(
+                name=name,
+                samples=len(group),
+                quality_mean=mean,
+                quality_std=std,
+                quality_values=quality_values,
+                cost_mean_usd=cost_mean,
+                cost_values_usd=cost_values,
+                noisy=(std is not None and std > NOISY_QUALITY_STD_THRESHOLD),
+            )
+        )
+    return out
+
+
+def _format_stats_table(stats: list[WorkloadStats]) -> str:
+    header = "  workload                    n   q_mean   q_std   cost_mean_$   noisy?  q_values"
+    lines = [header]
+    for s in stats:
+        q_mean = f"{s.quality_mean:.2f}" if s.quality_mean is not None else "  -  "
+        q_std = f"{s.quality_std:.3f}" if s.quality_std is not None else "  -  "
+        flag = "NOISY" if s.noisy else "ok"
+        q_values = ",".join(f"{v:.2f}" for v in s.quality_values)
+        lines.append(
+            f"  {s.name:<28}{s.samples:<4}{q_mean:<9}{q_std:<8}"
+            f"{s.cost_mean_usd:<14.6f}{flag:<8}{q_values}"
+        )
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -702,7 +821,18 @@ async def amain() -> int:
     )
     parser.add_argument(
         "--workload",
-        help="Run a single workload by name. Default: run the full suite.",
+        help="Run a single workload by name. Default: run the full suite. "
+        "Bypasses the signal_strength filter — naming a marginal workload "
+        "explicitly opts it in regardless of --include-marginal.",
+    )
+    parser.add_argument(
+        "--include-marginal",
+        action="store_true",
+        help="Include workloads marked `signal_strength: marginal` in the "
+        "default suite. By default the harness runs only signal_strength=high "
+        "workloads (suite v2 — see benchmark.md §4.1 / RESULTS.md §A3-rev6). "
+        "The older marginal-signal workloads stay on disk so the §A3 series "
+        "can reproduce historical results; this flag opts them back in.",
     )
     parser.add_argument(
         "--model",
@@ -816,7 +946,21 @@ async def amain() -> int:
         "Value is either 'sonnet-planner-haiku-worker' (the §A3-rev4 default) "
         "or a path to a yaml file with `planner_model`/`worker_model` keys.",
     )
+    parser.add_argument(
+        "--seed-passes",
+        type=int,
+        default=1,
+        help="Run each workload N times in this pass to seed the patterns DB "
+        "with N samples per (workload, model) and to surface per-workload "
+        "quality variance (mean ± std). N=1 (default) preserves the existing "
+        "single-sample behavior. Recommended N=3 for §A3-series seed passes; "
+        "N=5 for cluster-tightening A/B work. Cost scales linearly with N — "
+        "see benchmark.md §6.4.",
+    )
     args = parser.parse_args()
+    if args.seed_passes < 1:
+        print("--seed-passes must be >= 1", file=sys.stderr)
+        return 2
 
     _load_dotenv(REPO_ROOT / ".env")
 
@@ -824,12 +968,31 @@ async def amain() -> int:
     ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
     db_path = Path(args.db_path) if args.db_path else RUNS_DIR / f"benchmark-{ts}.db"
 
-    workloads = discover_workloads()
     if args.workload:
+        # Explicit --workload bypasses the signal_strength filter so a
+        # marginal workload can still be run by name (e.g. for §A3 reruns).
+        workloads = discover_workloads(include_marginal=True)
         workloads = [w for w in workloads if w.name == args.workload]
         if not workloads:
             print(f"unknown workload: {args.workload}", file=sys.stderr)
             return 2
+    else:
+        workloads = discover_workloads(include_marginal=args.include_marginal)
+        if not workloads and not args.include_marginal:
+            # No high-signal workloads exist yet (post-§A3-rev6 / 13a-1 smoke).
+            # Marginal workloads remain on disk for §A3 reruns and as the
+            # default regression-sentinel suite — point users at the flag.
+            marginal_workloads = discover_workloads(include_marginal=True)
+            if marginal_workloads:
+                print(
+                    "no workloads with signal_strength=high yet "
+                    f"({len(marginal_workloads)} marginal workloads on disk). "
+                    "Pass --include-marginal to run the marginal-signal suite, "
+                    "or name one with --workload <name>. See benchmark.md §4.1 "
+                    "and RESULTS.md §13a-1 for the methodology.",
+                    file=sys.stderr,
+                )
+                return 2
     if not workloads:
         print("no workloads found under benchmarks/workloads/", file=sys.stderr)
         return 2
@@ -893,6 +1056,7 @@ async def amain() -> int:
         python_version=sys.version.split()[0],
         temperature=args.temperature,
         started_at=datetime.now(UTC).isoformat(),
+        seed_passes=args.seed_passes,
     )
 
     print("\n".join(provenance.header_lines()))
@@ -914,140 +1078,161 @@ async def amain() -> int:
     if not args.skip_execute:
         for workload in workloads:
             if shared_patterns_db is not None:
-                seed_path = shared_patterns_db if shared_patterns_db.is_file() else None
                 save_path = shared_patterns_db
             else:
-                seed_path = (
-                    pattern_seed_dir / f"{workload.name}.db"
-                    if pattern_seed_dir is not None
-                    else None
-                )
                 save_path = (
                     pattern_save_dir / f"{workload.name}.db"
                     if pattern_save_dir is not None
                     else None
                 )
-            try:
-                started_us, ended_us, per_turn, cost, llm, tool, session_id = await run_workload(
+            for rep_idx in range(args.seed_passes):
+                # Seed-path is re-resolved per rep so reps 2..N pick up the
+                # accumulated outcomes from earlier reps (the file written
+                # back by `save_path` on each prior rep). Rep 0 inherits the
+                # caller-provided seed if any.
+                if shared_patterns_db is not None:
+                    seed_path = shared_patterns_db if shared_patterns_db.is_file() else None
+                else:
+                    seed_path = (
+                        pattern_seed_dir / f"{workload.name}.db"
+                        if pattern_seed_dir is not None
+                        else None
+                    )
+                if args.seed_passes > 1:
+                    print(f"  [{workload.name}] seed-pass {rep_idx + 1}/{args.seed_passes}")
+                try:
+                    (
+                        started_us,
+                        ended_us,
+                        per_turn,
+                        cost,
+                        llm,
+                        tool,
+                        session_id,
+                    ) = await run_workload(
+                        workload,
+                        db_path=db_path,
+                        actual_model=actual_resolved,
+                        temperature=args.temperature,
+                        pattern_seed_path=seed_path,
+                        pattern_save_path=save_path,
+                        no_active_model=args.no_active_model,
+                        judge_kind=args.judge,
+                        judge_escalation_threshold=args.judge_escalation_threshold,
+                        judge_model=args.judge_model,
+                        fingerprint_version=args.fingerprint_version,
+                        embedding_provider=args.embedding_provider,
+                        delegation_policy=args.delegation_policy,
+                    )
+                except Exception as exc:
+                    workload_results.append(
+                        WorkloadResult(
+                            name=workload.name,
+                            started_us=0,
+                            ended_us=0,
+                            turns=0,
+                            llm_calls=0,
+                            tool_calls=0,
+                            actual_repriced_usd=0.0,
+                            baseline_repriced_usd=0.0,
+                            savings_usd=0.0,
+                            savings_pct=0.0,
+                            actual_stamped_usd=0.0,
+                            rows_total=0,
+                            rows_missing_from_price_table=0,
+                            seed_pass_index=rep_idx,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                    )
+                    print(f"  [{workload.name}] FAILED: {exc}", file=sys.stderr)
+                    continue
+
+                overall_start_us = (
+                    started_us if overall_start_us is None else min(overall_start_us, started_us)
+                )
+                overall_end_us = (
+                    ended_us if overall_end_us is None else max(overall_end_us, ended_us)
+                )
+
+                # Per-workload savings against the workload's window.
+                store = AnalyticsStore(db_path)
+                try:
+                    window = TimeWindow(
+                        start=datetime.fromtimestamp(started_us / 1_000_000, tz=UTC),
+                        end=datetime.fromtimestamp(ended_us / 1_000_000 + 1, tz=UTC),
+                    )
+                    from metis_core.pricing import DEFAULT_PRICE_TABLE  # baseline lookup table
+
+                    pricing = DEFAULT_PRICE_TABLE
+                    # Match provenance pricing — re-fetching the runtime overlay is
+                    # expensive; for the typical native-only case DEFAULT_PRICE_TABLE
+                    # is sufficient. If the actual model is OpenRouter-priced, the
+                    # spec acknowledges the overlay version is composite.
+                    savings = _aggregate_savings(store, window, baseline_resolved, pricing)
+                finally:
+                    store.close()
+
+                # Count delegate.started events on the workload's planner
+                # session (delegation.md §9). Workers emit their own events
+                # under their own session id; the planner-scoped count is
+                # what the `min_delegate_calls` assertion cares about.
+                from metis_core.trace.store import TraceStore
+
+                trace_ro = TraceStore(db_path)
+                try:
+                    session_events = trace_ro.events_for_session(session_id)
+                    delegate_call_count = sum(
+                        1 for e in session_events if e.type == "delegate.started"
+                    )
+                finally:
+                    trace_ro.close()
+                if delegate_call_count:
+                    print(f"  [{workload.name}] delegate.started count = {delegate_call_count}")
+
+                assertion_failures = _check_assertions(
+                    workload,
+                    per_turn,
+                    cost,
+                    llm,
+                    hard_failures=0,  # populated after analytics routing call below
+                    delegate_call_count=delegate_call_count,
+                )
+                quality_score, quality_confidence = await evaluate_workload_quality(
                     workload,
                     db_path=db_path,
-                    actual_model=actual_resolved,
-                    temperature=args.temperature,
-                    pattern_seed_path=seed_path,
-                    pattern_save_path=save_path,
-                    no_active_model=args.no_active_model,
-                    judge_kind=args.judge,
-                    judge_escalation_threshold=args.judge_escalation_threshold,
-                    judge_model=args.judge_model,
-                    fingerprint_version=args.fingerprint_version,
-                    embedding_provider=args.embedding_provider,
-                    delegation_policy=args.delegation_policy,
+                    session_id=session_id,
+                    per_turn_metrics=per_turn,
+                    assertion_failures=assertion_failures,
+                    judge_factory=_make_judge_factory(
+                        judge_kind=args.judge,
+                        judge_escalation_threshold=args.judge_escalation_threshold,
+                        judge_model=args.judge_model,
+                        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
+                        pricing=DEFAULT_PRICE_TABLE,
+                    ),
                 )
-            except Exception as exc:
                 workload_results.append(
                     WorkloadResult(
                         name=workload.name,
-                        started_us=0,
-                        ended_us=0,
-                        turns=0,
-                        llm_calls=0,
-                        tool_calls=0,
-                        actual_repriced_usd=0.0,
-                        baseline_repriced_usd=0.0,
-                        savings_usd=0.0,
-                        savings_pct=0.0,
-                        actual_stamped_usd=0.0,
-                        rows_total=0,
-                        rows_missing_from_price_table=0,
-                        error=f"{type(exc).__name__}: {exc}",
+                        started_us=started_us,
+                        ended_us=ended_us,
+                        turns=len(workload.turns),
+                        llm_calls=llm,
+                        tool_calls=tool,
+                        actual_repriced_usd=savings["actual_repriced_usd"],
+                        baseline_repriced_usd=savings["baseline_repriced_usd"],
+                        savings_usd=savings["savings_usd"],
+                        savings_pct=savings["savings_pct"],
+                        actual_stamped_usd=savings["actual_stamped_usd"],
+                        rows_total=savings["rows_total"],
+                        rows_missing_from_price_table=savings["rows_missing_from_price_table"],
+                        assertion_failures=assertion_failures,
+                        quality_score=quality_score,
+                        quality_confidence=quality_confidence,
+                        delegate_call_count=delegate_call_count,
+                        seed_pass_index=rep_idx,
                     )
                 )
-                print(f"  [{workload.name}] FAILED: {exc}", file=sys.stderr)
-                continue
-
-            overall_start_us = (
-                started_us if overall_start_us is None else min(overall_start_us, started_us)
-            )
-            overall_end_us = ended_us if overall_end_us is None else max(overall_end_us, ended_us)
-
-            # Per-workload savings against the workload's window.
-            store = AnalyticsStore(db_path)
-            try:
-                window = TimeWindow(
-                    start=datetime.fromtimestamp(started_us / 1_000_000, tz=UTC),
-                    end=datetime.fromtimestamp(ended_us / 1_000_000 + 1, tz=UTC),
-                )
-                from metis_core.pricing import DEFAULT_PRICE_TABLE  # baseline lookup table
-
-                pricing = DEFAULT_PRICE_TABLE
-                # Match provenance pricing — re-fetching the runtime overlay is
-                # expensive; for the typical native-only case DEFAULT_PRICE_TABLE
-                # is sufficient. If the actual model is OpenRouter-priced, the
-                # spec acknowledges the overlay version is composite.
-                savings = _aggregate_savings(store, window, baseline_resolved, pricing)
-            finally:
-                store.close()
-
-            # Count delegate.started events on the workload's planner
-            # session (delegation.md §9). Workers emit their own events
-            # under their own session id; the planner-scoped count is
-            # what the `min_delegate_calls` assertion cares about.
-            from metis_core.trace.store import TraceStore
-
-            trace_ro = TraceStore(db_path)
-            try:
-                session_events = trace_ro.events_for_session(session_id)
-                delegate_call_count = sum(
-                    1 for e in session_events if e.type == "delegate.started"
-                )
-            finally:
-                trace_ro.close()
-            if delegate_call_count:
-                print(f"  [{workload.name}] delegate.started count = {delegate_call_count}")
-
-            assertion_failures = _check_assertions(
-                workload,
-                per_turn,
-                cost,
-                llm,
-                hard_failures=0,  # populated after analytics routing call below
-                delegate_call_count=delegate_call_count,
-            )
-            quality_score, quality_confidence = await evaluate_workload_quality(
-                workload,
-                db_path=db_path,
-                session_id=session_id,
-                per_turn_metrics=per_turn,
-                assertion_failures=assertion_failures,
-                judge_factory=_make_judge_factory(
-                    judge_kind=args.judge,
-                    judge_escalation_threshold=args.judge_escalation_threshold,
-                    judge_model=args.judge_model,
-                    anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
-                    pricing=DEFAULT_PRICE_TABLE,
-                ),
-            )
-            workload_results.append(
-                WorkloadResult(
-                    name=workload.name,
-                    started_us=started_us,
-                    ended_us=ended_us,
-                    turns=len(workload.turns),
-                    llm_calls=llm,
-                    tool_calls=tool,
-                    actual_repriced_usd=savings["actual_repriced_usd"],
-                    baseline_repriced_usd=savings["baseline_repriced_usd"],
-                    savings_usd=savings["savings_usd"],
-                    savings_pct=savings["savings_pct"],
-                    actual_stamped_usd=savings["actual_stamped_usd"],
-                    rows_total=savings["rows_total"],
-                    rows_missing_from_price_table=savings["rows_missing_from_price_table"],
-                    assertion_failures=assertion_failures,
-                    quality_score=quality_score,
-                    quality_confidence=quality_confidence,
-                    delegate_call_count=delegate_call_count,
-                )
-            )
 
     # Aggregate savings over the full run window.
     from metis_core.pricing import DEFAULT_PRICE_TABLE
@@ -1085,6 +1270,21 @@ async def amain() -> int:
         for r in failures:
             print(f"  {r.name}: {r.error}")
 
+    workload_stats: list[WorkloadStats] = []
+    if successful:
+        workload_stats = compute_workload_stats(successful)
+    if args.seed_passes > 1 and workload_stats:
+        print()
+        print(
+            f"Workload statistics (N={args.seed_passes} seed-passes per "
+            f"(workload, {actual_resolved})):"
+        )
+        print(_format_stats_table(workload_stats))
+        noisy = [s.name for s in workload_stats if s.noisy]
+        if noisy:
+            print(f"  noisy workloads (std > {NOISY_QUALITY_STD_THRESHOLD}): " + ", ".join(noisy))
+            print("  → consider replacing these per benchmark.md §13a-1 (signal-strength gate).")
+
     print()
     print("Aggregate:")
     print(f"  rows_total:                       {aggregate['rows_total']}")
@@ -1106,6 +1306,7 @@ async def amain() -> int:
         "aggregate": aggregate,
         "routing": routing_stats,
         "workloads": [asdict(r) for r in workload_results],
+        "workload_stats": [asdict(s) for s in workload_stats],
     }
     artifact_path.write_text(json.dumps(artifact, indent=2))
     print(f"\nJSON report: {artifact_path}")

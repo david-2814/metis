@@ -16,6 +16,12 @@ description: >-
   no benchmark workload exercised this planner-driven path; this
   workload closes that gap.
 suite_version: 1
+# Delegation-specific (Q2) — not a haiku-vs-sonnet routing-slot-4
+# differentiator. The §A3-rev5 / §A3-rev6 readouts use this workload
+# only in Pass D (sonnet planner + haiku workers). Run by name via
+# --workload; excluded from the default v2 suite which is scoped to
+# routing-layer differentiation (Q1).
+signal_strength: marginal
 turns:
   - prompt: >-
       Read the files under `auth/` in this workspace. Each file

@@ -157,9 +157,7 @@ async def test_eval_completed_drives_verdict_counter(client, runtime) -> None:
     await runtime.bus.drain()
 
     families = _families((await client.get("/metrics")).text)
-    samples = [
-        s for s in families["metis_eval_verdicts"] if s.name == "metis_eval_verdicts_total"
-    ]
+    samples = [s for s in families["metis_eval_verdicts"] if s.name == "metis_eval_verdicts_total"]
     matching = [
         s
         for s in samples

@@ -1,0 +1,6 @@
+{
+  "database": {
+    "host": "production.db"
+  },
+  "log_level": "WARNING"
+}

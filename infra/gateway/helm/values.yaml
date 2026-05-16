@@ -1,22 +1,31 @@
 # Default values for the metis-gateway chart.
 #
-# The gateway is per-request stateless (gateway.md §2) and binds 127.0.0.1
-# inside the pod (server-api.md §3.1 safety guarantee). Two consequences
-# the chart has to bridge:
+# The gateway is per-request stateless (gateway.md §2). Wave 13 lifted the
+# loopback-only bind constraint (gateway-hardening.md §2.1) — by default
+# the chart still binds 127.0.0.1 inside the pod via a socat sidecar
+# bridge (back-compat preserved), but `gatewayHost` can be flipped to
+# 0.0.0.0 to skip the sidecar and bind the pod IP directly.
+#
+# Two pod-network consequences the chart has to bridge:
 #
 # 1. A Kubernetes Service forwards to pod-IP:targetPort, not to 127.0.0.1.
-#    To make the Service reachable, the chart runs a tiny socat sidecar in
-#    the same pod that listens on 0.0.0.0:gatewayPort and forwards to
-#    127.0.0.1:gatewayPort. Sidecars share the pod's network namespace, so
-#    the gateway's loopback IS the sidecar's loopback.
+#    When `gatewayHost` is `127.0.0.1` (default), the chart runs a tiny
+#    socat sidecar in the same pod that listens on 0.0.0.0:proxy.listenPort
+#    and forwards to 127.0.0.1:gatewayPort. Sidecars share the pod's
+#    network namespace, so the gateway's loopback IS the sidecar's loopback.
+#    When `gatewayHost` is `0.0.0.0`, the sidecar is unnecessary —
+#    set `proxy.enabled: false`.
 # 2. kubelet HTTP probes run from the NODE's network namespace and target
 #    the pod IP — they cannot reach 127.0.0.1 inside the container. The
 #    chart uses `exec` probes (`curl 127.0.0.1`) so they work whether or
 #    not the sidecar is enabled.
 #
-# For TLS, either (a) terminate at an Ingress in front of the Service, or
-# (b) swap the socat sidecar for a Caddy/nginx sidecar via `proxy.image`
-# + `proxy.command` + a ConfigMap-mounted config file via `extraVolumes`.
+# For TLS:
+# - Recommended (`tls.enabled: false` + Ingress with TLS): terminate at
+#   an Ingress / cloud LB in front of the Service.
+# - Alternative (`tls.enabled: true`): mount a cert + key Secret into the
+#   gateway pod for in-process TLS termination. uvicorn terminates;
+#   no sidecar needed.
 # See docs/gateway-deployment.md "Kubernetes via helm" for full recipes.
 
 # -- Override the chart name (defaults to .Chart.Name).
@@ -47,13 +56,59 @@ image:
 # aggregation. HPA below can override if enabled.
 replicaCount: 1
 
-# Gateway listen port — loopback inside the pod. The proxy sidecar bridges
-# this to pod-IP:proxy.listenPort for the Service to reach. MUST differ
-# from proxy.listenPort: the gateway and proxy share the pod's network
-# namespace, so binding the same port number twice (even on different IPs)
-# fails because a wildcard 0.0.0.0 bind claims every interface including
-# loopback. The split is intentional, not cosmetic.
+# Gateway listen host inside the pod. Default 127.0.0.1 — the proxy
+# sidecar bridges this to pod-IP:proxy.listenPort for the Service to
+# reach (back-compat with pre-Wave-13 charts). Set to 0.0.0.0 to skip
+# the sidecar and bind the pod IP directly; remember to set
+# `proxy.enabled: false` in that case. gateway-hardening.md §2.1.
+gatewayHost: "127.0.0.1"
+
+# Gateway listen port — inside the pod. When `gatewayHost` is 127.0.0.1
+# (default), the proxy sidecar bridges this to pod-IP:proxy.listenPort
+# for the Service to reach; the two ports MUST differ because the
+# gateway and proxy share the pod's network namespace and a wildcard
+# 0.0.0.0 bind claims every interface including loopback. When
+# `gatewayHost` is 0.0.0.0, the sidecar is off and `gatewayPort` is
+# the Service targetPort directly.
 gatewayPort: 8422
+
+# Maximum concurrent connections + in-flight requests per process
+# (uvicorn limit_concurrency, gateway-hardening.md §2.2). Excess
+# returns HTTP 503 immediately; right shape for a flood scenario.
+maxConnections: 1000
+
+# Worker count for multi-process operation. Default 1 (single-process
+# `metis gateway`). Multi-process requires running uvicorn directly with
+# --workers > 1; the bundled entrypoint.sh stays single-process to keep
+# the in-process trace store + bus subscribers from competing. Recommended
+# scaling pattern: increase `replicaCount` (multi-pod) rather than workers
+# (multi-process per pod). Set this > 1 only after pinning the trace DB
+# to an external store; SQLite WAL contention across workers in the same
+# pod will cap throughput.
+workers: 1
+
+# SO_REUSEPORT on the listen socket. Single-process operation does not
+# need it; multi-pod / blue-green rollouts benefit when two pods on the
+# same node need to bind the same port for graceful restart. The
+# kubernetes Service abstraction handles most rolling-update scenarios
+# without it.
+reusePort: false
+
+# TLS-in-process (gateway-hardening.md §2.3). When `tls.enabled` is
+# true, the chart mounts the named Secret containing `cert.pem` +
+# `key.pem` into the gateway pod and forwards --tls-cert / --tls-key
+# to the entrypoint. The Service must NOT be fronted by an additional
+# TLS terminator in that case (double-TLS). Default off; sidecar
+# termination via Ingress remains the recommended path.
+tls:
+  enabled: false
+  # -- Name of an existing Secret with `cert.pem` + `key.pem` keys.
+  # Use cert-manager / External Secrets Operator / SealedSecrets to
+  # populate. Required when tls.enabled is true.
+  secretName: ""
+  # -- Mount path inside the gateway container. Cert lives at
+  # `{mountPath}/cert.pem`, key at `{mountPath}/key.pem`.
+  mountPath: /etc/metis/tls
 
 # Sidecar TCP-forwarder. Default: socat listens on 0.0.0.0:proxy.listenPort
 # inside the pod and forwards to 127.0.0.1:gatewayPort. This is what makes
@@ -99,10 +154,16 @@ proxy:
       drop:
         - ALL
 
-# Service exposes the gateway in-cluster. Default ClusterIP is correct for
-# anything fronted by an Ingress controller. Switch to LoadBalancer only
-# if a TLS-terminating L7 LB sits between the LB IP and the gateway —
-# the gateway itself terminates plaintext.
+# Service exposes the gateway in-cluster. Default ClusterIP is correct
+# for anything fronted by an Ingress controller. Two ways to expose the
+# gateway publicly post-Wave-13 (gateway-hardening.md §2.1):
+#   1. type: ClusterIP + ingress.enabled: true — Ingress terminates TLS
+#      and forwards to the Service.
+#   2. type: LoadBalancer — cloud LB terminates TLS (annotations on the
+#      Service drive the cert ARN / certificate-manager binding). The
+#      gateway speaks plaintext to the LB over the pod network.
+#   3. type: LoadBalancer + tls.enabled: true — LB passes through TCP,
+#      gateway terminates TLS in-process. Avoid double-TLS.
 service:
   type: ClusterIP
   # -- Port the Service exposes. Conventional gateway port stays 8422 to
@@ -301,6 +362,38 @@ traceRetention:
     limits:
       cpu: 500m
       memory: 256Mi
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+# Trace-DB VACUUM (docs/operations/trace-performance.md §4). OFF by default
+# — enabling renders a separate Kubernetes CronJob that runs `metis trace
+# vacuum` against the trace-DB PVC on a schedule (default monthly).
+# VACUUM rewrites the file in place to reclaim free pages; not strictly
+# required for correctness but reclaims 10-30% of disk after a year of
+# typical traffic + monthly retention sweeps.
+#
+# Same RWO storage gotcha as the retention CronJob above. The two
+# CronJobs use independent schedules (default 03:00 daily for prune,
+# 04:00 monthly on the 1st for vacuum) so they don't overlap on the
+# same PVC mount.
+traceVacuum:
+  enabled: false
+  # -- Cron schedule. Default monthly on the 1st at 04:00 UTC. VACUUM
+  # rebuild scales linearly with DB size; on a 1 GB DB expect a 30-60s
+  # rebuild on local SSD-backed PVCs.
+  schedule: "0 4 1 * *"
+  image:
+    # -- Override the image. Default empty = reuse `image.repository`.
+    repository: ""
+    # -- Override the tag. Default empty = reuse `image.tag`.
+    tag: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
 

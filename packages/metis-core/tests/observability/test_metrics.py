@@ -290,9 +290,7 @@ async def test_eval_completed_counts_verdict(bus: EventBus, collector):
     await bus.drain()
 
     families = _families(collector.expose())
-    samples = [
-        s for s in families["metis_eval_verdicts"] if s.name == "metis_eval_verdicts_total"
-    ]
+    samples = [s for s in families["metis_eval_verdicts"] if s.name == "metis_eval_verdicts_total"]
     assert len(samples) == 1
     assert samples[0].labels == {"judge_kind": "hybrid", "subject_kind": "turn"}
 
@@ -333,7 +331,9 @@ async def test_gateway_keys_getter_drives_active_and_revoked(bus: EventBus):
     try:
         families = _families(collector.expose())
         active = next(
-            s for s in families["metis_gateway_keys_active"] if s.name == "metis_gateway_keys_active"
+            s
+            for s in families["metis_gateway_keys_active"]
+            if s.name == "metis_gateway_keys_active"
         )
         revoked = next(
             s
@@ -342,6 +342,57 @@ async def test_gateway_keys_getter_drives_active_and_revoked(bus: EventBus):
         )
         assert active.value == 3.0
         assert revoked.value == 1.0
+    finally:
+        collector.detach()
+
+
+async def test_pattern_cache_getter_drives_hit_ratio(bus: EventBus):
+    """v2 embedding-cache hit ratio is exposed per workspace.
+
+    The getter contract is `() -> list[(workspace_id, hits, misses)]`; the
+    collector computes `hits/(hits+misses)` and exposes hits/misses as
+    separate gauges so prometheus can rate() them independently.
+    """
+    entries = [("ws-A", 80, 20), ("ws-B", 0, 0)]
+    collector = MetricsCollector(
+        bus=bus,
+        pattern_cache_getter=lambda: entries,
+    )
+    collector.attach()
+    try:
+        families = _families(collector.expose())
+        ratios = {
+            tuple(sorted(s.labels.items())): s.value
+            for s in families["metis_pattern_embedding_cache_hit_ratio"]
+        }
+        # ws-A: 80 / 100 = 0.8
+        assert ratios[(("workspace_id", "ws-A"),)] == pytest.approx(0.8)
+        # ws-B: zero lookups -> ratio defaults to 0.0 (not NaN, not absent)
+        assert ratios[(("workspace_id", "ws-B"),)] == pytest.approx(0.0)
+        hits = {
+            tuple(sorted(s.labels.items())): s.value
+            for s in families["metis_pattern_embedding_cache_hits_total"]
+        }
+        assert hits[(("workspace_id", "ws-A"),)] == 80
+        misses = {
+            tuple(sorted(s.labels.items())): s.value
+            for s in families["metis_pattern_embedding_cache_misses_total"]
+        }
+        assert misses[(("workspace_id", "ws-A"),)] == 20
+    finally:
+        collector.detach()
+
+
+async def test_pattern_cache_getter_failure_does_not_break_exposition(bus: EventBus):
+    def boom() -> list:
+        raise RuntimeError("getter failed")
+
+    collector = MetricsCollector(bus=bus, pattern_cache_getter=boom)
+    collector.attach()
+    try:
+        body = collector.expose()
+        # Body still produced; pattern cache gauges stay at zero (no labels).
+        assert b"metis_pattern_embedding_cache_hit_ratio" in body
     finally:
         collector.detach()
 
@@ -356,6 +407,51 @@ async def test_failing_getter_does_not_break_exposition(bus: EventBus):
         body = collector.expose()
         # Body still produced; the gauge stays at its last value (0 here).
         assert b"metis_session_count" in body
+    finally:
+        collector.detach()
+
+
+async def test_trace_wal_bytes_getter_drives_gauge(bus: EventBus):
+    """Wave 13: `trace_wal_bytes_getter` polls the trace-DB WAL file size.
+
+    Operators alert on this gauge sustaining above ~3x the auto-checkpoint
+    threshold per docs/operations/trace-performance.md §3.
+    """
+    wal_size = 12_345
+    collector = MetricsCollector(
+        bus=bus,
+        trace_wal_bytes_getter=lambda: wal_size,
+    )
+    collector.attach()
+    try:
+        families = _families(collector.expose())
+        gauge = next(
+            s for s in families["metis_trace_wal_bytes"] if s.name == "metis_trace_wal_bytes"
+        )
+        assert gauge.value == 12_345.0
+
+        # Mutating the captured value drives the gauge — confirms it's
+        # polled per scrape, not snapshot at construction.
+        wal_size = 67_890
+        families = _families(collector.expose())
+        gauge = next(
+            s for s in families["metis_trace_wal_bytes"] if s.name == "metis_trace_wal_bytes"
+        )
+        assert gauge.value == 67_890.0
+    finally:
+        collector.detach()
+
+
+async def test_trace_wal_bytes_getter_failure_does_not_break_exposition(bus: EventBus):
+    def boom() -> int:
+        raise RuntimeError("WAL stat failed")
+
+    collector = MetricsCollector(bus=bus, trace_wal_bytes_getter=boom)
+    collector.attach()
+    try:
+        body = collector.expose()
+        # Body still produced; gauge holds its prior value (zero).
+        assert b"metis_trace_wal_bytes" in body
     finally:
         collector.detach()
 
@@ -396,11 +492,7 @@ async def test_route_decided_with_unknown_winner_index_collapses_to_unknown(
             chosen_model="anthropic:claude-haiku-4-5",
             winner_index=99,  # out of range
             elapsed_ms=1.0,
-            chain=[
-                PolicyEvaluation(
-                    policy="global_default", verdict="chose", reason="default"
-                )
-            ],
+            chain=[PolicyEvaluation(policy="global_default", verdict="chose", reason="default")],
         ),
         turn_id=_new_turn_id(),
     )

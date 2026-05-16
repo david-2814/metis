@@ -38,8 +38,22 @@ from metis_core.trace.retention import PurgeResult
 # Trace-DB schema version. Stored in `PRAGMA user_version` on every opened
 # trace DB so the backup/restore module (`metis_core.trace.backup`) can
 # refuse to restore a backup whose schema doesn't match the running code.
-# Bump in lockstep with breaking edits to `_SCHEMA` below.
+# Bump in lockstep with breaking edits to `_SCHEMA` below. Wave 13's index
+# additions are additive (CREATE INDEX IF NOT EXISTS) and do NOT bump the
+# version — older code reading a Wave-13 DB simply ignores the new
+# indexes; newer code reading an older DB picks them up on next open.
 TRACE_SCHEMA_VERSION = 1
+
+# WAL auto-checkpoint threshold in pages. SQLite's default is 1000 pages
+# (~4 MB at the default 4 KB page size). Wave 13 raises this to 8192 (~32 MB)
+# so a high-throughput burst doesn't trigger a checkpoint mid-burst — the
+# checkpoint stalls writers while it copies pages from the WAL into the
+# main DB. The trade-off is recovery time on hard crash: a 32 MB WAL
+# replay on startup is still <1 s on local SSD. Operators with very tight
+# crash-recovery SLAs can lower this via the `wal_autocheckpoint_pages`
+# constructor argument; the default is safe for typical multi-tenant
+# gateway loads. See docs/operations/trace-performance.md §WAL.
+DEFAULT_WAL_AUTOCHECKPOINT_PAGES = 8192
 
 
 # Default scan bound for `detect_gaps` / `scan_for_gaps_and_emit`. Spec §6.10
@@ -97,7 +111,13 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_session_id     ON events(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_events_type_timestamp ON events(type, timestamp_us);
+-- Wave 13: composite (turn_id, id) eliminates the TEMP B-TREE FOR ORDER BY
+-- the planner picks when serving `events_for_turn` (which always sorts by
+-- id). The single-column `idx_events_turn` from v1 is left in place — its
+-- presence is harmless and the additive contract requires that we don't
+-- drop indexes from existing DBs (TRACE_SCHEMA_VERSION stays at 1).
 CREATE INDEX IF NOT EXISTS idx_events_turn           ON events(turn_id);
+CREATE INDEX IF NOT EXISTS idx_events_turn_id_id     ON events(turn_id, id);
 CREATE INDEX IF NOT EXISTS idx_events_parent         ON events(parent_event_id);
 -- Single-column timestamp index for the retention sweep
 -- (trace-retention.md §4). Additive; existing DBs pick it up on next
@@ -105,6 +125,31 @@ CREATE INDEX IF NOT EXISTS idx_events_parent         ON events(parent_event_id);
 -- timestamp_us < ?` cleanly because the planner would walk one range
 -- per `type`, which is the opposite of what the sweep wants.
 CREATE INDEX IF NOT EXISTS idx_events_timestamp_us   ON events(timestamp_us);
+
+-- Wave 13: expression indexes on payload fields used by the multi-tenant
+-- analytics rollups (gateway-key / user / team) and the GDPR portability
+-- export. Without these, every cost-by-key query post-filters the entire
+-- `llm.call_completed` slice in Python, and `user_export` does a full
+-- table scan. The expressions match `analytics/store.py`'s queries
+-- byte-for-byte so the planner picks them up. Partial WHERE clauses
+-- skip rows whose stamp is null (agent-loop traffic, pre-multi-user
+-- keys) — those are bucketed under the `null` row and don't benefit
+-- from the index.
+CREATE INDEX IF NOT EXISTS idx_events_gateway_key_id
+    ON events(json_extract(payload_json, '$.gateway_key_id'))
+    WHERE json_extract(payload_json, '$.gateway_key_id') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_events_user_id
+    ON events(json_extract(payload_json, '$.user_id'))
+    WHERE json_extract(payload_json, '$.user_id') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_events_team_id
+    ON events(json_extract(payload_json, '$.team_id'))
+    WHERE json_extract(payload_json, '$.team_id') IS NOT NULL;
+-- Eval-quality slice: `/analytics/quality` always filters on type +
+-- subject_kind. The composite expression index lets the planner serve
+-- the combined predicate from a single index walk.
+CREATE INDEX IF NOT EXISTS idx_events_eval_subject_kind
+    ON events(json_extract(payload_json, '$.subject_kind'), timestamp_us)
+    WHERE type = 'eval.completed';
 """
 
 
@@ -153,9 +198,15 @@ class TraceStore:
     `attach_to(bus)`, and query via `events_for_session`.
     """
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        wal_autocheckpoint_pages: int = DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
+    ) -> None:
         self._db_path = str(db_path)
         self._conn = sqlite3.connect(self._db_path, isolation_level=None, check_same_thread=False)
+        self._wal_autocheckpoint_pages = int(wal_autocheckpoint_pages)
         self._configure()
         self._conn.executescript(_SCHEMA)
 
@@ -166,6 +217,11 @@ class TraceStore:
         # record for any user-visible state.
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
+        # Wave 13: bump WAL auto-checkpoint above SQLite's 1000-page default.
+        # Larger window reduces checkpoint-induced writer stalls during
+        # high-throughput bursts at the cost of a longer crash-recovery
+        # replay. See docs/operations/trace-performance.md §WAL.
+        self._conn.execute(f"PRAGMA wal_autocheckpoint = {self._wal_autocheckpoint_pages}")
         # Stamp the schema version so `trace.backup.restore()` can verify the
         # backup matches the running code. Cheap; runs once per open.
         self._conn.execute(f"PRAGMA user_version = {TRACE_SCHEMA_VERSION}")
@@ -446,6 +502,81 @@ class TraceStore:
             )
 
         return result
+
+    # ---- Maintenance ---------------------------------------------------
+
+    def vacuum(self) -> int:
+        """Reclaim free pages and defragment the DB. Returns reclaimed bytes.
+
+        SQLite's `VACUUM` rebuilds the file in place and is safe under
+        WAL — readers see the rebuilt DB on their next transaction.
+        Documented operational pattern in
+        `docs/operations/trace-performance.md §VACUUM`: run from a
+        separate CronJob pod so the rebuild doesn't compete with the
+        gateway/server's own writes. With `auto_vacuum=INCREMENTAL` set
+        on a freshly-created DB (see `_configure`), this can be replaced
+        by `incremental_vacuum`, which is cheaper but only available
+        when `auto_vacuum` was set BEFORE any tables were created — for
+        long-lived databases the only path is `VACUUM`.
+
+        Returns the byte delta `(size_before - size_after)`. Negative
+        deltas (rare) indicate the rebuild grew the file slightly to
+        round up to a page boundary; the operator can ignore.
+        """
+        size_before = self._file_size_bytes()
+        # `VACUUM` cannot run inside a transaction. With
+        # `isolation_level=None` we're in autocommit so this is fine, but
+        # the planner still raises if any prepared statement holds a
+        # lock; this method assumes the caller has quiesced writes.
+        self._conn.execute("VACUUM")
+        size_after = self._file_size_bytes()
+        return size_before - size_after
+
+    def wal_checkpoint(self, *, mode: str = "PASSIVE") -> tuple[int, int, int]:
+        """Run `PRAGMA wal_checkpoint(<mode>)`. Returns SQLite's tuple verbatim.
+
+        SQLite returns `(busy, log_pages, checkpointed_pages)`:
+          * `busy` is 0 on success, 1 if a writer was holding the lock
+            (PASSIVE only — TRUNCATE / RESTART block until the writer
+            releases).
+          * `log_pages` is the WAL size in pages immediately before the
+            checkpoint.
+          * `checkpointed_pages` is how many pages were copied into the
+            main DB.
+
+        Default mode `PASSIVE` is non-blocking — it copies what it can
+        without stalling writers and returns. `TRUNCATE` resets the WAL
+        to zero bytes and is the right choice when an operator wants
+        to reclaim disk after a large burst.
+        """
+        normalized = mode.strip().upper()
+        if normalized not in ("PASSIVE", "FULL", "RESTART", "TRUNCATE"):
+            raise ValueError(f"unknown wal_checkpoint mode: {mode!r}")
+        row = self._conn.execute(f"PRAGMA wal_checkpoint({normalized})").fetchone()
+        # SQLite returns a tuple of three ints; defensive-coerce in case a
+        # test harness shims the connection.
+        return (int(row[0]), int(row[1]), int(row[2]))
+
+    def wal_size_bytes(self) -> int:
+        """Return the current WAL file size in bytes (0 if no WAL file).
+
+        Backs the `metis_trace_wal_bytes` Prometheus gauge in
+        `metis_core.observability.metrics`. Returning 0 (rather than
+        raising) when the WAL doesn't exist matches the operational
+        expectation: a freshly-opened DB or a checkpointed-then-deleted
+        WAL is a healthy state, not a missing file.
+        """
+        wal_path = Path(self._db_path + "-wal")
+        try:
+            return wal_path.stat().st_size
+        except FileNotFoundError:
+            return 0
+
+    def _file_size_bytes(self) -> int:
+        try:
+            return Path(self._db_path).stat().st_size
+        except FileNotFoundError:
+            return 0
 
     def _oldest_event_timestamp(self) -> datetime | None:
         row = self._conn.execute("SELECT MIN(timestamp_us) FROM events").fetchone()

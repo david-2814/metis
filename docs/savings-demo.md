@@ -109,8 +109,15 @@ Claude Code / Cursor / raw-SDK client at it and your traffic is
 cost-stamped per dev, per project, per task class — without your devs
 changing how they work.
 
-End-to-end recipe (Claude Code, Cursor, raw curl/SDK) at
-[`docs/gateway-client-quickstart.md`](gateway-client-quickstart.md).
+The smoothest path is
+[`docs/operations/quickstart.md`](operations/quickstart.md) — a
+buyer-facing, &lt; 1-hour recipe: the convenience script automates
+helm install end-to-end, then `metis trial --gateway-url … --gateway-key …`
+runs a pre-baked workload through the gateway and prints
+`actual / baseline / savings_pct` (~$0.05 of real-API spend).
+
+End-to-end SDK pointer-flip recipe (Claude Code, Cursor, raw curl/SDK)
+at [`docs/gateway-client-quickstart.md`](gateway-client-quickstart.md).
 For evaluating Metis against your own workload (not our benchmarks),
 see [`docs/customer-trial-recipe.md`](customer-trial-recipe.md).
 

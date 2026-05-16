@@ -2,7 +2,7 @@
 
 A local-first AI dev agent — provider-agnostic, self-improving, and cost-aware.
 
-> **Status:** Phase 1 + Phase 2 + Phase 2.5 shipped; Phase 3 in flight — **ready for review whether to promote to "Phase 3 shipped."** The three Phase-3 wedges (transparent HTTP gateway, multi-user identity / per-team cost attribution, evaluator) are live, and the model-selection differentiator inverted on its first end-to-end demonstration ([`benchmarks/RESULTS.md §A3-rev3`](benchmarks/RESULTS.md): Pass C picks sonnet on the one hard turn of `regex-with-edge-cases`, quality 5.55 vs Pass A 5.16 at $0.0477/quality between haiku-only $0.0383 and sonnet-only $0.1176). Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), `metis serve` (HTTP/WebSocket), `metis gateway` (transparent provider-shape proxy) all run. 1486 tests passing.
+> **Status:** Phase 1 + Phase 2 + Phase 2.5 shipped; Phase 3 in flight — **ready for review whether to promote to "Phase 3 shipped"** ([proposal](docs/operations/phase-claim-proposal.md)). The three Phase-3 wedges (transparent HTTP gateway, multi-user identity / per-team cost attribution, evaluator) are live; Wave 12 closes the SOC2/GDPR compliance gap (audit log + trace retention + redaction layer + GDPR data export/forget + SOC2 readiness audit); Wave 13 lifts the gateway's loopback-only constraint behind a documented hardening checklist. The model-selection differentiator inverted on its first end-to-end demonstration ([`benchmarks/RESULTS.md §A3-rev3`](benchmarks/RESULTS.md): Pass C picks sonnet on the one hard turn of `regex-with-edge-cases`, quality 5.55 vs Pass A 5.16 at $0.0477/quality between haiku-only $0.0383 and sonnet-only $0.1176); §A3-rev4..rev6 confirmed the mechanical chain is fully wired and the remaining bottleneck is benchmark-suite signal strength, not routing-knob tuning (13a-1 ruled out workload-signal-strengthening as a sufficient single-knob fix). The delegation differentiator was validated end-to-end at 8.3% – 26.1% better cost-per-quality on a delegation-suited workload (§A3-rev5 + §A3-rev6). Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), `metis serve` (HTTP/WebSocket), `metis gateway` (transparent provider-shape proxy) all run. 1678 tests passing.
 
 ---
 
@@ -37,9 +37,28 @@ Sanity-check the full loop against the real API in under a minute (~$0.015 with 
 uv run python scripts/smoke.py --model haiku
 ```
 
+## Try it — first savings number in &lt; 1 hour
+
+The smoothest landing path: kind cluster + helm install + pre-baked
+workload + per-key cost rollup, automated end-to-end.
+
+```bash
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+infra/gateway/scripts/quickstart.sh           # cluster + helm install + first key
+source .metis-trial/state.env                 # exports gateway URL + key
+uv run metis trial \
+    --gateway-url "$METIS_TRIAL_GATEWAY_URL" \
+    --gateway-key "$METIS_TRIAL_GATEWAY_KEY"
+# → prints `actual / baseline / savings_pct` for the pre-baked workload
+infra/gateway/scripts/tear-down.sh            # when done
+```
+
+Full step-by-step (curl + Python SDK examples, dashboard view, pitfalls
+table) at [`docs/operations/quickstart.md`](docs/operations/quickstart.md).
+
 ## Try it — transparent gateway in Docker
 
-Want to drop Metis in front of an existing OpenAI / Anthropic SDK client without changing any code? The gateway is the high-floor adoption path from [`docs/STRATEGY.md §3`](docs/STRATEGY.md) — buyer flips one env var, savings show up on the dashboard within hours.
+Prefer Docker Compose over kind? Same loop, single host:
 
 ```bash
 cp .env.example .env && $EDITOR .env   # set ANTHROPIC_API_KEY
@@ -67,9 +86,10 @@ Cursor, raw curl/SDK) at [`docs/gateway-client-quickstart.md`](docs/gateway-clie
 
 ## Operations
 
-The operational docs a buyer's SRE will read before signing. All three
-sit under [`docs/operations/`](docs/operations/):
+The operational docs a buyer's SRE will read before signing. All sit
+under [`docs/operations/`](docs/operations/):
 
+- [`quickstart.md`](docs/operations/quickstart.md) — &lt; 1-hour buyer-trial path: kind + helm + `metis trial` end-to-end, with per-key cost rollup and a pitfalls table from validation.
 - [`incident-response.md`](docs/operations/incident-response.md) — SEV1-SEV4 criteria, on-call alert paths (PagerDuty / Opsgenie / email), first-hour playbook, post-mortem template, and per-failure-mode playbooks for upstream LLM outage, trace-DB corruption, gateway-key compromise, and quota runaway.
 - [`status-page.md`](docs/operations/status-page.md) — two-tier recipe (external UptimeRobot / Statuspage.io / Better Stack against `/healthz`, plus self-hosted Uptime Kuma in-cluster), publish/redact guidelines, and incident comm templates.
 - [`sla-template.md`](docs/operations/sla-template.md) — 99.5% single-region template the buyer can customize for their own downstream-user SLA: service-credit math, exclusions, force-majeure stub (legal-counsel-deferred).
@@ -139,7 +159,7 @@ Key design choices:
 - **HTTP/WebSocket server.** Starlette + uvicorn ASGI app. REST for sessions/turns/messages/models/health; WebSocket `/sessions/{id}/stream` with single-use attach tokens, snapshot+live replay, filter presets, cancel-via-WS, ping/pong. Loopback-only bind in v1.
 - **Three client surfaces.** `metis chat` (line REPL), `metis tui` (Textual app), `metis serve` (HTTP/WS server for external clients). Slash commands `/model`, `/cost`, `/models`, `/help`. Per-message `@alias` syntax.
 - **Cost in real time.** Per-turn input/output/cached token costs computed by core (not parroted from provider), `Decimal` math, versioned for retroactive re-pricing. OpenRouter prices overlaid at session start.
-- **1486 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations.
+- **1678 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations, pattern store v1 + v2 + concurrency hardening, evaluator heuristic + LLM + hybrid + budget, gateway auth + per-key/user/team identity + rate limiting + TLS + bind hardening, audit log + trace retention + redaction layer + GDPR export/forget.
 
 ## What's NOT built yet (next-up)
 

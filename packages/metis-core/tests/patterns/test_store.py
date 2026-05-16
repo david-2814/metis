@@ -284,13 +284,9 @@ def test_recommend_a3_rev5_unblock_cost_weight_default_05_inverts_chooser(
 
     # Legacy `cost_weight=0.1`: cost floor swamps the 0.09 quality delta;
     # haiku wins the cluster (the §A3-rev5 diagnosis).
-    rec_legacy = store.recommend(
-        fp, cost_weight=0.1, min_confidence=0.0, min_sample_size=5
-    )
+    rec_legacy = store.recommend(fp, cost_weight=0.1, min_confidence=0.0, min_sample_size=5)
     assert rec_legacy.chosen_model == "anthropic:claude-haiku-4-5"
-    haiku_alt = next(
-        a for a in rec_legacy.alternatives if a.model == "anthropic:claude-haiku-4-5"
-    )
+    haiku_alt = next(a for a in rec_legacy.alternatives if a.model == "anthropic:claude-haiku-4-5")
     sonnet_alt = next(
         a for a in rec_legacy.alternatives if a.model == "anthropic:claude-sonnet-4-6"
     )
@@ -299,13 +295,9 @@ def test_recommend_a3_rev5_unblock_cost_weight_default_05_inverts_chooser(
 
     # New `cost_weight=0.05`: cost floor halved; the 0.09 quality delta
     # now exceeds the 0.05 cost margin and inverts the chooser.
-    rec_new = store.recommend(
-        fp, cost_weight=0.05, min_confidence=0.0, min_sample_size=5
-    )
+    rec_new = store.recommend(fp, cost_weight=0.05, min_confidence=0.0, min_sample_size=5)
     assert rec_new.chosen_model == "anthropic:claude-sonnet-4-6"
-    haiku_alt_new = next(
-        a for a in rec_new.alternatives if a.model == "anthropic:claude-haiku-4-5"
-    )
+    haiku_alt_new = next(a for a in rec_new.alternatives if a.model == "anthropic:claude-haiku-4-5")
     sonnet_alt_new = next(
         a for a in rec_new.alternatives if a.model == "anthropic:claude-sonnet-4-6"
     )

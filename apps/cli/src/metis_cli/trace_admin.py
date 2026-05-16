@@ -94,3 +94,34 @@ def run_trace_prune_command(
     except OSError as exc:
         print(f"trace prune failed: {exc}", file=sys.stderr)
         return 1
+
+
+def run_trace_vacuum_command(*, db_path: str | None) -> int:
+    """Rebuild the trace DB in place (`SQLite VACUUM`).
+
+    Standalone — does NOT spin up a bus; VACUUM is a maintenance op,
+    not a domain action, and it would be misleading to emit a
+    `trace.swept`-class event for it. Operators run this from the
+    monthly CronJob (docs/operations/trace-performance.md §4) when the
+    gateway pod is paused or against a backup file.
+    """
+    target = Path(db_path).expanduser() if db_path else _default_db_path()
+    if not target.exists():
+        print(f"trace vacuum failed: db_path does not exist: {target}", file=sys.stderr)
+        return 1
+    try:
+        store = TraceStore(target)
+    except OSError as exc:
+        print(f"trace vacuum failed: {exc}", file=sys.stderr)
+        return 1
+    try:
+        delta = store.vacuum()
+    except OSError as exc:
+        print(f"trace vacuum failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print("trace vacuum complete")
+    print(f"  db_path:           {target}")
+    print(f"  bytes_reclaimed:   {delta:,}")
+    return 0

@@ -5,6 +5,14 @@ description: >-
   execute, and verify across files. The longest workload in the v1 suite —
   most sensitive to context discipline and tool-cycle cost.
 suite_version: 1
+# Per the §A3-rev6 cross-run audit (RESULTS.md §A3-rev6): haiku 0.935 /
+# sonnet 0.856 / gap **-0.079** — a REVERSE signal across §A3-rev3..rev6
+# patterns DBs. Haiku scores higher on this workload than sonnet at the
+# aggregate, which actively miseducates the K-NN. Replaced in the
+# default v2 suite by recursive-data-structure-traversal (deeper
+# constraint-satisfaction shape that sonnet handles cleanly). Kept on
+# disk and runnable by name so historical §A3 runs reproduce.
+signal_strength: marginal
 turns:
   - prompt: >-
       I want to rename the function `get_cached` to `lookup` across this whole

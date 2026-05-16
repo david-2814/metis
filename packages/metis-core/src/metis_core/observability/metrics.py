@@ -88,6 +88,12 @@ class MetricsCollector:
       Server omits this; the gateway reads `runtime.keystore.keys()` and
       checks `is_active(now=…)` so grace-period-expired keys count as
       revoked even before the next admin sweep persists them.
+    * `pattern_cache_getter`: returns a list of
+      `(workspace_id, hits, misses)` tuples — one per open
+      `PatternStore`. Drives `metis_pattern_embedding_cache_hit_ratio`
+      (gauge) and `_hits_total` / `_misses_total` (gauge derived from
+      the per-store counters; see `pattern-store.md §16.7.2`). v1
+      runtimes that don't run the pattern subscriber omit this.
 
     Call `attach()` to register on the bus and `detach()` for tear-down.
     Call `expose()` on each `/metrics` request to refresh the polled
@@ -101,11 +107,15 @@ class MetricsCollector:
         registry: CollectorRegistry | None = None,
         session_count_getter: Callable[[], int] | None = None,
         gateway_keys_getter: Callable[[], tuple[int, int]] | None = None,
+        trace_wal_bytes_getter: Callable[[], int] | None = None,
+        pattern_cache_getter: Callable[[], list[tuple[str, int, int]]] | None = None,
     ) -> None:
         self._bus = bus
         self._registry = registry if registry is not None else CollectorRegistry()
         self._session_count_getter = session_count_getter
         self._gateway_keys_getter = gateway_keys_getter
+        self._trace_wal_bytes_getter = trace_wal_bytes_getter
+        self._pattern_cache_getter = pattern_cache_getter
         self._handle: SubscriptionHandle | None = None
 
         self._llm_calls_total = Counter(
@@ -166,6 +176,43 @@ class MetricsCollector:
             "Revoked or grace-expired gateway keys in the keystore. Polled at scrape time.",
             registry=self._registry,
         )
+        # Wave 13: trace-DB WAL file size, polled at scrape time. Operators
+        # alert on this exceeding 2-3x the auto-checkpoint threshold —
+        # sustained WAL growth means a long-running reader is holding the
+        # checkpoint barrier (`SQLITE_BUSY` on writers under TRUNCATE
+        # checkpoints, or analytic queries pinning the WAL via
+        # `read_uncommitted=0`). See docs/operations/trace-performance.md
+        # §WAL.
+        self._trace_wal_bytes = Gauge(
+            "metis_trace_wal_bytes",
+            "Trace-DB WAL file size in bytes. 0 means freshly checkpointed or no WAL.",
+            registry=self._registry,
+        )
+        # v2 embedding-cache observability per pattern-store.md §16.7.2.
+        # Hit ratio is `hits / (hits + misses)` per workspace; the spec target
+        # is ≥80% within 100 turns of a workload, so a sustained ratio below
+        # ~0.5 is a signal the cache is undersized for the traffic mix or
+        # that the cache is being thrashed by eviction (cap=10k by default).
+        # Hits/misses are exposed alongside the ratio so prometheus can rate()
+        # them independently for trend detection.
+        self._pattern_cache_hit_ratio = Gauge(
+            "metis_pattern_embedding_cache_hit_ratio",
+            "v2 embedding-cache hit ratio per workspace (hits/(hits+misses)).",
+            labelnames=("workspace_id",),
+            registry=self._registry,
+        )
+        self._pattern_cache_hits = Gauge(
+            "metis_pattern_embedding_cache_hits_total",
+            "Cumulative v2 embedding-cache hits per workspace (process-local).",
+            labelnames=("workspace_id",),
+            registry=self._registry,
+        )
+        self._pattern_cache_misses = Gauge(
+            "metis_pattern_embedding_cache_misses_total",
+            "Cumulative v2 embedding-cache misses per workspace (process-local).",
+            labelnames=("workspace_id",),
+            registry=self._registry,
+        )
 
     # ---- Lifecycle -----------------------------------------------------
 
@@ -212,6 +259,23 @@ class MetricsCollector:
                 self._gateway_keys_revoked.set(revoked)
             except Exception:
                 logger.warning("gateway_keys_getter failed; gauges stale", exc_info=True)
+        if self._trace_wal_bytes_getter is not None:
+            try:
+                self._trace_wal_bytes.set(self._trace_wal_bytes_getter())
+            except Exception:
+                logger.warning("trace_wal_bytes_getter failed; gauge stale", exc_info=True)
+        if self._pattern_cache_getter is not None:
+            try:
+                entries = self._pattern_cache_getter()
+            except Exception:
+                logger.warning("pattern_cache_getter failed; gauges stale", exc_info=True)
+            else:
+                for workspace_id, hits, misses in entries:
+                    total = hits + misses
+                    ratio = (hits / total) if total else 0.0
+                    self._pattern_cache_hit_ratio.labels(workspace_id=workspace_id).set(ratio)
+                    self._pattern_cache_hits.labels(workspace_id=workspace_id).set(hits)
+                    self._pattern_cache_misses.labels(workspace_id=workspace_id).set(misses)
 
     # ---- Bus handler ---------------------------------------------------
 

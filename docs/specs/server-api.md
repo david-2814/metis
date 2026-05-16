@@ -61,7 +61,14 @@ This spec depends on:
 http://127.0.0.1:8421
 ```
 
-The port is configurable; default 8421. v1 binds only to loopback (`127.0.0.1`), not `0.0.0.0`. The server refuses to bind to non-loopback in v1 even if asked — this is a safety guarantee until auth ships.
+The port is configurable; default 8421. The agent server binds loopback
+by default. v1 still refuses to bind to non-loopback even if asked —
+the agent server has no per-request auth and no rate-limit middleware,
+so a public bind would let any client trigger arbitrary tool execution
+inside the workspace. (The sibling gateway lifted its loopback-only
+constraint in Wave 13 — see [`gateway-hardening.md §2.1`](gateway-hardening.md) — because the gateway is per-request stateless, runs no tools, and ships with
+rate-limit middleware + audit-log export + key-rotation primitives.
+The agent server gets the same treatment when its auth story lands.)
 
 ### 3.2 Content type
 

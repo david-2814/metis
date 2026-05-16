@@ -73,3 +73,56 @@ def test_gateway_issue_key_user_and_team_default_to_none():
     )
     assert args.user is None
     assert args.team is None
+
+
+# ---------------------------------------------------------------------------
+# Wave 13 — `metis gateway` bind / TLS / connection-cap flag wiring
+# (gateway-hardening.md §2.1).
+# ---------------------------------------------------------------------------
+
+
+def test_gateway_default_host_is_loopback_preserved():
+    """Default `--host` remains 127.0.0.1 even though Wave 13 lifts the
+    forced rewrite. Back-compat is the load-bearing property."""
+    parser = build_parser()
+    args = parser.parse_args(["gateway"])
+    assert args.host == "127.0.0.1"
+    assert args.port == 8422
+    assert args.tls_cert is None
+    assert args.tls_key is None
+    assert args.max_connections == 1000
+    assert args.reuse_port is False
+
+
+def test_gateway_accepts_zero_zero_zero_zero_host():
+    """`--host 0.0.0.0` parses; the silent loopback rewrite is gone."""
+    parser = build_parser()
+    args = parser.parse_args(["gateway", "--host", "0.0.0.0"])
+    assert args.host == "0.0.0.0"
+
+
+def test_gateway_parses_tls_flags():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "gateway",
+            "--tls-cert",
+            "/etc/metis/tls/cert.pem",
+            "--tls-key",
+            "/etc/metis/tls/key.pem",
+        ]
+    )
+    assert args.tls_cert == "/etc/metis/tls/cert.pem"
+    assert args.tls_key == "/etc/metis/tls/key.pem"
+
+
+def test_gateway_parses_max_connections_override():
+    parser = build_parser()
+    args = parser.parse_args(["gateway", "--max-connections", "5000"])
+    assert args.max_connections == 5000
+
+
+def test_gateway_parses_reuse_port_flag():
+    parser = build_parser()
+    args = parser.parse_args(["gateway", "--reuse-port"])
+    assert args.reuse_port is True

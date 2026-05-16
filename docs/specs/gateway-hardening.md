@@ -1,15 +1,17 @@
 # Gateway Hardening Specification
 
-**Status:** Draft v1 — Wave 12+ commitment, not a v1 default
+**Status:** v1 — shipped (Wave 13). Loopback-only constraint lifted; non-loopback bind is an explicit operator opt-in.
 **Last updated:** 2026-05-15
 
-> Documents the perimeter every buyer adds in front of the gateway before they
-> let real internet traffic reach it. **The gateway itself remains loopback-only
-> in v1** ([`gateway.md §3.2`](gateway.md), [`server-api.md §3.1`](server-api.md));
-> nothing in this spec changes that. What this spec adds is the layered defense
-> a buyer composes when they wire up a TLS terminator and an Ingress: which
-> layer owns which threat, what defaults Metis ships, and where the v1
-> deliberately stops.
+> Documents the perimeter every buyer composes around the gateway before
+> letting real internet traffic reach it. **Wave 13 lifts the loopback-only
+> bind constraint** — the gateway now defaults to `127.0.0.1` (back-compat)
+> but accepts `--host 0.0.0.0` once the rate-limit middleware (§3), audit
+> logging ([`audit-log.md`](audit-log.md)), and TLS termination (§2) are
+> in place. What this spec adds is the layered defense a buyer composes
+> when they wire up a TLS terminator and an Ingress: which layer owns
+> which threat, what defaults Metis ships, and where the v1 deliberately
+> stops.
 
 This spec depends on:
 
@@ -44,7 +46,9 @@ the gateway *survivable* behind a buyer-owned perimeter.
 
 ## 2. TLS termination posture
 
-The gateway terminates plaintext HTTP on loopback. TLS is a buyer-owned layer.
+The gateway terminates plaintext HTTP on whatever interface `--host` selects.
+TLS is **either** a buyer-owned sidecar (recommended) **or** an in-process
+option for buyers who don't want a sidecar.
 
 | Option | Where it terminates | When to pick it |
 |---|---|---|
@@ -60,7 +64,73 @@ This avoids three bug classes the gateway would otherwise own: ALPN /
 HTTP-2 frame parsing, cert renewal, TLS-version negotiation. All commodity
 for the terminator; load-bearing for a solo-maintained codebase.
 
-### 2.1 Required headers from the terminator
+### 2.1 Bind posture (Wave 13)
+
+The gateway defaults to `--host 127.0.0.1` (loopback). Pre-Wave-13 the
+process silently rewrote any non-loopback host to `127.0.0.1`; that
+constraint is **lifted** — the operator opts into a public bind explicitly
+via `--host 0.0.0.0`. The lift comes with hardening Wave 11 shipped
+([`audit-log.md`](audit-log.md), rate-limit middleware §3) plus this
+wave's additions (connection-rate cap, in-process TLS, `SO_REUSEPORT`).
+
+| Mode | Command | When to use |
+|---|---|---|
+| Loopback (default) | `metis gateway` | Single host, no public traffic; the original v1 default and still the safe one for laptops / CI / single-VM smoke. |
+| Internet-exposed via sidecar | `metis gateway --host 0.0.0.0` behind nginx-ingress / Caddy / cloud LB | Production. The sidecar owns TLS; the gateway speaks plaintext on the pod IP. |
+| Internet-exposed without sidecar | `metis gateway --host 0.0.0.0 --tls-cert … --tls-key …` | Production for buyers who don't want a sidecar; uvicorn terminates TLS in-process. Same security properties; one less moving piece in the topology. |
+
+The hardening checklist the operator owns when binding non-loopback:
+
+1. **TLS termination** — either in-process (§2.3) or upstream (§2.4 below).
+   The gateway logs a one-time `WARN` at boot summarizing whether
+   in-process TLS is on; if it's off, the operator must verify the
+   upstream terminator is wired.
+2. **Rate-limit middleware** — enable via `RateLimitConfig(enabled=True)`
+   in code or the helm `rateLimit.enabled` value (§3).
+3. **Audit logging** — `metis audit export` emits the credential
+   lifecycle + quota + retention sweep subset; SIEM-ingest the JSONL/CSV
+   on a schedule ([`audit-log.md §9`](audit-log.md)).
+
+The gateway does **not** refuse a non-loopback bind without TLS or rate
+limiting — the operator's call. The boot-time `WARN` is the in-process
+nudge to keep the checklist honest.
+
+### 2.2 Connection-rate hardening (Wave 13)
+
+A leaked key or a casual scraper can saturate the event loop before the
+per-key rate limit (§3) catches up. Wave 13 caps connections at the
+process level:
+
+| Knob | Default | Notes |
+|---|---|---|
+| `max_concurrent_connections` (CLI `--max-connections`) | 1000 | Uvicorn `limit_concurrency`. Excess connections return HTTP 503 immediately rather than queuing; right shape for a transparent proxy under a leaked-key flood. |
+| `backlog` | 2048 | Listen-socket queue depth; uvicorn's default, restated as a config knob so graceful-restart tuning has one place. |
+| `reuse_port` (CLI `--reuse-port`) | False | When True, the listen socket carries `SO_REUSEPORT` so two gateway processes can hold the same `(host, port)`. Enables blue-green / rolling restart at the process level. Single-process operation does not need it. |
+
+This is in-process backstop, not the first line of defense. Volumetric
+DDoS still belongs to the buyer's edge (§6).
+
+### 2.3 In-process TLS
+
+`metis gateway --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem`
+enables uvicorn's TLS termination on the bound socket. The cert must
+match the public hostname clients connect to; the gateway does not
+auto-issue or rotate certs (the buyer composes that with cert-manager,
+ACM, or manual rotation).
+
+| Field | Type | Notes |
+|---|---|---|
+| `tls_cert` | `Path | None` | PEM-encoded certificate chain. Must exist on disk; `GatewayConfigError` at startup if missing. |
+| `tls_key` | `Path | None` | PEM-encoded private key. Must be set if `tls_cert` is set; the converse also holds (both-or-neither validation). |
+
+When both are set, the boot log prints `https://…` instead of `http://…`
+and the boot-time hardening WARN drops the `tls_in_process=off` flag.
+
+### 2.4 Required headers from the upstream terminator (sidecar mode)
+
+When a buyer composes an upstream terminator (nginx-ingress / Caddy /
+cloud LB) instead of using in-process TLS, the terminator forwards
+plaintext to the gateway. The terminator must set:
 
 - `X-Forwarded-For` — per-IP bucket source (§3).
 - `X-Forwarded-Proto` — so the gateway can refuse downgraded plaintext.
@@ -244,9 +314,12 @@ slack ping. Missed leak: daily cap drained before 9am.
 
 ## 6. DDoS posture
 
-**Out of scope for v1.** No connection-rate limiting at the listener, no
-SYN-cookie tuning, no slow-loris timeouts beyond uvicorn defaults. A
-100k-request burst saturates the event loop.
+**Mostly out of scope for v1.** Wave 13 added a per-process connection
+cap (§2.2 `max_concurrent_connections`, default 1000) so a flood doesn't
+saturate the event loop — excess connections return HTTP 503 immediately.
+That's a backstop, not a defense. No SYN-cookie tuning, no slow-loris
+timeouts beyond uvicorn defaults, no per-source connection rate limiting
+at the listener.
 
 This is correct: DDoS is the most commoditized perimeter problem and
 buyers already pay for the answer. Recommended layering:
@@ -294,10 +367,14 @@ This spec adds:
 | WAF-style request inspection | Never (delegated to buyer's CDN/WAF) |
 | DDoS mitigation | Never (delegated to buyer's edge layer) |
 
-The shipped v1 is "buyer adds a Caddy / nginx-ingress / cloud LB in front of
-the loopback gateway; in-process per-key + per-IP buckets enforce fairness
-inside the perimeter." Enough to lift the loopback-only bind **once a
-terminator is in front**; not enough to expose the gateway directly.
+The shipped v1 (post-Wave-13) is "operator explicitly opts into a
+non-loopback bind via `--host 0.0.0.0`, with either an upstream
+terminator (Caddy / nginx-ingress / cloud LB) or in-process TLS; the
+per-process connection cap, per-key + per-IP token buckets, audit log,
+and key-rotation primitives are the in-process backstops." The boot-time
+hardening-checklist `WARN` keeps the operator honest about what's wired
+upstream. The gateway no longer refuses a public bind — it documents
+what the operator is now on the hook for.
 
 ---
 

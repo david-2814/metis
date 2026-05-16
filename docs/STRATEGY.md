@@ -160,6 +160,37 @@ overcome; (3) per-turn-text fingerprinting on top of workload-tag —
 prevent turn-1 outcomes from averaging into turn-2 reads (was ruled
 out under cost_weight=0.1, may be worth reconsidering at 0.05).
 
+**Wave 13 / 13a-1 follow-up (2026-05-15):**
+[`benchmarks/RESULTS.md §13a-1`](../benchmarks/RESULTS.md) ran the
+path-1 (workload signal-strengthening) wedge end-to-end and **ruled it
+out as a sufficient single-knob fix**. The cross-run audit across
+§A3-rev3..rev6 patterns DBs found no v1 workload with a haiku-vs-sonnet
+quality gap ≥ 0.15 (best: `regex-with-edge-cases` at +0.119; worst:
+`multi-turn-refactor` at −0.079, a REVERSE-signal training set). Three
+purpose-designed haiku-fail candidates (`subtle-bug-fix-with-test`,
+`recursive-data-structure-traversal`,
+`refactor-with-contract-preservation`) all came in at temperature=0
+with gaps ≤ 0.083 under heuristic judging and both at 1.000 under the
+hybrid judge — below both the rubric's resolution floor and the LLM
+judge's agreement floor. Three plausible interpretations remain on
+the table (none ruled in/out by 13a-1): (a) haiku-4.5 is genuinely
+strong enough on dev-loop coding tasks that the gap is small at
+temperature=0; (b) temperature=0 itself collapses model variance and
+higher temperature would widen the gap but break determinism; (c) the
+judges have insufficient outcome resolution and a partial-correctness
+judge would surface differentiation pass/fail substring matching
+erases. 13a-2 ships the harness-side path-2 mechanism
+(`scripts/benchmark.py --seed-passes N` with statistical reporting) so
+§A3-rev7 can reduce K-NN variance from N samples per cluster; not yet
+exercised end-to-end. **13b-1 (§A3-rev7) brief — two paths remain
+open:** (a) finer-grained outcome scoring (partial-test-pass mid-scores
+0.3–0.7 instead of pass/fail substring detection); (b) task domains
+haiku has known weakness in (math/symbolic, long-context multi-document
+synthesis, rare API surfaces — none fit the dev-loop theme but might
+be the only place a stable gap exists). The savings posture on the
+model-selection lever stays at §A3-rev3's N=1 calibration. Total
+13a-1 smoke spend: $0.815.
+
 **GTM headline posture (post-§A3-rev6).** Unchanged from §A3-rev5
 for the model-selection lever (§A3-rev3 N=1 stands as the canonical
 proof-of-concept; generalization is gated on benchmark-suite signal

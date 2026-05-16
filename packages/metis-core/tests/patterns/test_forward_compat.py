@@ -108,7 +108,8 @@ def test_fresh_db_has_v2_schema(tmp_path: Path) -> None:
         cols = {r[1] for r in store._conn.execute("PRAGMA table_info(fingerprints)").fetchall()}
         assert {"embedding_blob", "embedding_provider", "embedding_dim"}.issubset(cols)
         tables = {
-            r[0] for r in store._conn.execute(
+            r[0]
+            for r in store._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
@@ -126,7 +127,8 @@ def test_legacy_v1_db_bumps_schema_and_adds_cache_table(tmp_path: Path) -> None:
         ).fetchone()
         assert sv[0] == _SCHEMA_VERSION
         tables = {
-            r[0] for r in store._conn.execute(
+            r[0]
+            for r in store._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
@@ -140,9 +142,7 @@ def test_legacy_v1_db_preserves_historical_rows(tmp_path: Path) -> None:
     store = PatternStore(tmp_path)
     try:
         fps = store._conn.execute("SELECT id FROM fingerprints").fetchall()
-        outs = store._conn.execute(
-            "SELECT primary_model, sample_size FROM outcomes"
-        ).fetchall()
+        outs = store._conn.execute("SELECT primary_model, sample_size FROM outcomes").fetchall()
         assert fps == [("fp_v1_legacy",)]
         assert outs == [("haiku", 3)]
     finally:

@@ -4,6 +4,12 @@
 > in under a day. Deploy the gateway, point your existing tool at it,
 > run your prompts, read the cost-per-quality column.
 
+> **Want a "first savings number in &lt; 1 hour" with no workload of
+> your own?** Start at [`operations/quickstart.md`](operations/quickstart.md)
+> — `infra/gateway/scripts/quickstart.sh` automates the helm install
+> end-to-end and `metis trial` runs a pre-baked workload through the
+> gateway. Come back here when you want to swap our workload for yours.
+
 Pairs with [`savings-demo.md`](savings-demo.md) — that doc is the
 evidence we collected on our benchmark; this doc is how to collect
 the same evidence on your workload. Time budget: 60–90 minutes for
@@ -25,10 +31,20 @@ docker compose up -d && curl http://127.0.0.1:8422/healthz
 
 Save the printed `gw_…` token; it prints once.
 
-### Kubernetes via helm (production-shaped)
+### Kubernetes via helm (one-command, kind cluster)
 
+```bash
+infra/gateway/scripts/quickstart.sh   # build, kind, install, key, port-forward
+source .metis-trial/state.env         # exports METIS_TRIAL_GATEWAY_URL / KEY
+```
+
+This automates the recipe in
+[`docs/operations/quickstart.md`](operations/quickstart.md). For the
+detailed kind-cluster walkthrough (image build, kind load, helm install,
+port-forward), see
 [`docs/gateway-deployment.md §"First production smoke"`](gateway-deployment.md)
-is the validated kind-cluster recipe (4 haiku calls, $0.00012 total).
+(validated 2026-05-15 at $0.00012 for 4 haiku calls).
+
 For a multi-user trial, issue per-user / per-team keys so the
 identity rollups in §4 are populated:
 
@@ -44,6 +60,14 @@ analytics rolls up by either.
 ## 2. Workload — use your prompts
 
 Two paths, depending on rigor:
+
+**Path 0 — "the pre-baked workload."** Run `metis trial --gateway-url
+… --gateway-key …`. This is the smoke test from
+[`operations/quickstart.md`](operations/quickstart.md) — one workload,
+one model, takes &lt; 2 minutes, costs &lt; $0.10. Output is the
+`actual / baseline / savings_pct` block, suitable for an internal
+"this thing works end-to-end" demo before you write your own rubric.
+Not a substitute for Path A or B.
 
 **Path A — "watch and read."** Devs use their existing tools through
 the gateway for a week. After a week, read `/analytics/by_user` and

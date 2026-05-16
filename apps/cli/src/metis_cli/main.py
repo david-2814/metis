@@ -109,8 +109,52 @@ def build_parser() -> argparse.ArgumentParser:
         "Default: anthropic:claude-sonnet-4-6",
         default="anthropic:claude-sonnet-4-6",
     )
-    gateway.add_argument("--host", default="127.0.0.1", help="Bind host (loopback-only in v1).")
+    gateway.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Bind host. Default 127.0.0.1 (loopback). Pass 0.0.0.0 to expose "
+            "on every interface; gateway-hardening.md §2.1 lists the perimeter "
+            "checklist (TLS termination, rate-limit middleware, audit logging) "
+            "the operator owns when binding non-loopback."
+        ),
+    )
     gateway.add_argument("--port", type=int, default=8422, help="Bind port.")
+    gateway.add_argument(
+        "--tls-cert",
+        default=None,
+        help=(
+            "Path to a PEM-encoded TLS certificate. Enables in-process TLS "
+            "termination (requires --tls-key). Default: no TLS; terminate at "
+            "an upstream sidecar (nginx-ingress / Caddy / cloud LB) per "
+            "gateway-hardening.md §2."
+        ),
+    )
+    gateway.add_argument(
+        "--tls-key",
+        default=None,
+        help="Path to the PEM-encoded TLS private key. Required when --tls-cert is set.",
+    )
+    gateway.add_argument(
+        "--max-connections",
+        type=int,
+        default=1000,
+        help=(
+            "Per-process cap on in-flight requests + open connections (uvicorn "
+            "limit_concurrency). Excess connections return HTTP 503 immediately. "
+            "Default 1000; gateway-hardening.md §2.1."
+        ),
+    )
+    gateway.add_argument(
+        "--reuse-port",
+        action="store_true",
+        default=False,
+        help=(
+            "Bind the listen socket with SO_REUSEPORT so a second gateway "
+            "process can hold the same port for graceful restart. Default off; "
+            "single-process operation does not need it."
+        ),
+    )
 
     issue = gateway_sub.add_parser(
         "issue-key",
@@ -277,6 +321,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Report counts without deleting any rows (no trace.swept event emitted).",
     )
 
+    vacuum = trace_sub.add_parser(
+        "vacuum",
+        help=(
+            "Reclaim free pages by rebuilding the DB in place (SQLite VACUUM). "
+            "Run from a separate pod / CronJob — see "
+            "docs/operations/trace-performance.md §4."
+        ),
+    )
+    vacuum.add_argument(
+        "--db-path",
+        help="Trace DB path. Default: ~/.metis/metis.db",
+        default=None,
+    )
+
     audit = sub.add_parser(
         "audit",
         help="Audit-log operations (export the audit subset for SIEM ingest).",
@@ -410,6 +468,58 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overwrite an existing destination DB (default: refuse).",
     )
 
+    trial = sub.add_parser(
+        "trial",
+        help=(
+            "Run a pre-baked buyer-trial workload (under benchmarks/workloads-trial/) "
+            "and print actual / baseline / savings_pct. See docs/operations/quickstart.md."
+        ),
+    )
+    trial.add_argument(
+        "--workload",
+        default="refactor-extract-helper",
+        help="Trial workload name. Default: refactor-extract-helper.",
+    )
+    trial.add_argument(
+        "--model",
+        default="anthropic:claude-haiku-4-5",
+        help="Actual model (canonical id or alias). Default: anthropic:claude-haiku-4-5.",
+    )
+    trial.add_argument(
+        "--baseline",
+        default="anthropic:claude-sonnet-4-6",
+        help=(
+            "Baseline model for the savings counterfactual (priced from the "
+            "trial trace via the same PriceTable). Default: anthropic:claude-sonnet-4-6."
+        ),
+    )
+    trial.add_argument(
+        "--db-path",
+        default=None,
+        help=(
+            "SQLite path for the trial's local trace DB. Default: a fresh "
+            "/tmp/metis-trial-<UTC-ts>.db. Pass an explicit path to keep it."
+        ),
+    )
+    trial.add_argument(
+        "--gateway-url",
+        default=None,
+        help=(
+            "Run through a gateway (e.g. http://127.0.0.1:8422). Sets "
+            "ANTHROPIC_BASE_URL so the SDK routes through it. Per-key cost "
+            "lands in the gateway's trace DB; the local DB is used for the "
+            "savings counterfactual only. Requires --gateway-key."
+        ),
+    )
+    trial.add_argument(
+        "--gateway-key",
+        default=None,
+        help=(
+            "Gateway-issued bearer token (gw_…). Replaces ANTHROPIC_API_KEY "
+            "for the duration of the trial. Required with --gateway-url."
+        ),
+    )
+
     return parser
 
 
@@ -478,6 +588,17 @@ def main(argv: list[str] | None = None) -> int:
             from metis_cli.backup import run_restore_command
 
             return run_restore_command(source=args.source, db_path=args.db_path, force=args.force)
+        if args.command == "trial":
+            from metis_cli.trial import run_trial_command
+
+            return run_trial_command(
+                workload=args.workload,
+                model=args.model,
+                baseline=args.baseline,
+                db_path=args.db_path,
+                gateway_url=args.gateway_url,
+                gateway_key=args.gateway_key,
+            )
         if args.command == "analytics":
             if args.analytics_command == "user-export":
                 from metis_cli.user import run_user_export_command
@@ -520,6 +641,10 @@ def main(argv: list[str] | None = None) -> int:
                     days=args.days,
                     dry_run=args.dry_run,
                 )
+            if args.trace_command == "vacuum":
+                from metis_cli.trace_admin import run_trace_vacuum_command
+
+                return run_trace_vacuum_command(db_path=args.db_path)
         if args.command == "gateway":
             if args.gateway_command == "issue-key":
                 from pathlib import Path
@@ -597,6 +722,10 @@ def main(argv: list[str] | None = None) -> int:
                     global_default_model=args.global_default,
                     host=args.host,
                     port=args.port,
+                    tls_cert=args.tls_cert,
+                    tls_key=args.tls_key,
+                    max_connections=args.max_connections,
+                    reuse_port=args.reuse_port,
                 )
             )
     except KeyboardInterrupt:

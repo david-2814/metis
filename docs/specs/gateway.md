@@ -65,9 +65,26 @@ Deferred to v1.1+: `/v1/models` (OpenAI-shape model list), `/v1/embeddings`, `/v
 
 ### 3.2 Network posture
 
-The gateway is `loopback-only by default in v1`, matching `metis serve`'s safety posture ([`server-api.md §3.1`](server-api.md)). `run_gateway()` silently rewrites any non-loopback bind to `127.0.0.1` until production-bind hardening lands (auth/rate limiting/audit; gateway.md §11). Operators who want the gateway in front of a TLS terminator on a real network must wait for that follow-on or run it themselves on top of the in-process Starlette app.
+The gateway defaults to loopback bind (`127.0.0.1`). Post-Wave-13 this
+is a **default, not a constraint**: the operator opts into a public
+bind explicitly via `--host 0.0.0.0` once the hardening Wave 13 + Wave
+11 layered on top of v1 is wired ([`gateway-hardening.md §2.1`](gateway-hardening.md)):
 
-This decision reverses the original draft's "default `0.0.0.0`" plan. The reason for the change: until per-key rate limits and audit logging exist, exposing the gateway on a real network gives an attacker with one leaked key a wide blast radius (unbounded model spend on the operator's provider account, plus unmetered prompt exfiltration). Loopback is a conservative starting point; the surface can be widened deliberately.
+| Hardening layer | Status | Owner |
+|---|---|---|
+| Per-key + per-IP rate limiting | Shipped (Wave 11, opt-in via `RateLimitConfig.enabled=True`) | In-process |
+| Audit-log export | Shipped (Wave 12, `metis audit export`) | In-process |
+| Connection-rate cap | Shipped (Wave 13, default 1000 concurrent) | In-process |
+| TLS termination | Shipped (Wave 13, `--tls-cert/--tls-key` for in-process; sidecar still recommended) | In-process or sidecar |
+| Key rotation / revocation | Shipped (Wave 10, `metis gateway rotate-key` / `revoke-key`) | In-process |
+| WAF / volumetric DDoS | **Buyer-owned** (edge CDN / cloud LB) | Upstream |
+
+Pre-Wave-13, `run_gateway()` silently rewrote any non-loopback bind to
+`127.0.0.1` because per-key rate limits and audit logging hadn't shipped
+yet. Both have since landed; the rewrite is removed. The operator
+opts in deliberately and gets a one-time `WARN` log line at boot
+summarizing whether in-process TLS / rate-limit middleware are on so
+the perimeter checklist stays honest.
 
 ### 3.3 Authentication
 

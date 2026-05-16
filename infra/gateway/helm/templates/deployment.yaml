@@ -50,7 +50,7 @@ spec:
               # is what actually accepts traffic on the pod IP.
           env:
             - name: METIS_GATEWAY_HOST
-              value: "127.0.0.1"
+              value: {{ default "127.0.0.1" .Values.gatewayHost | quote }}
             - name: METIS_GATEWAY_PORT
               value: {{ .Values.gatewayPort | quote }}
             - name: METIS_GATEWAY_KEYSTORE
@@ -59,6 +59,18 @@ spec:
               value: {{ .Values.persistence.dbFile | quote }}
             - name: METIS_GATEWAY_GLOBAL_DEFAULT
               value: {{ .Values.globalDefaultModel | quote }}
+            - name: METIS_GATEWAY_MAX_CONNECTIONS
+              value: {{ .Values.maxConnections | default 1000 | quote }}
+            {{- if .Values.reusePort }}
+            - name: METIS_GATEWAY_REUSE_PORT
+              value: "1"
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: METIS_GATEWAY_TLS_CERT
+              value: {{ printf "%s/cert.pem" .Values.tls.mountPath | quote }}
+            - name: METIS_GATEWAY_TLS_KEY
+              value: {{ printf "%s/key.pem" .Values.tls.mountPath | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -76,6 +88,11 @@ spec:
             {{- end }}
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: {{ .Values.tls.mountPath }}
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -173,6 +190,11 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 64Mi
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ required "tls.secretName is required when tls.enabled is true" .Values.tls.secretName }}
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

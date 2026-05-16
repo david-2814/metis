@@ -1,7 +1,7 @@
 # Benchmark Specification
 
-**Status:** Draft v1
-**Last updated:** 2026-05-13
+**Status:** Draft v1.1 (signal_strength partition added 2026-05-15)
+**Last updated:** 2026-05-15
 
 > Defines the workload suite, baseline, and measurement methodology that turn
 > `analytics-api.md /analytics/savings.actual_repriced_usd` and
@@ -113,6 +113,7 @@ benchmarks/workloads/<name>/
 name: <slug, matches the directory name>
 description: <one-line human summary>
 suite_version: 1                     # benchmark suite schema version
+signal_strength: high                 # high | marginal; default high (§4.1)
 turns:                                # ordered list of user turns
   - prompt: "..."
     expect:                           # optional, per-turn
@@ -124,12 +125,32 @@ expect:                                # optional, aggregate across the workload
   max_total_cost_usd: 0.50
   min_llm_calls: 1
   max_hard_failures: 0                # /analytics/routing.hard_failures over the window
+  min_delegate_calls: 0               # optional, planner-scoped delegate.started count
 evaluate:                              # optional, workload-level quality rubric
   rubric: heuristic                    # heuristic | llm | hybrid; default heuristic
   expect_substring_in_final_response: "..."   # passthrough to heuristic signals
   llm_judge_model: anthropic:claude-haiku-4-5   # required when rubric != heuristic
   weight_per_turn: 1.0                 # how turns aggregate (default 1.0)
+  grounding_tokens: ["..."]            # optional, see evaluator.md §5.4
+  forbidden_grounding: ["..."]         # optional, hallucination-detection list
 ```
+
+**The `signal_strength` field.** Optional; defaults to `"high"`. Pins
+whether the workload produces a stable haiku-vs-sonnet quality gap large
+enough for the routing K-NN to learn from (§4.1). Values:
+
+- `high` — smoke-validated gap ≥ 0.4 between the cheap-model mean and
+  the strong-model mean across ≥ 4 runs per (workload, model) pair at
+  `temperature=0`. Methodology: [`RESULTS.md §13a-1`](../../benchmarks/RESULTS.md).
+- `marginal` — gap is within run-to-run variance (typically < 0.15 in
+  the §A3-rev6 audit; the smoke gate is "not validated as high"). Kept
+  on disk for §A3 reruns and as a regression-sentinel suite, but
+  excluded from the default `scripts/benchmark.py` run.
+
+`scripts/benchmark.py` defaults to `signal_strength=high` workloads
+only; `--include-marginal` opts the marginal-signal workloads back in.
+An explicit `--workload <name>` bypasses the filter so any workload on
+disk can be run by name (preserves §A3-rev reproducibility).
 
 **Schema enforcement.** The harness validates the YAML against this shape at
 load time. Unknown top-level keys, unknown `expect` keys, and unknown
@@ -175,22 +196,57 @@ indentation sensitivity, which the schema validator catches.
 
 ## 4. The suite
 
-V1 ships **three workloads** covering the dev-task shapes most representative
-of buyer use:
+### 4.1 v2 partition — high-signal vs marginal
 
-| Workload                 | Shape                              | Turns | Notes |
-|--------------------------|------------------------------------|-------|-------|
-| `fix-a-bug-small`        | Find + fix a bug in a tiny python module | 2-3   | Exercises read/edit tools; multi-turn so the model has to use prior context. |
-| `write-a-doc-from-notes` | Read raw notes, produce a structured doc | 2     | Exercises read + write tools; mid-length output. |
-| `multi-turn-refactor`    | Rename a function across 3 files in a small repo | 4-6   | Long-context, repeated tool calls, multi-turn dependence — the workload most sensitive to context / cache discipline. |
+After §A3-rev6 ([`RESULTS.md`](../../benchmarks/RESULTS.md)), the suite is
+partitioned by `signal_strength`. The §A3-rev6 Q1 finding is that across
+six end-to-end §A3-series runs the per-workload haiku-vs-sonnet quality
+gap stayed within run-to-run variance — the K-NN cannot learn signal
+that isn't there. The 13a-1 follow-up tested whether purpose-designed
+"haiku-fail" workloads could clear a ≥ 0.4 gap; the result was no (see
+[`RESULTS.md §13a-1`](../../benchmarks/RESULTS.md)).
 
-V2 may add `code-explanation` (read + summarize, no edits) and
-`shell-driven-debug` (exercise `run_shell` heavily). Out of scope for v1 to
-keep the per-run cost bounded ([§5](#5-cost-budget)).
+| Workload | Signal | Shape | §A3-rev6 cross-pass gap |
+|----------|--------|-------|------------------------:|
+| `fix-a-bug-small` | marginal | Find + fix a bug in a tiny python module | +0.070 |
+| `write-a-doc-from-notes` | marginal | Read raw notes, produce a structured doc | +0.000 |
+| `multi-turn-refactor` | marginal | Rename a function across 4 files | **-0.079** (reverse) |
+| `regex-with-edge-cases` | marginal | One-shot NANP regex over 16 cases | +0.119 |
+| `multi-file-refactor-with-shared-types` | marginal | Rename a dataclass across 7 files | +0.043 |
+| `architectural-explanation-without-hallucination` | marginal | Grounded explanation control case (hallucination detector) | +0.000 |
+| `intentionally-failing-task` | marginal | Evaluator-control low-score case | +0.000 |
+| `multi-step-with-delegation` | marginal | Planner-driven delegation exercise (Q2-shaped, not Q1) | — |
+| `subtle-bug-fix-with-test` (13a-1 candidate) | marginal | Root-cause vs symptom config-loader bug | -0.029 (13a-1) |
+| `recursive-data-structure-traversal` (13a-1 candidate) | marginal | Shortest-chain tree walk with tombstoned pruning | +0.083 (13a-1) |
+| `refactor-with-contract-preservation` (13a-1 candidate) | marginal | Keyword-only signature refactor preserving 7 callers | +0.000 (13a-1) |
 
-The choice to ship three is deliberate: enough variation that the aggregate
-isn't a single workload's accident, few enough that the full run stays under
-the [§5](#5-cost-budget) cost ceiling.
+**No workload is currently `signal_strength: high`.** The default
+`scripts/benchmark.py` run with no flags emits a helpful error
+pointing to `--include-marginal`. This is intentional: shipping a
+workload as "high-signal" requires smoke-validating a ≥ 0.4 gap, and
+no such workload has emerged from the candidate set as of 2026-05-15.
+
+### 4.2 Adding a high-signal workload
+
+The candidate path is:
+
+1. Design a workload where haiku reliably fails at a measurable rate
+   (target: heuristic-judge mean 0.3-0.5 across ≥ 4 runs at
+   `temperature=0`) and sonnet reliably passes (target: 0.9+).
+2. Ship it at `signal_strength: marginal` initially. Open a PR with
+   the workload files + the 4×2 smoke run scoreboard.
+3. If the smoke validates a gap ≥ 0.4, the PR also flips the field
+   to `signal_strength: high` and updates the §4.1 table.
+4. If the smoke does not, document the result in [`RESULTS.md`](../../benchmarks/RESULTS.md)
+   and keep the workload at `marginal`. The §A3-rev series may still
+   find it useful as a regression sentinel.
+
+The bar for "high" comes from the §A3-rev6 finding: the K-NN's
+cluster math needs a stable per-workload delta well above the
+heuristic judge's resolution (which clusters at 0.833 / 0.917 /
+1.000 in the 13a-1 smoke). 0.4 is the rough minimum a K-NN of 5–10
+neighbors can preserve through aggregation while leaving room for
+the `min_confidence` gate to fire.
 
 ---
 
@@ -238,6 +294,7 @@ runs and machines.
 | `started_at`           | UTC ISO timestamp                                     | Report header |
 | `ended_at`             | UTC ISO timestamp                                     | Total wall time |
 | `temperature`          | Configured per run (default `0.0`)                    | Determinism control |
+| `seed_passes`          | `--seed-passes N` (default `1`)                       | N reps per (workload, model); see §6.4 |
 
 ### 6.2 Determinism contract
 
@@ -266,6 +323,53 @@ The harness defaults `--db-path` to `benchmarks/.runs/benchmark-<UTC-ts>.db`
 and rejects existing files (so the savings projection never mixes in unrelated
 events). The default location is git-ignored to keep large trace files out of
 commits.
+
+### 6.4 Seed-passes (`--seed-passes N`)
+
+When seeding a shared patterns DB for cross-pass K-NN comparisons (§A3
+series), single-shot per-(workload, model) sampling produces 1–2 outcomes
+per fingerprint cluster — small enough that one stochastic agent failure
+can flip the cluster mean by 0.1–0.3, exceeding the `min_confidence=0.05`
+gate that drives slot-4 inversions (see [`benchmarks/RESULTS.md §A3-rev6 Q1
+finding`](../../benchmarks/RESULTS.md)).
+
+`--seed-passes N` (default 1) loops each workload N times in the current
+pass against the same `--patterns-db-path`. Each rep:
+
+- Gets a fresh ULID-stamped `session_id` (new `runtime.manager.create_session`).
+- Copies the workspace src into a fresh tempdir.
+- Seeds the workspace's `.metis/patterns.db` from the shared file (after
+  rep 1) so the K-NN at rep N sees the prior reps' outcomes.
+- Records its outcome and copies the patterns DB back to the shared path.
+
+After the loop, the harness reports per-workload `quality_mean ± quality_std`
+across the N reps. Workloads with `std > 0.15` are flagged "NOISY" in the
+report and surfaced as candidates for replacement under the 13a-1
+signal-strength gate (the workload is too noisy for the K-NN to ever learn
+a stable preference — fix the workload, not the routing knob).
+
+**Cost trade-off.** N seed-passes multiplies the actual cost of each
+seed-only pass (Pass A / Pass B in the typical §A3 protocol) by N. Pass C
+(routing test on the now-richer patterns DB) and Pass D (delegation) are
+unaffected. For the typical §A3 four-pass run:
+
+| N | Pass-A+B cost (haiku+sonnet seed) | Pass-C+D cost | Total | Use case |
+|---|----------------------------------:|--------------:|------:|----------|
+| 1 (default) | ~$0.50 | ~$0.50 | ~$1.00 | single-shot, fastest signal |
+| 3 (recommended for A3) | ~$1.50 | ~$0.50 | ~$2.00 | noise-reduced cluster means |
+| 5 (cluster-tightening A/B) | ~$2.50 | ~$0.50 | ~$3.00 | std reporting + signal-strength gate |
+
+Per-workload sample size after seeding scales with N: each rep adds one
+record per turn fingerprint, so a 3-turn workload at N=3 contributes 3
+records to the patterns DB per model — enough for the K-NN cluster mean
+to absorb a single stochastic failure without flipping the chooser.
+
+**Validating accumulation.** The harness verifies the shared DB grows: if
+after the loop the K-NN's cluster sample size for the test fingerprint
+is less than N, that's a recording-path bug (silently dropped record)
+and the operator should investigate. The unit test
+`test_seed_passes_loop_invokes_run_workload_n_times` exercises this
+invariant against the scripted-adapter substrate.
 
 To rerun against a previously-captured DB, pass it explicitly with
 `--db-path <existing>` and `--skip-execute` (a no-API mode that only runs the
@@ -422,6 +526,7 @@ These are **live**. Do not unilaterally close them.
 | 2026-05-13 | Soft floors / hard ceilings, no goldens                       | LLM variance breaks goldens; tolerance windows catch real regressions without churn.       |
 | 2026-05-13 | Run analytics in-process (not via HTTP)                       | Avoids uvicorn lifecycle in a one-shot script; dashboard agreement is by construction.     |
 | 2026-05-13 | Quality scoring deferred to the evaluator                     | Benchmark v1 measures spend, not correctness — evaluator's job per STRATEGY.md §6.7.       |
+| 2026-05-15 | `signal_strength: high \| marginal` partition + `--include-marginal` flag | §A3-rev6 Q1 finding ([`RESULTS.md`](../../benchmarks/RESULTS.md)): the per-workload haiku-vs-sonnet quality gap in the v1 suite is within run-to-run variance. v2 splits the suite by smoke-validated gap so the default run trains the K-NN only on high-signal workloads. 13a-1 smoke (2026-05-15) tested 3 candidate workloads; none cleared the 0.4 gate, so the default suite ships empty pending future candidates. |
 
 ---
 

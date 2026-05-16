@@ -4210,3 +4210,129 @@ uv run python scripts/benchmark.py \
   --judge hybrid --judge-escalation-threshold 0.7 \
   --db-path benchmarks/.runs/a3rev6-pass-d-baseline.db
 ```
+
+---
+
+## 13a-1: benchmark-suite workload signal audit + 3 high-signal candidates designed and smoke-tested
+
+This is the §A3-rev6 follow-up the §A3-rev6 Q1 finding called for: "Option 1 — Workload signal strengthening. Replace `regex-with-edge-cases` and `multi-file-refactor-with-shared-types` with workloads where haiku stably fails at a measurable rate (e.g., 0.3–0.5 quality) while sonnet stably passes (0.9+)." 13a-1 audits the existing 7 workloads' cross-run signal, ships 3 high-signal candidates with their workspace fixtures, and smoke-tests all 3 against real haiku-4.5 + sonnet-4.6 traffic.
+
+### 13a-1 audit: cross-run patterns-DB outcome means across §A3-rev3..rev6
+
+`benchmarks/.runs/a3rev{3,4,5,6}-patterns.db` jointly cover four end-to-end runs at v1 structural / v2 HYBRID / `min_confidence=0.05` / `cost_weight=0.05`. Per-(workload, model) weighted mean across all fingerprints contributing to each pair:
+
+| Workload | Haiku wmean (n) | Sonnet wmean (n) | Gap | Verdict |
+|----------|----------------:|-----------------:|----:|---------|
+| `architectural-explanation-without-hallucination` | 1.000 (6) | 1.000 (3) | +0.000 | FLAT — control case (hallucination detector, not a model differentiator) |
+| `fix-a-bug-small` | 0.930 (23) | 1.000 (11) | +0.070 | marginal |
+| `intentionally-failing-task` | 1.000 (8) | 1.000 (4) | +0.000 | FLAT — control case (evaluator low-score sentinel) |
+| `multi-file-refactor-with-shared-types` | 0.797 (35) | 0.840 (15) | +0.043 | marginal — §A3-rev6 Q1 named for replacement |
+| `multi-turn-refactor` | 0.935 (43) | 0.856 (16) | **-0.079** | **REVERSE** — haiku scores higher; actively miseducates the K-NN |
+| `regex-with-edge-cases` | 0.852 (23) | 0.971 (14) | +0.119 | marginal — best gap in v1 suite |
+| `write-a-doc-from-notes` | 1.000 (14) | 1.000 (7) | +0.000 | FLAT |
+
+**No workload in the v1 suite has a gap ≥ 0.15.** Generalizes the §A3-rev6 Q1 finding from "the K-NN cluster aggregate is narrower than judge variance" to "the underlying haiku-vs-sonnet quality delta in v1 is comparable to single-generation variance across every workload, not just regex." `multi-turn-refactor`'s reverse-direction signal is the worst case: training data on that workload actively teaches the K-NN to pick haiku on a workload §A3-rev3 didn't show that direction on.
+
+### 13a-1 candidate workloads
+
+Three new workloads target the patterns the user brief named:
+
+1. **`subtle-bug-fix-with-test`** — Symptom-vs-root-cause bug across 3 files. `config_loader.load_config` does a shallow merge; `db_connector.connect` raises `KeyError: 'port'` when the user supplies a partial `database` section. The naive fix patches `db_connector.connect` to fall back to `.get(...)`; that makes `test_integration.py` pass but leaves `test_loader.py`'s three deep-merge assertions failing. The root-cause fix in `config_loader.load_config` makes all 4 tests pass. Objective verification (`pytest 4 passed`).
+2. **`recursive-data-structure-traversal`** — Shortest-chain walk over an org-chart tree (depth-7, 4 subtrees) with three composed constraints: (a) tombstoned subtrees are invisible (entire subtree pruned), (b) name-at-multiple-depths returns the shallowest occurrence, (c) name-only-in-tombstoned returns the empty list. `runner.py` exercises 8 cases (depth-2 / depth-7 / root-itself / duplicate-at-different-depths / tombstoned-isolated / tombstoned-vs-live / not-found). Single-turn one-shot; objective verification (`PASS 8/8`).
+3. **`refactor-with-contract-preservation`** — Convert `api.fetch(endpoint, method="GET", retries=3, timeout=10)` to keyword-only signature and update every caller. 6 call sites across 3 files exercise 4 distinct call shapes (positional, two-positional, mixed positional+kwarg, `functools.partial("/admins")`, `functools.partial("/health", retries=1)`, `fetch(endpoint, **options)`). `test_callers.py` ships 9 tests: 2 prove the refactor is real (signature is `KEYWORD_ONLY`, positional invocation raises `TypeError`) and 7 invoke every caller through to `api.fetch`'s instrumented `LAST_CALL` record. Objective verification (`pytest 9 passed`).
+
+All 3 ship with self-contained `workspace/` trees; pre-fix pytest reports a known failure shape; reference solutions verified locally.
+
+### 13a-1 smoke methodology
+
+For each new workload, ran benchmark.py from a clean state:
+- **Heuristic-judge runs (12 total):** 2 runs per (workload, model) under `--judge heuristic` at `temperature=0.0`. Each run writes its own trace DB; quality scores are read from the workload-level `eval.completed.score`.
+- **Hybrid-judge spot checks (3 successful, 1 transient NetworkError):** 1 run per (workload, model) on the 2 most-promising candidates (`recursive-data-structure-traversal` + `refactor-with-contract-preservation`) under `--judge hybrid --judge-escalation-threshold 0.7`. The §A3 series uses hybrid, so the spot check is the comparable methodology.
+
+The gate is the user-brief threshold: **mean quality gap ≥ 0.4** between sonnet and haiku across the runs.
+
+### 13a-1 smoke results
+
+| Workload | Haiku quality runs | Sonnet quality runs | Heuristic gap | Hybrid spot-check |
+|----------|--------------------|---------------------|--------------:|-------------------|
+| `subtle-bug-fix-with-test` | 0.975, 0.917 (mean 0.946) | 0.917, 0.917 (mean 0.917) | **-0.029** | not run |
+| `recursive-data-structure-traversal` | 0.833, 0.833 (mean 0.833) | 1.000, 0.833 (mean 0.917) | **+0.083** | haiku 1.000 / sonnet 1.000 (gap +0.000) |
+| `refactor-with-contract-preservation` | 0.917, 0.917 (mean 0.917) | 0.917, 0.917 (mean 0.917) | **+0.000** | sonnet 1.000 (haiku run hit transient anthropic NetworkError; not retried) |
+
+**None of the 3 candidate workloads clear the ≥ 0.4 gate.** Total smoke spend: **$0.815** (budget $0.50-1.00). Three failure modes for the candidate set, all distinct:
+
+- **`subtle-bug-fix-with-test`** at temperature=0 with the leading prompt ("which file actually contains the bug? Walk through the dataflow") gets both models to the root cause: haiku correctly identifies `config_loader.load_config` as the bug site, edits it to do a deep merge, and pytest reports `4 passed`. The shape is sound (pre-fix: 2 failed / 2 passed; symptom-only fix would pass 3 / fail 1) but the prompt's strong root-cause hint compensates for haiku's typical symptom-patching tendency.
+- **`recursive-data-structure-traversal`** is the best candidate by gap (+0.083 heuristic). Both models produce correct tombstoned-aware shortest-chain solvers; the heuristic-score gap reflects haiku's slightly-busier tool-cycle pattern, not output-quality differentiation. Under hybrid both run to 1.000 — the LLM judge agrees both outputs are correct.
+- **`refactor-with-contract-preservation`** is the most surprising flat result: 6 call sites across 4 call shapes including `functools.partial` did NOT trip up haiku. Both models correctly update every caller and pass all 9 tests. The shape that was supposed to be hard for haiku (the `functools.partial("/admins")` site) is mechanical enough that haiku gets it right on temperature=0.
+
+### 13a-1 finding: the bottleneck is broader than benchmark-suite design
+
+This is the second time the §A3-rev6 hypothesis has been tested. §A3-rev6 ran the existing 7 workloads under improved K-NN math (`cost_weight=0.05`) and found cluster gaps too narrow to clear the confidence gate. 13a-1 ran 3 purpose-designed haiku-fail workloads at the model-output level and found the haiku-vs-sonnet gap is below the heuristic judge's resolution (0.833 / 0.917 / 1.000 clusters) and below the LLM judge's agreement floor (both at 1.000 in the hybrid spot-check).
+
+Three plausible interpretations, none of which 13a-1 can rule in or out:
+
+1. **Haiku-4.5 is genuinely strong enough on coding tasks of this shape that the per-task gap is small.** At temperature=0 with proper prompting and tool-use feedback, the model's coding-task ceiling is high. The workloads we designed are "haiku-fail" candidates by intuition, but on the actual model the gap doesn't materialize at the outcome level. This is the simplest explanation.
+2. **Temperature=0 collapses model variance.** Both models converge on the same solution given the same prompt; the per-task quality delta is a per-sample variance issue, not a per-model capability issue. Higher temperature might widen the gap but breaks reproducibility (`benchmark.md §6.2`).
+3. **The judges have insufficient outcome resolution.** Both heuristic and LLM judges score "did pytest pass" as 1.0, and "almost passed" doesn't appear in the rubric. A judge that scores partial-correctness (e.g., "haiku got 5 of 9 tests passing on first try" vs "sonnet got 9/9 first try") would surface differentiation that pass/fail substring matching erases.
+
+**What 13a-1 ships regardless of the negative smoke result:**
+
+- The `signal_strength: high | marginal` schema field on `workload.yaml` ([`benchmark.md §3.1`](../docs/specs/benchmark.md)).
+- The `--include-marginal` CLI flag on `scripts/benchmark.py` (default-strict; the older marginal workloads stay on disk for §A3 reruns but are out of the default suite).
+- 3 new workloads ([`benchmarks/workloads/subtle-bug-fix-with-test/`](workloads/subtle-bug-fix-with-test/), [`benchmarks/workloads/recursive-data-structure-traversal/`](workloads/recursive-data-structure-traversal/), [`benchmarks/workloads/refactor-with-contract-preservation/`](workloads/refactor-with-contract-preservation/)) with hermetic workspace fixtures, all marked `signal_strength: marginal` with embedded smoke-result documentation.
+- Updated `signal_strength: marginal` on all 8 existing workloads with the cross-run audit gaps documented inline.
+- The default `scripts/benchmark.py` run now emits a helpful error pointing to `--include-marginal` rather than running an empty suite silently.
+
+**Coordination implications for 13a-2 and 13b-1:**
+
+- **13a-2 (N-shot seeding):** the brief's argument was "seed the patterns DB with N=3-5 runs per (workload, model) to reduce noise." 13a-1's data says the workload-level mean is already near-deterministic at temperature=0 (the variance is between-judge-flag, not between-sample). N-shot averaging won't widen the gap if every shot scores 1.000 — it just makes the cluster aggregate more confident about the small gap. 13a-2 should treat its priors as "N-shot helps when judge variance > model variance" and validate that condition before spending the seeding budget.
+- **13b-1 (§A3-rev7):** the §A3-rev6 brief listed Path 1 (workload signal strengthening) as the next move. 13a-1 ruled out Path 1 as a sufficient single-knob fix. Two paths remain open: (a) **finer-grained outcome scoring** (e.g., a judge that returns 0.3-0.7 mid-scores based on partial-test-pass counts, not just substring detection); (b) **task domains haiku has known weakness in** (math/symbolic, long-context multi-document synthesis, rare API surfaces — none of which fit the "dev-loop" theme of the v1 suite but might be the only place a stable gap exists). Either way: routing-knob tuning ran its course at §A3-rev6.
+
+### Reproduce 13a-1
+
+```bash
+# Cross-run audit (no API calls — reads existing patterns DBs).
+uv run python - <<'PYEOF'
+import sqlite3, json
+from collections import defaultdict
+records = defaultdict(list)
+for rev in ("rev3", "rev4", "rev5", "rev6"):
+    db = sqlite3.connect(f"benchmarks/.runs/a3{rev}-patterns.db")
+    db.row_factory = sqlite3.Row
+    for r in db.execute("SELECT f.structural_json, o.primary_model, o.success_score_mean, o.success_score_count FROM fingerprints f JOIN outcomes o ON o.fingerprint_id=f.id"):
+        sj = json.loads(r["structural_json"])
+        wl = sj.get("workload_id", "(none)")
+        m = "haiku" if "haiku" in r["primary_model"] else "sonnet"
+        records[(wl, m)].append({"mean": r["success_score_mean"], "count": r["success_score_count"]})
+    db.close()
+for wl in sorted({k[0] for k in records}):
+    h, s = records.get((wl, "haiku"), []), records.get((wl, "sonnet"), [])
+    hm = sum(r["mean"]*r["count"] for r in h)/sum(r["count"] for r in h) if h else float("nan")
+    sm = sum(r["mean"]*r["count"] for r in s)/sum(r["count"] for r in s) if s else float("nan")
+    print(f"{wl:50s}  haiku {hm:.3f} sonnet {sm:.3f} gap {sm-hm:+.3f}")
+PYEOF
+
+# Smoke runs (~$0.82 real API; budget $0.50-1.00).
+mkdir -p benchmarks/.runs/smoke-13a-1
+for WL in subtle-bug-fix-with-test recursive-data-structure-traversal refactor-with-contract-preservation; do
+  for MODEL in haiku sonnet; do
+    for RUN in 1 2; do
+      SHORT=$(echo "$WL" | sed 's/subtle-bug-fix-with-test/subtle/; s/recursive-data-structure-traversal/recursive/; s/refactor-with-contract-preservation/refactor/')
+      DB="benchmarks/.runs/smoke-13a-1/${SHORT}-${MODEL}-${RUN}.db"
+      uv run python scripts/benchmark.py --workload "$WL" --model "$MODEL" \
+        --judge heuristic --db-path "$DB"
+    done
+  done
+done
+
+# Optional hybrid spot-check (~$0.20 more):
+for WL in recursive-data-structure-traversal refactor-with-contract-preservation; do
+  for MODEL in haiku sonnet; do
+    SHORT=$(echo "$WL" | sed 's/recursive-data-structure-traversal/recursive/; s/refactor-with-contract-preservation/refactor/')
+    DB="benchmarks/.runs/smoke-13a-1/${SHORT}-${MODEL}-hyb-1.db"
+    uv run python scripts/benchmark.py --workload "$WL" --model "$MODEL" \
+      --judge hybrid --judge-escalation-threshold 0.7 --db-path "$DB"
+  done
+done
+```
+

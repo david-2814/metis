@@ -4,6 +4,13 @@ description: >-
   Exercises read_file + edit_file in a 2-3 turn cycle representative of the
   most common dev-loop interaction.
 suite_version: 1
+# Per the §A3-rev6 cross-run audit (RESULTS.md §A3-rev6): haiku 0.930 /
+# sonnet 1.000 / gap +0.070 across §A3-rev3..rev6 patterns DBs — below
+# the 0.4 signal-strength threshold. Both models reliably pass; the
+# small gap is run-to-run variance, not a routing differentiator.
+# Kept on disk as the canonical small dev-loop shape (read + edit +
+# verify); excluded from the default v2 suite.
+signal_strength: marginal
 turns:
   - prompt: >-
       Read slug.py and test_slug.py in this workspace. The slug module has a

@@ -251,8 +251,7 @@ async def user_export(request: Request) -> Response:
     # Empty / mismatched window — return 400 the same way the other
     # endpoints do.
     has_window = (
-        request.query_params.get("from") is not None
-        or request.query_params.get("to") is not None
+        request.query_params.get("from") is not None or request.query_params.get("to") is not None
     )
     window: TimeWindow | None = _resolve_window_from_query(request) if has_window else None
 

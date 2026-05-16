@@ -1,0 +1,59 @@
+name: subtle-bug-fix-with-test
+description: >-
+  Root-cause-vs-symptom bug fix across three files. The visible symptom
+  is a `KeyError: 'port'` raised by `db_connector.connect()` when the
+  user supplies `user_config.json` (which sets `database.host` only).
+  The naive fix patches `db_connector.connect` to use `.get(..., DEFAULT)`
+  at the use-site — that makes `test_integration.py` pass but leaves
+  `test_loader.py`'s three "config_loader must deep-merge" assertions
+  failing. The root-cause fix is in `config_loader.load_config`:
+  replace the shallow `{**DEFAULTS, **user}` merge with a recursive
+  per-section merge so partial user sections inherit the missing keys
+  from DEFAULTS. Verification is pytest pass/fail across BOTH test
+  files (4 tests total). Smaller models tend to patch the symptom at
+  the failing-test site (passing only test_integration.py); stronger
+  models trace the failure back to the loader and pass all 4 tests.
+suite_version: 1
+# 13a-1 smoke (2026-05-15, 4 runs: 2 haiku + 2 sonnet under
+# --judge heuristic, plus calib at --judge hybrid): haiku
+# mean 0.946 (0.975, 0.917) / sonnet mean 0.917 (0.917, 0.917)
+# → gap **-0.029** (haiku slightly higher). Both models reliably
+# identify the root cause in config_loader.load_config and report
+# "4 passed". The shape works (pre-fix: 2 failed / 2 passed, with
+# the symptom-fix passing only test_integration) but at
+# temperature=0 + tool-cycle iteration both models converge on the
+# correct root-cause fix. Kept on disk for future iteration (e.g.
+# higher temperature, smaller models in the candidate pool, or a
+# deeper-dataflow variant that haiku reliably misroutes).
+# Documented in RESULTS.md §13a-1.
+signal_strength: marginal
+turns:
+  - prompt: >-
+      Read every `.py` file and `user_config.json` in this workspace.
+      Then run `python -m pytest -v` from the workspace root and report
+      the exact final summary line. Don't make any edits yet.
+    expect:
+      min_tool_calls: 4
+      max_tool_calls: 12
+  - prompt: >-
+      Diagnose the failure. You'll see at least one test fail. The
+      question is: which file actually contains the bug? Walk through
+      the dataflow from `load_config` to `db_connector.connect` and
+      identify the single root cause that explains every failure (not
+      just the most recently raised one). Then fix the root cause —
+      the smallest change that makes every test in this workspace pass.
+      You may edit any file under the workspace root. After your fix,
+      run `python -m pytest -v` again and report the exact final
+      summary line. If anything still fails, iterate. Both
+      `test_integration.py` and `test_loader.py` must pass.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 20
+      contains_substring: "4 passed"
+expect:
+  max_total_cost_usd: 0.50
+  min_llm_calls: 2
+  max_hard_failures: 0
+evaluate:
+  rubric: heuristic
+  expect_substring_in_final_response: "4 passed"

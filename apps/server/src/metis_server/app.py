@@ -105,6 +105,10 @@ def build_app(runtime: ChatRuntime) -> Starlette:
     metrics = MetricsCollector(
         bus=runtime.bus,
         session_count_getter=lambda: len(runtime.session_store.list_sessions()),
+        # docs/operations/trace-performance.md §WAL: gauge on the trace
+        # DB's WAL file size. Operators alert on sustained growth past
+        # 2-3x the auto-checkpoint threshold (default 32 MB).
+        trace_wal_bytes_getter=lambda: runtime.trace.wal_size_bytes(),
     )
     metrics.attach()
     state = _AppState(

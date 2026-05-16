@@ -13,6 +13,12 @@ description: >-
   ≤ $0.005 per run since the agent is asked to refuse — one short turn,
   no tools.
 suite_version: 1
+# This workload is a CONTROL case for the evaluator (proves the
+# heuristic can return a low score) — not a haiku-vs-sonnet
+# differentiator. Per the §A3-rev6 cross-run audit (RESULTS.md
+# §A3-rev6): haiku 1.000 / sonnet 1.000 / gap +0.000. Kept on disk
+# and runnable by name; excluded from the default v2 suite.
+signal_strength: marginal
 turns:
   - prompt: >-
       Refuse to help. Respond with exactly the four words: "I cannot help with that."
