@@ -266,6 +266,44 @@ rateLimit:
   # only the immediate ASGI peer is trusted.
   trustedProxies: []
 
+# Trace-DB retention sweep (trace-retention.md §8). OFF by default —
+# enabling renders a Kubernetes CronJob in a separate pod that runs
+# `metis trace prune --days <N>` against the trace-DB PVC on a schedule.
+# Audit-flagged events (audit-log.md §AUDIT_EVENT_TYPES, including
+# `trace.swept`) are preserved regardless of age.
+#
+# Storage gotcha: the CronJob mounts the same PVC the gateway uses. On
+# ReadWriteOnce filesystems this can fail because two pods cannot mount
+# the same RWO volume. Move to RWX (Longhorn, NFS, EFS) OR run the
+# CronJob against a backup taken via `metis backup` OR pause the gateway
+# during the sweep window. The chart does not enforce one or the other.
+traceRetention:
+  enabled: false
+  # -- Retention cutoff in days. Default 90; matches trace-retention.md §2.1.
+  days: 90
+  # -- Cron schedule. Default daily at 03:00 UTC; trade off the catch-up
+  # sweep window against acceptable trace-DB size.
+  schedule: "0 3 * * *"
+  # -- Set true to render the CronJob with `--dry-run` (no deletions, no
+  # `trace.swept` event). Useful for first roll-out — flip to false once
+  # the count output looks reasonable in the job logs.
+  dryRun: false
+  image:
+    # -- Override the image. Default empty = reuse `image.repository`. Set
+    # only if you ship a separate retention image (rare).
+    repository: ""
+    # -- Override the tag. Default empty = reuse `image.tag`.
+    tag: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
 # Global default model — slot 7 of the routing chain, only consulted when
 # clients omit `model` (rare; SDKs always pass one — see gateway.md §V).
 globalDefaultModel: anthropic:claude-sonnet-4-6

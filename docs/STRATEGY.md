@@ -1,6 +1,6 @@
 # Strategy
 
-**Last updated:** 2026-05-13
+**Last updated:** 2026-05-15
 **Status:** Working document. Strategic decisions and open questions that aren't visible from the code or the technical specs. Update when a decision lands.
 
 This doc captures the **why** behind the project — the kind of context an AI agent walking into the codebase cold can't infer from `docs/project-overview.md` (which describes the *shape* of the system) or the per-component specs (which describe the *contracts*). Read this before recommending scope changes, priority shifts, or architectural pivots.
@@ -114,7 +114,61 @@ numbers should quote both Pass C's flat `savings_pct=62.0%` (from
 §A3-rev3, the canonical inversion datapoint) *and* the sonnet-on-regex
 inversion (the two are reconcilable: the savings gap is the sonnet
 pick). Delegation now has its own validated GTM datapoint: 8.3%
-cost-per-quality improvement on workloads designed for fan-out.
+cost-per-quality improvement on workloads designed for fan-out
+(§A3-rev5), widening to 26.1% in §A3-rev6.
+
+**§A3-rev6 follow-up (2026-05-15):**
+[`benchmarks/RESULTS.md §A3-rev6`](../benchmarks/RESULTS.md) re-ran
+the 4-pass protocol after Wave 12 dropped the cost_weight default
+from 0.1 → 0.05 ([`packages/metis-core/src/metis_core/routing/policy.py:76`](../packages/metis-core/src/metis_core/routing/policy.py#L76)).
+**Q1 outcome: cost_weight=0.05 is mechanically correct (the cluster
+math now flips haiku → sonnet on two specific Pass C turns, exactly
+where the §A3-rev5 brief's simulation predicted) but the resulting
+confidence values 0.006–0.009 sit *below* the `min_confidence=0.05`
+gate.** Pass C produced **0 sonnet picks across 18 turns** (vs §A3-rev3's
+1 of 14). The cluster aggregate on multi-file-refactor turn 2 was haiku
+0.810 / sonnet 0.817 (sonnet ahead by 0.007, conf 0.009 → gated off);
+on regex turn 2 haiku 0.921 / sonnet 0.926 (sonnet ahead by 0.005,
+conf 0.006 → gated off). The Wave 12 fix worked exactly as designed;
+the inversion margins are just too narrow to clear a sensible
+confidence gate. **Q2 outcome: delegation savings hold and widen.**
+Pass D: sonnet planner + haiku workers at $0.227 / quality 0.91 =
+$0.249/quality-unit; Pass D-baseline (sonnet-only-no-delegation) at
+$0.233 / quality 0.69 = $0.338/quality-unit. **26.1% better
+cost-per-quality** (vs §A3-rev5's 8.3%), driven by Pass D workers
+running fewer/shorter calls this run plus the baseline staying flat
+at 0.69 (workload's `min_delegate_calls=3` assertion failing).
+**The savings posture stays at the §A3-rev3 N=1 calibration on the
+model-selection lever**, with §A3-rev6 confirming that the lever's
+mechanical chain is fully wired and the remaining blocker is
+benchmark-suite signal strength, not routing-knob tuning. Total
+experiment spend: $1.56.
+
+**At this point in the A3 series (six iterations deep), the next
+move is benchmark-suite work, not routing-knob work.** The K-NN
+correctly aggregates cross-model outcome history end-to-end. The
+benchmark suite's haiku-vs-sonnet quality delta on most workloads is
+within run-to-run variance (haiku regex 0.75 vs sonnet regex 0.74 in
+Pass A/B of §A3-rev6; haiku multi-turn-refactor 1.00 vs sonnet 0.85
+*in favor of* haiku on a workload §A3-rev3 had going the other way).
+Three candidate Wave-13 directions named in [§A3-rev6 Q1 finding](../benchmarks/RESULTS.md):
+(1) workload signal strengthening — replace marginal workloads with
+ones where haiku stably fails (quality 0.3–0.5) and sonnet stably
+passes (0.9+); (2) N-shot per workload — 3-5 samples per (workload,
+model) in seed passes to reduce the variance the K-NN has to
+overcome; (3) per-turn-text fingerprinting on top of workload-tag —
+prevent turn-1 outcomes from averaging into turn-2 reads (was ruled
+out under cost_weight=0.1, may be worth reconsidering at 0.05).
+
+**GTM headline posture (post-§A3-rev6).** Unchanged from §A3-rev5
+for the model-selection lever (§A3-rev3 N=1 stands as the canonical
+proof-of-concept; generalization is gated on benchmark-suite signal
+strength, not routing). Delegation's headline number updates: §A3-rev6
+Pass D shows **26.1% better cost-per-quality** on the delegation
+workload (vs §A3-rev5's 8.3%); both numbers are reproducible, but
+they bracket a meaningful range — the headline should quote the
+range (8.3% – 26.1% across two runs) rather than the single newer
+number, because both runs reflect real workload variance.
 
 ## 2. Buyer ≠ user
 
@@ -127,7 +181,7 @@ This is a B2B product, not a personal tool. Consequences:
 - **Multi-user from day one is real**, not optional. The HTTP/WS surface that's already shipping is load-bearing for the buyer story.
 - **Team-level cost attribution** matters. Per-dev, per-project, per-task-class rollups need to land before any GTM conversation.
 - **Policy enforcement, not just policy explanation.** The routing engine today is built for *explainability to the user* (full chain trace per turn). A buyer wants *enforcement* — "no one in marketing can use Opus" — which is a different mode the routing engine doesn't natively support.
-- **Audit and compliance posture.** Trace events are the raw material; aggregation/retention/redaction policies for buyer-facing artifacts are not yet designed.
+- **Audit and compliance posture.** Wave 12 ships the buyer-facing artifacts: [`docs/operations/soc2-readiness.md`](operations/soc2-readiness.md) is the SOC2 Trust Service Criteria gap audit (TSC categories CC1–CC9, A1, C1, PI1, P1–P8 mapped against shipped + buyer-responsibility evidence; honest about CC8 change management, third-party pentest, vendor review, and SOC2 auditor-engagement gaps), and the Wave 12 spec triad closes the retention / redaction / forget gaps named in [`docs/specs/multi-user.md §7.4`](specs/multi-user.md): [`audit-log.md`](specs/audit-log.md) (9-event v1 subset + `metis audit export` JSONL/CSV), [`trace-retention.md`](specs/trace-retention.md) (90-day default sweep with audit-event exemption + `metis trace prune` + helm CronJob), [`redaction.md`](specs/redaction.md) (4-mode `EventRedactor` + `metis user forget` Article 17 pseudonymization-as-erasure). [`docs/operations/compliance-overview.md`](operations/compliance-overview.md) is the one-page buyer-conversation index. Type 1 readiness target is Q3 2026 contingent on a buyer underwriting the audit fee; Type 2 Q4 2026 / Q1 2027.
 - **Deployment story.** `uv run metis serve` on a dev's laptop isn't the install. The product needs a server-in-a-box (Docker, helm, or SaaS) — TBD which.
 - **Proof of savings.** This is the artifact that closes the deal. No benchmark workload or before/after measurement exists yet. **This is currently the biggest gap between "the architecture should work" and "we can show it works."**
 
@@ -191,6 +245,7 @@ Implication: the moat is execution speed + opinionated defaults + the FTS5/finge
 | 2026-05-14 | Skill curator specced; moat reframed as four legs | New spec [`docs/specs/skill-curator.md`](specs/skill-curator.md) (~620 lines, pattern lifted from hermes-agent's `agent/curator.py`). Periodic auxiliary-model maintenance of agent-authored skills only: six actions (pin / unpin / archive / restore / consolidate / edit); never auto-deletes (archive is `mv` to `skills-archive/`, restoration is `mv` back); user-authored skills are read-only (touchability gated by `skill.created.source ∈ {auto_generated, curator_generated}`); pinned bypasses every auto-transition; no SKILL.md frontmatter changes (state in sidecar JSON, preserves agentskills.io conformance); bounded spend via shared `BudgetTracker` (curator caps `$0.50/run`, `$1.00/day` independent of evaluator caps); one new `skill.curated` event + two run-boundary events. Defaults match Hermes empirics: weekly interval, 30-day stale soft annotation, 90-day archive hard threshold. **Implementation is Phase 4 (Wave 17), gated on Phase 2.5 agent-authored skills (`skill_save` tool + `skill.created(source="auto_generated")` event) landing first — that prereq is itself not yet planned and is also not GA-blocking.** §4 reframed: the moat now lists four legs (added "auto-derived skill curation"); legs 3 and 4 compose (pattern learning picks the right model per task class; skill curation keeps the skill library that informs those tasks pruned and current). No code changes in this entry — spec-only, AGENTS.md / CHANGES.md updated. |
 | 2026-05-15 | §A3-rev4: v2 wiring partial, inversion didn't generalize; eval-to-store outcome bug closed | [`benchmarks/RESULTS.md §A3-rev4`](../benchmarks/RESULTS.md) — 4-pass protocol with `PatternConfig.fingerprint_version="v2"` + `embedding_provider="openai:text-embedding-3-small"` plus a 5th pass with `--delegation-policy sonnet-planner-haiku-worker` on `multi-turn-refactor`. **Pass C produced 0 pattern-slot sonnet picks** (vs §A3-rev3's 1 on regex turn 2). Root cause: v2 wiring stores STRUCTURAL fingerprints with the embedding cache warmed *out-of-band* after `store.record()`, so routing-time K-NN falls back to v1 weighted-Jaccard via mixed-version detection. The "v2 cluster-tightening A/B" deferred Wave-10 item remains the real Q1 gate. **Pass D (delegation)** didn't fire because slot 4 picked haiku (which lacks `can_delegate=True`); routing-then-delegate composition needs the planner forced via `--model sonnet` to test Q2 end-to-end. **Two correctness fixes landed alongside**: (i) `shutdown_runtime` now drains *before* detaching subscribers ([apps/cli/src/metis_cli/runtime.py](../apps/cli/src/metis_cli/runtime.py)), closing the long-standing §A3-rev3 `architectural-explanation-without-hallucination` `success_score_count=0` caveat (architectural now accumulates both haiku and sonnet samples cleanly); (ii) `EventBus.stop()` drains before setting `_stopping=True` ([packages/metis-core/src/metis_core/events/bus.py](../packages/metis-core/src/metis_core/events/bus.py)), eliminating a deadlock when unregister events sat in queue at stop time. New benchmark flags `--fingerprint-version`, `--embedding-provider`, `--delegation-policy` ship in [scripts/benchmark.py](../scripts/benchmark.py). The savings posture stays at §A3-rev3's calibration — v2 has not yet extended the differentiation. Total experiment spend: $1.30. |
 | 2026-05-15 | §A3-rev5: v2 HYBRID lands end-to-end, inversion still doesn't generalize; delegation Q2 improves cost-per-quality 8.3% | [`benchmarks/RESULTS.md §A3-rev5`](../benchmarks/RESULTS.md) — 4-pass protocol re-run after Wave 11 closed both §A3-rev4 blockers. **11b-1** (recording-side HYBRID): turn-start `fingerprint_inputs_hook` precomputes the embedding so `compute_fingerprint` produces `kind='hybrid'` rows at `store.record()` ([apps/cli/src/metis_cli/runtime.py:284-318](../apps/cli/src/metis_cli/runtime.py#L284-L318), [packages/metis-core/tests/patterns/test_v2_recording_wiring.py](../packages/metis-core/tests/patterns/test_v2_recording_wiring.py)) — verified: 18 of 18 fingerprints in `a3rev5-patterns.db` are HYBRID (vs §A3-rev4's 70 of 70 STRUCTURAL). **11b-2** (delegation workload): [`benchmarks/workloads/multi-step-with-delegation/`](../benchmarks/workloads/multi-step-with-delegation/) ships with `--model sonnet` forcing the planner non-None + `min_delegate_calls: 3` assertion. **Q1: Pass C produces 0 pattern-slot sonnet picks across 17 routed turns** — v2 K-NN actually fires at routing time (every `pattern.matched` reports `fingerprint_kind="hybrid"`, no v1 fallback) but per-fingerprint clusters are dominated by haiku's 2-3× sample-size advantage under `cost_weight=0.1`. Cross-pass aggregate has the right signal (sonnet ahead on 2 of 7 workloads, including regex +0.117) but K-NN sees larger haiku populations per cluster. The §A3-rev3 regex inversion did not reproduce. Pass C quality sum 5.20 (haiku-only Pass A 5.72, sonnet-only Pass B 5.98); regex Pass C 0.19 (rubric fail under haiku) where Pass B sonnet scored 1.00. v2 HYBRID embeddings are a *necessary* foundation for further cluster-tightening (per-prompt fingerprint partitioning, or `cost_weight` reduction below 0.1) but not sufficient. **Q2: delegation produces 8.3% better cost-per-quality on a workload designed to exercise it.** Pass D: 3 `delegate.started` events fire reliably; sonnet planner + haiku workers at $0.221 / quality 0.91 = **$0.243/quality-unit**, vs sonnet-only-no-delegation at $0.183 / quality 0.69 = $0.265/quality-unit. The 23.9% "savings_pct" headline is the analytics counterfactual (worker tokens repriced at sonnet rates); absolute delegation cost is higher than sonnet-only-no-delegation but quality is higher too. First end-to-end demonstration of delegation moving cost-per-quality in any A3 series. The savings posture stays at §A3-rev3 for the model-selection lever; delegation now has its own validated GTM datapoint. Total experiment spend: $1.45. |
+| 2026-05-15 | §A3-rev6: cost_weight=0.05 mechanically correct, inversion still doesn't generalize; delegation Q2 widens to 26.1% | [`benchmarks/RESULTS.md §A3-rev6`](../benchmarks/RESULTS.md) — 4-pass protocol re-run after Wave 12 dropped the `PatternConfig.cost_weight` default from `0.1` → `0.05` ([`packages/metis-core/src/metis_core/routing/policy.py:76`](../packages/metis-core/src/metis_core/routing/policy.py#L76)). **Q1: Pass C produces 0 pattern-slot sonnet picks across 18 routed turns.** The cluster math behaves *exactly* as the §A3-rev5 brief's direct simulation predicted: cw=0.05 flips the cluster aggregate haiku → sonnet on two specific turns where sonnet has a tiny quality edge (multi-file-refactor turn 2: haiku 0.810 / sonnet 0.817; regex turn 2: haiku 0.921 / sonnet 0.926). But the resulting confidence values (0.009 and 0.006 respectively) sit *below* the `min_confidence=0.05` gate, so slot 4 gates off → slot 7 → haiku. The §A3-rev3 inversion did not reproduce. **The diagnosis at six A3 iterations:** all previously-identified routing-engine mechanical blockers (workload-tag partitioning, cost_weight floor, grounding-check rubric, min_confidence reduction, v2 HYBRID recording) are live and verified at both the per-unit-test and live-run layers. The remaining bottleneck is benchmark-suite signal strength — when sonnet outperforms haiku on a workload, the per-turn quality delta is typically 0.05–0.15, narrowing to 0.01–0.05 after K-NN aggregation across same-workload neighbors, producing confidence right at the noise-protective gate's edge. Pass A regex haiku 0.75 vs Pass B sonnet 0.74 means there's effectively no signal to invert on for regex; Pass A multi-turn-refactor haiku 1.00 vs Pass B sonnet 0.85 actively rewards haiku, the *opposite* of §A3-rev3's direction. Next-move candidates named in §A3-rev6 Q1 finding: (1) workload signal strengthening (replace marginal workloads with ones where haiku stably fails 0.3–0.5 / sonnet stably passes 0.9+); (2) N-shot per workload to reduce the variance the K-NN has to overcome; (3) per-turn-text fingerprinting on top of workload-tag (ruled out under cw=0.1, may be worth reconsidering at cw=0.05). **§A3-rev6 ruled out:** the cost_weight halving as a sufficient unblock for generalized inversion. The model-selection savings posture stays at §A3-rev3's N=1 calibration; §A3-rev6 confirms the mechanical chain is fully wired and reframes the remaining work as benchmark-suite, not routing-knob. **Q2: delegation widens to 26.1% better cost-per-quality** (vs §A3-rev5's 8.3%) on the same `multi-step-with-delegation` workload — sonnet planner + haiku workers at $0.227 / quality 0.91 = **$0.249/quality-unit**, vs sonnet-only-no-delegation at $0.233 / quality 0.69 = $0.338/quality-unit. The widening is dominated by Pass D workers running fewer/shorter calls this run (6 calls vs §A3-rev5's 9) while the baseline stays flat at 0.69 (`min_delegate_calls=3` assertion failing). The 12.7% "savings_pct" headline is the analytics counterfactual (smaller than §A3-rev5's 23.9%); the cost-per-quality story is the load-bearing one. GTM headline for delegation should quote the 8.3% – 26.1% range across two reproducible runs, not a single point. Total experiment spend: $1.5647. |
 
 ## 6. Open questions (decisions deferred)
 

@@ -246,6 +246,154 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
 
+    trace = sub.add_parser(
+        "trace",
+        help="Trace-DB administrative operations (prune; future: stats / size).",
+    )
+    trace_sub = trace.add_subparsers(dest="trace_command", required=True)
+
+    prune = trace_sub.add_parser(
+        "prune",
+        help=(
+            "Delete trace events older than --days (default 90); preserves "
+            "audit-flagged events. CLI defaults to apply; pass --dry-run "
+            "to preview. See docs/specs/trace-retention.md."
+        ),
+    )
+    prune.add_argument(
+        "--days",
+        type=int,
+        default=90,
+        help="Retention cutoff in days. Default: 90.",
+    )
+    prune.add_argument(
+        "--db-path",
+        help="Trace DB path. Default: ~/.metis/metis.db",
+        default=None,
+    )
+    prune.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report counts without deleting any rows (no trace.swept event emitted).",
+    )
+
+    audit = sub.add_parser(
+        "audit",
+        help="Audit-log operations (export the audit subset for SIEM ingest).",
+    )
+    audit_sub = audit.add_subparsers(dest="audit_command", required=True)
+    audit_export = audit_sub.add_parser(
+        "export",
+        help="Export audit events in a window to JSONL or CSV (audit-log.md §9).",
+    )
+    audit_export.add_argument("dest", help="Destination path for the export file.")
+    audit_export.add_argument(
+        "--db-path",
+        help="Source trace DB. Default: ~/.metis/metis.db",
+        default=None,
+    )
+    audit_export.add_argument(
+        "--format",
+        choices=("jsonl", "csv"),
+        default="jsonl",
+        help="Export format. Default: jsonl.",
+    )
+    audit_export.add_argument(
+        "--since",
+        default=None,
+        help="ISO 8601 UTC start of window (inclusive). Default: 7 days ago.",
+    )
+    audit_export.add_argument(
+        "--until",
+        default=None,
+        help="ISO 8601 UTC end of window (exclusive). Default: now.",
+    )
+    audit_export.add_argument(
+        "--event-type",
+        action="append",
+        default=None,
+        dest="event_types",
+        help="Restrict the export to a specific audit event type (repeat for multiple).",
+    )
+    audit_export.add_argument(
+        "--redact",
+        choices=("passthrough", "pseudonymize", "redact_private", "aggregate_only"),
+        default="passthrough",
+        help=(
+            "Redaction mode (redaction.md §2). `pseudonymize` hashes "
+            "identity fields; `redact_private` also strips PRIVATE-tier "
+            "text; `aggregate_only` produces a single JSON rollup."
+        ),
+    )
+
+    analytics = sub.add_parser(
+        "analytics",
+        help="Analytics admin subcommands (user-export, ...).",
+    )
+    analytics_sub = analytics.add_subparsers(dest="analytics_command", required=True)
+
+    user_export = analytics_sub.add_parser(
+        "user-export",
+        help=(
+            "Stream every trace event stamped with `user_id` as JSONL "
+            "(GDPR / CCPA portability — analytics-api.md §4.10.1)."
+        ),
+    )
+    user_export.add_argument(
+        "user_id",
+        help="Stable principal id whose events should be exported.",
+    )
+    user_export.add_argument(
+        "--from",
+        dest="from_",
+        default=None,
+        help="ISO 8601 UTC start of window (inclusive). Omit for all-time.",
+    )
+    user_export.add_argument(
+        "--to",
+        default=None,
+        help="ISO 8601 UTC end of window (exclusive). Omit for all-time.",
+    )
+    user_export.add_argument(
+        "--out",
+        default=None,
+        help="Output file path. Omit to stream to stdout (suitable for | jq).",
+    )
+    user_export.add_argument(
+        "--db-path",
+        default=None,
+        help="Trace DB path. Default: ~/.metis/metis.db",
+    )
+
+    user = sub.add_parser(
+        "user",
+        help="User-admin subcommands (forget, ...).",
+    )
+    user_sub = user.add_subparsers(dest="user_command", required=True)
+
+    user_forget = user_sub.add_parser(
+        "forget",
+        help=(
+            "Pseudonymize every trace event stamped with `user_id` "
+            "(GDPR / CCPA right-to-be-forgotten — analytics-api.md §4.10.2)."
+        ),
+    )
+    user_forget.add_argument(
+        "user_id",
+        help="Stable principal id to forget.",
+    )
+    user_forget.add_argument(
+        "--confirm",
+        action="store_true",
+        default=False,
+        help="Required. Without this flag the command refuses to act.",
+    )
+    user_forget.add_argument(
+        "--db-path",
+        default=None,
+        help="Trace DB path. Default: ~/.metis/metis.db",
+    )
+
     restore = sub.add_parser(
         "restore",
         help="Restore a trace-DB backup over the live DB (schema-version checked).",
@@ -330,6 +478,48 @@ def main(argv: list[str] | None = None) -> int:
             from metis_cli.backup import run_restore_command
 
             return run_restore_command(source=args.source, db_path=args.db_path, force=args.force)
+        if args.command == "analytics":
+            if args.analytics_command == "user-export":
+                from metis_cli.user import run_user_export_command
+
+                return run_user_export_command(
+                    user_id=args.user_id,
+                    from_=args.from_,
+                    to=args.to,
+                    out=args.out,
+                    db_path=args.db_path,
+                )
+        if args.command == "user":
+            if args.user_command == "forget":
+                from metis_cli.user import run_user_forget_command
+
+                return run_user_forget_command(
+                    user_id=args.user_id,
+                    confirm=args.confirm,
+                    db_path=args.db_path,
+                )
+        if args.command == "audit":
+            from metis_cli.audit import run_audit_export_command
+
+            if args.audit_command == "export":
+                return run_audit_export_command(
+                    dest=args.dest,
+                    db_path=args.db_path,
+                    format=args.format,
+                    since=args.since,
+                    until=args.until,
+                    event_types=args.event_types,
+                    redact=args.redact,
+                )
+        if args.command == "trace":
+            from metis_cli.trace_admin import run_trace_prune_command
+
+            if args.trace_command == "prune":
+                return run_trace_prune_command(
+                    db_path=args.db_path,
+                    days=args.days,
+                    dry_run=args.dry_run,
+                )
         if args.command == "gateway":
             if args.gateway_command == "issue-key":
                 from pathlib import Path

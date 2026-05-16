@@ -2,7 +2,7 @@
 
 A local-first AI dev agent — provider-agnostic, self-improving, and cost-aware.
 
-> **Status:** Phase 1 + Phase 2 + Phase 2.5 shipped; Phase 3 in flight — **ready for review whether to promote to "Phase 3 shipped."** The three Phase-3 wedges (transparent HTTP gateway, multi-user identity / per-team cost attribution, evaluator) are live, and the model-selection differentiator inverted on its first end-to-end demonstration ([`benchmarks/RESULTS.md §A3-rev3`](benchmarks/RESULTS.md): Pass C picks sonnet on the one hard turn of `regex-with-edge-cases`, quality 5.55 vs Pass A 5.16 at $0.0477/quality between haiku-only $0.0383 and sonnet-only $0.1176). Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), `metis serve` (HTTP/WebSocket), `metis gateway` (transparent provider-shape proxy) all run. 1405 tests passing.
+> **Status:** Phase 1 + Phase 2 + Phase 2.5 shipped; Phase 3 in flight — **ready for review whether to promote to "Phase 3 shipped."** The three Phase-3 wedges (transparent HTTP gateway, multi-user identity / per-team cost attribution, evaluator) are live, and the model-selection differentiator inverted on its first end-to-end demonstration ([`benchmarks/RESULTS.md §A3-rev3`](benchmarks/RESULTS.md): Pass C picks sonnet on the one hard turn of `regex-with-edge-cases`, quality 5.55 vs Pass A 5.16 at $0.0477/quality between haiku-only $0.0383 and sonnet-only $0.1176). Three providers (Anthropic / OpenAI / OpenRouter) drive end-to-end turns with streaming, tool use, bounded memory, cost tracking, event tracing, SQLite-persisted sessions. `metis chat` (line REPL), `metis tui` (Textual TUI), `metis serve` (HTTP/WebSocket), `metis gateway` (transparent provider-shape proxy) all run. 1486 tests passing.
 
 ---
 
@@ -73,6 +73,7 @@ sit under [`docs/operations/`](docs/operations/):
 - [`incident-response.md`](docs/operations/incident-response.md) — SEV1-SEV4 criteria, on-call alert paths (PagerDuty / Opsgenie / email), first-hour playbook, post-mortem template, and per-failure-mode playbooks for upstream LLM outage, trace-DB corruption, gateway-key compromise, and quota runaway.
 - [`status-page.md`](docs/operations/status-page.md) — two-tier recipe (external UptimeRobot / Statuspage.io / Better Stack against `/healthz`, plus self-hosted Uptime Kuma in-cluster), publish/redact guidelines, and incident comm templates.
 - [`sla-template.md`](docs/operations/sla-template.md) — 99.5% single-region template the buyer can customize for their own downstream-user SLA: service-credit math, exclusions, force-majeure stub (legal-counsel-deferred).
+- [`compliance-overview.md`](docs/operations/compliance-overview.md) + [`soc2-readiness.md`](docs/operations/soc2-readiness.md) — one-page buyer-conversation index and the full SOC2 Trust Service Criteria gap audit (Security CC1-CC9, Availability A1, Confidentiality C1, Processing Integrity PI1, Privacy P1-P8) mapped against shipped + buyer-responsibility evidence. Honest about gaps (CC8 change management, third-party pentest, vendor review, SOC2 auditor); Type 1 readiness target Q3 2026 contingent on buyer underwriting the audit cost.
 
 ## What it is
 
@@ -138,7 +139,7 @@ Key design choices:
 - **HTTP/WebSocket server.** Starlette + uvicorn ASGI app. REST for sessions/turns/messages/models/health; WebSocket `/sessions/{id}/stream` with single-use attach tokens, snapshot+live replay, filter presets, cancel-via-WS, ping/pong. Loopback-only bind in v1.
 - **Three client surfaces.** `metis chat` (line REPL), `metis tui` (Textual app), `metis serve` (HTTP/WS server for external clients). Slash commands `/model`, `/cost`, `/models`, `/help`. Per-message `@alias` syntax.
 - **Cost in real time.** Per-turn input/output/cached token costs computed by core (not parroted from provider), `Decimal` math, versioned for retroactive re-pricing. OpenRouter prices overlaid at session start.
-- **729 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations.
+- **1486 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations.
 
 ## What's NOT built yet (next-up)
 

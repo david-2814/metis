@@ -324,28 +324,35 @@ def test_pattern_cost_weight_out_of_range(registry):
     _expect_error("pattern: { cost_weight: 1.5 }\n", registry, match="cost_weight must be in")
 
 
-def test_pattern_cost_weight_default_is_zero_point_one(registry):
+def test_pattern_cost_weight_default_is_zero_point_zero_five(registry):
     # Policy file with no `pattern` block at all → dataclass default applies.
     # The default was lowered from 0.3 → 0.1 on 2026-05-14 per the §A3-rev
-    # benchmark finding (routing-engine.md §5.5 "Default rationale").
+    # benchmark finding, then from 0.1 → 0.05 on 2026-05-15 per the §A3-rev5
+    # finding (routing-engine.md §5.5 "Default rationale").
     policy = parse_policy_text("schema_version: 1\n", registry)
-    assert policy.pattern.cost_weight == 0.1
+    assert policy.pattern.cost_weight == 0.05
 
     # Same default when `pattern:` is present but `cost_weight` is omitted.
     policy_partial = parse_policy_text(
         "schema_version: 1\npattern: { min_confidence: 0.4 }\n", registry
     )
-    assert policy_partial.pattern.cost_weight == 0.1
+    assert policy_partial.pattern.cost_weight == 0.05
     assert policy_partial.pattern.min_confidence == 0.4
 
 
-def test_pattern_cost_weight_explicit_override_preserves_old_default(registry):
-    # The 0.3 → 0.1 default change is opt-out: a workspace that depended on
-    # the prior cost-bias restates `cost_weight: 0.3` in routing.yaml and
-    # gets the old behavior back. This guarantees explicit overrides keep
-    # working after the default migration.
-    policy = parse_policy_text("schema_version: 1\npattern: { cost_weight: 0.3 }\n", registry)
-    assert policy.pattern.cost_weight == 0.3
+def test_pattern_cost_weight_explicit_override_preserves_old_defaults(registry):
+    # The 0.3 → 0.1 → 0.05 default migration is opt-out: a workspace that
+    # depended on either prior default restates `cost_weight: 0.3` (or 0.1)
+    # in routing.yaml and gets that behavior back. This guarantees explicit
+    # overrides keep working across both default migrations.
+    policy_legacy = parse_policy_text(
+        "schema_version: 1\npattern: { cost_weight: 0.3 }\n", registry
+    )
+    assert policy_legacy.pattern.cost_weight == 0.3
+    policy_intermediate = parse_policy_text(
+        "schema_version: 1\npattern: { cost_weight: 0.1 }\n", registry
+    )
+    assert policy_intermediate.pattern.cost_weight == 0.1
 
 
 def test_pattern_min_confidence_default_is_zero_point_zero_five(registry):

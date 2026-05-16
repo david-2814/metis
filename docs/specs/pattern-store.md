@@ -654,7 +654,7 @@ The routing engine's pattern policy, evaluating slot 4, calls:
 ```python
 recommendation = pattern_store.recommend(
     fingerprint = compute_fingerprint(turn_context),
-    cost_weight = workspace_config.pattern.cost_weight,    # default 0.1
+    cost_weight = workspace_config.pattern.cost_weight,    # default 0.05
     min_confidence = workspace_config.pattern.min_confidence,  # default 0.05
     min_sample_size = workspace_config.pattern.min_sample_size,  # default 5
     k = 10,
@@ -1321,7 +1321,7 @@ Example workspace config:
 
 ```yaml
 pattern:
-  cost_weight: 0.1              # default 0.1 since 2026-05-14 (§A3-rev)
+  cost_weight: 0.05             # default 0.05 since 2026-05-15 (§A3-rev5; was 0.1 from 2026-05-14, was 0.3 prior)
   min_confidence: 0.05          # default 0.05 since 2026-05-14 (§A3-rev2)
   min_sample_size: 5
   min_eval_confidence: 0.5      # default 0.5

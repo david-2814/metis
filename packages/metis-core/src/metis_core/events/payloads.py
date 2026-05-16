@@ -673,6 +673,66 @@ class GatewayKeyRotated(msgspec.Struct, frozen=True):
     team_id: str | None = None
 
 
+# --- §6.9.1 GDPR / portability + forget audit (analytics-api.md §4.10) -----
+
+
+class AnalyticsUserExported(msgspec.Struct, frozen=True):
+    """Audit event for a portability export (GET /analytics/user/{user_id}/export).
+
+    Stamped once per successful export, after the stream completes. The
+    `subject_user_id` is the user whose data was exported; `requested_by`
+    is the caller's identity if known (loopback dashboard → `None`).
+    The byte count and row count let an auditor reconcile the export
+    artifact against the trace.
+    """
+
+    subject_user_id: str
+    requested_by: str | None
+    row_count: int
+    byte_count: int
+    window_start: datetime | None
+    window_end: datetime | None
+
+
+class AnalyticsUserForgotten(msgspec.Struct, frozen=True):
+    """Audit event for a forget operation (POST /analytics/user/{user_id}/forget).
+
+    Stamped once per call, regardless of how many rows the redactor
+    touched (`pseudonymized_rows` is the count). Idempotent re-calls
+    still emit an audit event with `pseudonymized_rows = 0` so the
+    audit trail records every request, not just the first.
+    """
+
+    subject_user_id: str
+    pseudonym: str
+    requested_by: str | None
+    pseudonymized_rows: int
+
+
+# --- §6.14 Trace domain (Wave 12 — trace-retention.md) ----------------------
+
+
+class TraceSwept(msgspec.Struct, frozen=True):
+    """`trace.swept` per event-bus-and-trace-catalog §6.14.
+
+    Emitted once per `metis trace prune` invocation or `CronJob` firing
+    after the `DELETE` statement returns. The event is audit-flagged in
+    `PAYLOAD_REGISTRY` so subsequent sweeps preserve sweep history.
+
+    `oldest_kept_timestamp` is None when the DB is empty after the
+    sweep — operators can chart "retention floor over time" by tailing
+    this field. In `dry_run=True` mode, callers receive a `PurgeResult`
+    but no `trace.swept` event is emitted (per trace-retention.md §3.3).
+    """
+
+    rows_deleted: int
+    rows_audit_exempt: int
+    cutoff_timestamp: datetime
+    oldest_kept_timestamp: datetime | None
+    dry_run: bool
+    swept_at: datetime
+
+
 # --- §6.10 Bus meta-events --------------------------------------------------
 
 
@@ -746,10 +806,18 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     "gateway.key_issued": (GatewayKeyIssued, Sensitivity.PSEUDONYMOUS),
     "gateway.key_revoked": (GatewayKeyRevoked, Sensitivity.PSEUDONYMOUS),
     "gateway.key_rotated": (GatewayKeyRotated, Sensitivity.PSEUDONYMOUS),
+    # GDPR / portability audit (analytics-api.md §4.10, multi-user.md §7.4.4)
+    "analytics.user_exported": (AnalyticsUserExported, Sensitivity.PSEUDONYMOUS),
+    "analytics.user_forgotten": (AnalyticsUserForgotten, Sensitivity.PSEUDONYMOUS),
     # bus
     "bus.subscriber_registered": (BusSubscriberRegistered, Sensitivity.PSEUDONYMOUS),
     "bus.subscriber_unregistered": (BusSubscriberUnregistered, Sensitivity.PSEUDONYMOUS),
     "bus.gap_detected": (BusGapDetected, Sensitivity.PSEUDONYMOUS),
+    # trace retention (Wave 12 — trace-retention.md). 12a-1 will fold an
+    # `audit: bool` flag in here as the third tuple element; until then,
+    # `metis_core.trace.retention.is_audit_event` carries `trace.swept`
+    # in its fallback allowlist so sweep history is preserved by design.
+    "trace.swept": (TraceSwept, Sensitivity.PSEUDONYMOUS),
 }
 
 
@@ -758,6 +826,42 @@ def payload_for_type(event_type: str) -> type[msgspec.Struct]:
     if event_type not in PAYLOAD_REGISTRY:
         raise UnknownEventTypeError(event_type)
     return PAYLOAD_REGISTRY[event_type][0]
+
+
+# --- Audit subset (audit-log.md §4, §5.1) -----------------------------------
+#
+# An audit event is a trace event flagged as security/compliance-relevant.
+# The retention sweep (12a-2) MUST NOT delete events whose type is in this
+# set; the audit log surfaces them as a deterministic export for SIEM ingest.
+# See `audit-log.md §4` for the per-type rationale. Adding or removing a type
+# is a deliberate spec change with a CHANGES.md entry.
+AUDIT_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "gateway.key_issued",
+        "gateway.key_revoked",
+        "gateway.key_rotated",
+        "gateway.quota_exceeded",
+        "quota.alert",
+        "routing.policy_invalid",
+        "memory.eviction",
+        "pattern.evicted",
+        "tool.confirmation_resolved",
+        # Wave 12a-2 — trace-retention.md §6. Preserves sweep history so a
+        # later sweep with a cutoff past the first sweep's timestamp does
+        # not delete the audit trail of the prune mechanism itself.
+        "trace.swept",
+        # GDPR portability + forget audit (analytics-api.md §4.10,
+        # multi-user.md §7.4.4). Both events are explicitly documented as
+        # audit-trail records for subject-rights operations.
+        "analytics.user_exported",
+        "analytics.user_forgotten",
+    }
+)
+
+
+def is_audit_event(event_type: str) -> bool:
+    """Return True if the event type is in the audit subset (audit-log.md §3)."""
+    return event_type in AUDIT_EVENT_TYPES
 
 
 def make_event(

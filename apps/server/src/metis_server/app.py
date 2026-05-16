@@ -171,6 +171,17 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         Route("/analytics/by_key", analytics_handlers.by_key, methods=["GET"]),
         Route("/analytics/by_team", analytics_handlers.by_team, methods=["GET"]),
         Route("/analytics/quality", analytics_handlers.quality, methods=["GET"]),
+        # GDPR portability + forget (analytics-api.md §4.10)
+        Route(
+            "/analytics/user/{user_id}/export",
+            analytics_handlers.user_export,
+            methods=["GET"],
+        ),
+        Route(
+            "/analytics/user/{user_id}/forget",
+            analytics_handlers.user_forget,
+            methods=["POST"],
+        ),
         WebSocketRoute("/sessions/{session_id}/stream", _stream),
         # Dashboard SPA — vanilla HTML + JS, served as static files from
         # `metis_server/static/`. Mounted last so API/WS routes take priority.

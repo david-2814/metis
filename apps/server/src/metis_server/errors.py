@@ -145,3 +145,11 @@ def invalid_user(message: str) -> APIError:
 
 def invalid_team(message: str) -> APIError:
     return APIError("invalid_team", 400, message)
+
+
+# ---- analytics-api.md §4.10 (GDPR portability / forget) -------------------
+
+
+def invalid_user_id_path(message: str) -> APIError:
+    """The path parameter `{user_id}` failed the shape guard."""
+    return APIError("invalid_user_id", 400, message)
