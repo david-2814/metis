@@ -27,7 +27,7 @@ echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 uv run metis chat . --model sonnet
 ```
 
-The repo is a uv-workspace monorepo: [`packages/metis-core/`](packages/metis-core/) is the library (canonical types, events, adapters, routing, tools, memory, sessions, pricing, skills, trace); [`apps/server/`](apps/server/) and [`apps/cli/`](apps/cli/) are the deployable surfaces. The `metis` console-script is shipped by `metis-cli`.
+The repo is a uv-workspace monorepo: [`packages/metis-core/`](packages/metis-core/) is the library (canonical types, events, adapters, routing, tools, memory, sessions, pricing, skills, trace); [`apps/server/`](apps/server/), [`apps/gateway/`](apps/gateway/), and [`apps/cli/`](apps/cli/) are the deployable surfaces. The `metis` console-script is shipped by `metis-cli`.
 
 Inside the REPL: type your message and hit return. Slash commands: `/model <alias|id>`, `/model -` (clear sticky), `/cost`, `/models`, `/help`. Ctrl-D or `exit` to leave. Per-message override: start a message with `@haiku` (or any alias) to route that single message to a different model.
 
@@ -146,32 +146,141 @@ Metis is built around the inverse of each: portability, persistence, transparenc
 
 ## How it works
 
-```
-┌─ Clients ──────────────────────────────┐
-│  CLI (now) · Textual TUI · Web UI      │
-└────────────────┬───────────────────────┘
-                 │  in-process (CLI) · HTTP+WebSocket
-┌────────────────┴───────────────────────┐
-│           Python core server           │
-│                                        │
-│  Session manager · Routing engine      │
-│  Provider adapters (canonical format)  │
-│  Tool dispatcher · Workspace API       │
-│  Event bus → SQLite trace store        │
-│  Skills · Memory · Patterns (Phase 2+) │
-└────────────────┬───────────────────────┘
-                 │
-      Transparent gateway · dashboards · trace export
+Metis has two entry paths sharing one core. The **agent path** owns the full
+turn loop: sessions, tools, memory, skills, routing, tracing, evaluation, and
+persistence. The **gateway path** is a transparent OpenAI / Anthropic-shaped
+proxy for existing clients such as Claude Code, Cursor, and SDK apps.
+
+```mermaid
+flowchart LR
+  subgraph Clients
+    CLI["metis chat / tui"]
+    HTTP["HTTP / WebSocket clients"]
+    SDK["Claude Code / Cursor / SDKs"]
+  end
+
+  subgraph Apps["Application surfaces"]
+    CLIApp["apps/cli<br/>local runtime setup"]
+    Server["apps/server<br/>agent HTTP + WS"]
+    Gateway["apps/gateway<br/>transparent provider proxy"]
+  end
+
+  subgraph Core["packages/metis-core"]
+    Canonical["Canonical IR<br/>messages, blocks, tools, usage"]
+    Sessions["SessionManager<br/>agent turn loop"]
+    Routing["RoutingEngine<br/>7-slot decision chain"]
+    Tools["ToolDispatcher<br/>file, shell, memory, delegate"]
+    Memory["Memory + Skills<br/>MEMORY.md, USER.md, SKILL.md"]
+    Adapters["Provider Adapters<br/>Anthropic, OpenAI, OpenRouter"]
+    Bus["EventBus"]
+    Trace["TraceStore<br/>SQLite event log"]
+    Eval["Evaluator<br/>heuristic / LLM / hybrid"]
+    Patterns["PatternStore<br/>learned routing outcomes"]
+    Analytics["AnalyticsStore<br/>cost, quality, savings"]
+  end
+
+  subgraph Storage["Local storage"]
+    Workspace["workspace/.metis<br/>memory, skills, patterns.db"]
+    Home["~/.metis<br/>trace DB, sessions, keys, billing"]
+  end
+
+  subgraph Providers["External providers"]
+    Anthropic["Anthropic API"]
+    OpenAI["OpenAI API"]
+    OpenRouter["OpenRouter API"]
+  end
+
+  CLI --> CLIApp
+  HTTP --> Server
+  SDK --> Gateway
+
+  CLIApp --> Sessions
+  Server --> Sessions
+
+  Gateway --> Canonical
+  Gateway --> Routing
+  Gateway --> Adapters
+
+  Sessions --> Canonical
+  Sessions --> Routing
+  Sessions --> Tools
+  Sessions --> Memory
+  Sessions --> Adapters
+
+  Routing --> Patterns
+  Tools --> Workspace
+  Memory --> Workspace
+
+  Adapters --> Anthropic
+  Adapters --> OpenAI
+  Adapters --> OpenRouter
+
+  Sessions --> Bus
+  Gateway --> Bus
+  Tools --> Bus
+  Routing --> Bus
+  Adapters --> Bus
+
+  Bus --> Trace
+  Bus --> Eval
+  Eval --> Patterns
+  Trace --> Analytics
+  Workspace --> Patterns
+  Home --> Trace
+  Home --> Analytics
 ```
 
-Key design choices:
+### Agent path
+
+The agent path is used by `metis chat`, `metis tui`, and `metis serve`.
+Metis owns the conversation lifecycle:
+
+1. A client submits a user turn.
+2. `SessionManager` persists the user message and assembles context.
+3. `RoutingEngine` chooses a model through the seven-slot chain.
+4. A provider adapter translates canonical messages into provider wire format.
+5. The adapter streams canonical events back to the session manager.
+6. If the model requests tools, `ToolDispatcher` executes them inside the
+   workspace guardrails and feeds results back into the turn loop.
+7. Usage, cost, assistant messages, routing decisions, tool calls, and turn
+   boundaries are emitted to the event bus.
+8. The trace store, evaluator, pattern store, and analytics layer project from
+   that event stream.
+
+This path is where bounded memory, skills, tool execution, prompt-cache
+discipline, and planner-worker delegation live.
+
+### Gateway path
+
+The gateway path is used when existing tools point their API base URL at
+Metis. It keeps the client's agent loop intact:
+
+1. A client sends `POST /v1/messages` or `POST /v1/chat/completions`.
+2. The gateway authenticates the `gw_...` key and checks quotas.
+3. The inbound OpenAI or Anthropic-shaped request is translated into canonical
+   messages.
+4. The router chooses a provider/model, usually honoring the inbound `model`
+   field as an explicit per-message override.
+5. The selected adapter calls Anthropic, OpenAI, or OpenRouter.
+6. The response is translated back into the original provider shape.
+7. Trace and cost events are stamped with `gateway_key_id`, inbound shape,
+   user, and team.
+
+The gateway deliberately does **not** compose memory, load skills, run tools,
+or persist conversations. That boundary is the point: the gateway is the
+drop-in adoption path; the full agent is the richer optimization path.
+
+### Core design choices
 
 - **Canonical message format.** One internal representation for messages, content blocks, and tool calls. Provider adapters serialize to and from each provider's wire format. Adding a provider is writing an adapter, not refactoring the system.
-- **Three-layer routing.** Manual selection → configured yaml rules → learned pattern recommendations. User intent always beats system inference. Every decision is recorded with a full chain trace.
+- **Seven-slot routing.** Per-message override → manual sticky model → configured yaml rules → learned pattern recommendation → delegate request → workspace default → global default. User intent and policy beat learned behavior; every decision is recorded with a full chain trace.
 - **Bounded, portable memory.** `MEMORY.md` (~2 KB) and `USER.md` (~1.5 KB) per workspace, agent-curated. Markdown on disk; edit, version, and sync via git.
 - **Skills as portable markdown.** Compatible with the agentskills.io open standard; hand-written, auto-generated, or installed.
 - **Event bus + trace store.** Every meaningful action emits a structured event. Analytics, dashboards, and replay all consume the same stream.
-- **Cost-aware.** Tokens and USD tracked per turn, attributed to model and role (planner vs delegated worker), and visible in real time. Decimal math, no float drift.
+- **Cost-aware.** Tokens and USD are tracked per turn/request, attributed to model, gateway key, user/team, and role (planner vs delegated worker). Costs are computed with Decimal math, not provider-rounded floats.
+- **Evidence loop.** Evaluator verdicts update pattern outcomes, pattern outcomes can inform future routing, and analytics uses the same trace data as the dashboard and buyer reports.
+
+The deeper design walkthrough lives in [`docs/technical-design.md`](docs/technical-design.md).
 
 ## What's working today
 
@@ -236,6 +345,7 @@ The design is specified before code lands. Start here:
 - [AGENTS.md](AGENTS.md) — current state of the codebase, conventions, gotchas. Load-bearing for AI agents.
 - [docs/STRATEGY.md](docs/STRATEGY.md) — the *why*: cost-optimization thesis, buyer ≠ user, three cost levers, open strategic questions.
 - [docs/project-overview.md](docs/project-overview.md) — vision, principles, architecture, phasing.
+- [docs/technical-design.md](docs/technical-design.md) — current architecture, runtime paths, storage model, and design verdict.
 - [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) — spec/impl gaps tracked from prior reviews; the watchlist of "looks fine but is subtly wrong."
 
 **Component specs** (the contracts):
