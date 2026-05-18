@@ -160,23 +160,52 @@ def build_pro_config(...) -> GatewayConfig:
 
 Sequenced so each step leaves the OSS repo with a green test suite. Do NOT batch these — each is its own PR.
 
-### 4.1 Pre-work in OSS (no code moves yet)
+### 4.1 Pre-work in OSS (no code moves yet) — **DONE 2026-05-17**
 
-- [ ] Create `packages/metis-core/src/metis_core/extensions.py` with the four Protocols + noop defaults
-- [ ] Update `GatewayConfig` ([apps/gateway/.../app.py](../../apps/gateway/src/metis_gateway/app.py)) to accept the four extension fields with noop defaults
-- [ ] Update `ServerConfig` ([apps/server/.../app.py](../../apps/server/src/metis_server/app.py)) similarly
-- [ ] Add `tests/test_extension_contract.py` in OSS with a `FakePro` implementation that exercises every Protocol — catches breaking changes before `metis-pro` consumes them
-- [ ] Verify `uv run pytest` is green (1841 tests + however many extension-contract tests this adds)
-- [ ] Single PR; review checkpoint: "no behavior change for any existing call path"
+- [x] Create `packages/metis-core/src/metis_core/extensions.py` with the four Protocols + noop defaults
+- [x] Update `GatewayConfig` ([apps/gateway/.../app.py](../../apps/gateway/src/metis_gateway/app.py)) to accept the four extension fields with noop defaults
+- [x] Update `ServerConfig` ([apps/server/.../app.py](../../apps/server/src/metis_server/app.py)) similarly (analytics_extension only — gateway-only Protocols stay on the gateway side)
+- [x] Add `tests/test_extension_contract.py` in OSS with a `FakePro` implementation that exercises every Protocol — catches breaking changes before `metis-pro` consumes them
+- [x] Verify `uv run pytest` is green (1858 passed — was 1841 + 17 extension-contract tests)
+- [x] Single PR; review checkpoint: "no behavior change for any existing call path"
 
-### 4.2 First move — `billing/`
+### 4.2a Refactor (Protocol-ize, no code move yet) — **DONE 2026-05-17**
 
-- [ ] Stand up the empty `metis-pro` private repo with pyproject + ruff + pytest config matching OSS conventions
-- [ ] Copy [apps/gateway/src/metis_gateway/billing/](../../apps/gateway/src/metis_gateway/billing/) → `metis-pro/src/metis_pro/billing/`
-- [ ] Adapt the billing entrypoints to implement `BillingBackend` Protocol
-- [ ] Move all 57 billing tests to `metis-pro/tests/`
-- [ ] Delete `apps/gateway/src/metis_gateway/billing/` from OSS; verify `uv run pytest` still green (the billing tests are gone, the OSS Noop backend handles the calls)
-- [ ] In `metis-pro`, verify the full billing test suite passes against the OSS version published as a git ref
+- [x] Extend `BillingBackend` Protocol with `register_routes(app)` (mirroring SignupBackend / AnalyticsExtension) so the boot-time route-mount surface is part of the contract
+- [x] Add `StripeBillingBackend` adapter in `apps/gateway/src/metis_gateway/billing/backend.py` implementing `BillingBackend` Protocol; record_usage / check_active / current_tier / register_routes dispatch into the existing `BillingService` / `BillingState`
+- [x] Wire `build_app` to instantiate `StripeBillingBackend` when `BillingConfig.enabled=True` and pass it via `GatewayConfig.billing_backend`; mount routes via `billing_backend.register_routes(app)` instead of explicit Route() construction
+- [x] Update `test_extensions.py` contract tests to cover `BillingBackend.register_routes`
+- [x] Verify 1859 passed / 1 skipped (full OSS suite still green; one billing test skipped pre-existing)
+
+### 4.2b Physical move — `billing/` to `metis-pro` — **DONE 2026-05-18**
+
+- [x] Stand up the `metis-pro` private repo with pyproject + ruff + pytest config matching OSS conventions; uv `tool.uv.sources` overrides `metis-core` / `metis-gateway` to a sibling `~/git/metis/` checkout for local dev
+- [x] Copy [apps/gateway/src/metis_gateway/billing/](../../apps/gateway/src/metis_gateway/billing/) → `metis-pro/src/metis_pro/billing/` (9 modules, 3054 LOC)
+- [x] Copy `apps/gateway/tests/test_billing/` → `metis-pro/tests/billing/` (7 test files, 57 tests)
+- [x] Copy `apps/gateway/tests/conftest.py` → `metis-pro/tests/conftest.py` (shared `runtime` + `scripted_adapter` fixtures)
+- [x] Copy `apps/cli/src/metis_cli/billing_admin.py` → `metis-pro/src/metis_pro/cli/billing_admin.py` (operator-side `metis billing status` / `usage-record` subcommands)
+- [x] Bulk-rewrite imports: `metis_gateway.billing.*` → `metis_pro.billing.*` (36 references); cross-test imports `apps.gateway.tests.test_billing.conftest` → `tests.billing.conftest` (2 references)
+- [x] Delete `apps/gateway/src/metis_gateway/billing/` from OSS
+- [x] Delete `apps/gateway/tests/test_billing/` from OSS
+- [x] Delete `apps/cli/src/metis_cli/billing_admin.py` from OSS
+- [x] Refactor OSS `apps/gateway/src/metis_gateway/app.py`: remove all `from metis_gateway.billing` imports; remove `BillingConfig` field on `GatewayConfig`; remove `BillingState` field on `_AppState`; remove `BillingError` exception handler + `_billing_err_handler`; remove `_resolve_tier_caps` function; hardcode `tier_caps=None` at the 2 `enforce_quotas` call sites
+- [x] Refactor OSS `apps/gateway/src/metis_gateway/cli.py`: remove `BillingConfig` import + all `--enable-billing` / `--billing-*` flags + the `billing_cfg` construction block
+- [x] Refactor OSS `apps/cli/src/metis_cli/main.py`: remove `metis billing` subparser + the `args.command == "billing"` handler block + `--enable-billing` flag block on the gateway subcommand
+- [x] Mark 3 tier-axis cap-blocking tests in `metis-pro/tests/billing/test_quota_composition.py` with `pytest.mark.skip` (see §4.2c follow-on below); the 2 non-cap-blocking tests stay active
+- [x] Verify OSS `uv run pytest` green: **1801 passed, 1 skipped** (was 1858, -57 billing tests)
+- [x] Verify metis-pro `uv run pytest` green: **54 passed, 3 skipped**
+- [x] Ruff clean on both repos (1 unused-import in OSS app.py auto-fixed; 5 import-ordering + 2 format fixes in metis-pro auto-fixed)
+
+### 4.2c Tier-axis quota composition follow-on — **OPEN**
+
+The 3 cap-blocking tests in `metis-pro/tests/billing/test_quota_composition.py` are skipped because tier-axis composition (formerly `_resolve_tier_caps` in `metis_gateway.app`) moved with the billing module but the *injection point* into the OSS gateway hot-path has not yet been re-added. The OSS gateway hardcodes `tier_caps=None` at the `enforce_quotas` call sites.
+
+Repair candidates (pick one when the work lands):
+
+- **Option A — New OSS Protocol hook** on `GatewayConfig` (e.g. `tier_caps_resolver: TierCapsResolver`); Pro overlay implements it. Smallest API surface; keeps the call site in OSS.
+- **Option B — `build_pro_app(runtime, config)` wrapper** in `metis-pro` that wraps OSS `build_app` and replaces the two request handlers with tier-aware versions. Heavier; reproduces hot-path code.
+
+Option A is preferred. Adding `TierCapsResolver` as a 5th Protocol in `metis-core/extensions.py` keeps the boundary discipline; Pro implements `resolve(account_id, key) -> TierCaps | None` and the OSS handlers call it. The OSS noop returns None (the current behavior).
 
 ### 4.3 Second move — `signup.py` + accounts store
 
