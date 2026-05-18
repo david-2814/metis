@@ -183,55 +183,9 @@ def build_parser() -> argparse.ArgumentParser:
             "Path to the accounts JSON store. Default: ~/.metis/gateway/accounts.json (mode 0o600)."
         ),
     )
-    gateway.add_argument(
-        "--enable-billing",
-        action="store_true",
-        default=False,
-        help=(
-            "Mount the Stripe-backed `/account/billing/*` + `/webhooks/stripe` "
-            "endpoints (pricing.md §5.5.4). Requires --enable-signup. "
-            "Stripe API key + webhook secret must be supplied via "
-            "--billing-stripe-api-key / --billing-stripe-webhook-secret (or "
-            "the matching env vars). Off by default."
-        ),
-    )
-    gateway.add_argument(
-        "--billing-stripe-api-key",
-        default=None,
-        help=(
-            "Stripe secret key. Use a test-mode `sk_test_...` key during "
-            "trial; rotate before going live."
-        ),
-    )
-    gateway.add_argument(
-        "--billing-stripe-webhook-secret",
-        default=None,
-        help=(
-            "Stripe webhook signing secret (`whsec_...`). Required when --enable-billing is set."
-        ),
-    )
-    gateway.add_argument(
-        "--billing-store-path",
-        default=None,
-        help=("Path to the billing SQLite store. Default: ~/.metis/gateway/billing.db"),
-    )
-    gateway.add_argument(
-        "--billing-pro-price-id",
-        default=None,
-        help=(
-            "Stripe Price id for the per-seat Pro line. Default: "
-            "price_pro_seat_monthly (override per Stripe account)."
-        ),
-    )
-    gateway.add_argument(
-        "--billing-enterprise-metered-price-id",
-        default=None,
-        help=(
-            "Stripe Price id for the metered %-of-savings Enterprise add-on. "
-            "Unset → Enterprise tier not offered (subscribe API rejects "
-            "enterprise_addon=True)."
-        ),
-    )
+    # Wave-15 billing options moved to the closed-source metis-pro overlay
+    # (repo-split-plan.md §4.2b, 2026-05-18). The Pro deployment surface
+    # adds --enable-billing + --billing-* flags from `metis_pro` instead.
 
     issue = gateway_sub.add_parser(
         "issue-key",
@@ -367,55 +321,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format. `json` is machine-readable; `text` is a terminal-friendly table.",
     )
 
-    # Billing admin (Wave 15 — pricing.md §5.5.4)
-    billing_parser = sub.add_parser(
-        "billing",
-        help="Inspect billing state and post metered usage records (operator-side).",
-    )
-    billing_sub = billing_parser.add_subparsers(dest="billing_command", required=True)
-
-    billing_status = billing_sub.add_parser(
-        "status",
-        help="Show the current subscription summary for an account.",
-    )
-    billing_status.add_argument("--account-id", required=True, help="Account id to inspect.")
-    billing_status.add_argument(
-        "--store-path",
-        default=None,
-        help="Billing SQLite store. Default: ~/.metis/gateway/billing.db",
-    )
-
-    billing_usage = billing_sub.add_parser(
-        "usage-record",
-        help=(
-            "Manually post a metered Stripe usage record (Enterprise add-on). "
-            "The recurring sweep posts these automatically once wired."
-        ),
-    )
-    billing_usage.add_argument("--account-id", required=True)
-    billing_usage.add_argument(
-        "--savings-usd",
-        required=True,
-        type=float,
-        help="Savings (USD) to bill at the configured %-of-savings rate.",
-    )
-    billing_usage.add_argument(
-        "--stripe-api-key",
-        required=True,
-        help="Stripe secret key. Use sk_test_... in test mode.",
-    )
-    billing_usage.add_argument(
-        "--stripe-webhook-secret",
-        default="whsec_unused",
-        help="Webhook secret (only used to construct the client; can be a placeholder for usage-record).",
-    )
-    billing_usage.add_argument("--store-path", default=None)
-    billing_usage.add_argument(
-        "--enterprise-savings-rate-pct",
-        type=int,
-        default=15,
-        help="Override the configured %-of-savings rate (default 15).",
-    )
+    # `metis billing` subcommands moved to the closed-source metis-pro
+    # overlay (repo-split-plan.md §4.2b, 2026-05-18). Pro deployments
+    # expose them via the `metis-pro` CLI.
 
     backup = sub.add_parser(
         "backup",
@@ -825,28 +733,6 @@ def main(argv: list[str] | None = None) -> int:
             if args.session_id:
                 evaluate_argv.extend(["--session-id", args.session_id])
             return evaluate_main(evaluate_argv)
-        if args.command == "billing":
-            from metis_cli.billing_admin import (
-                run_billing_status_command,
-                run_billing_usage_record_command,
-            )
-
-            if args.billing_command == "status":
-                return run_billing_status_command(
-                    account_id=args.account_id,
-                    store_path=args.store_path,
-                )
-            if args.billing_command == "usage-record":
-                return run_billing_usage_record_command(
-                    account_id=args.account_id,
-                    savings_usd=args.savings_usd,
-                    stripe_api_key=args.stripe_api_key,
-                    stripe_webhook_secret=args.stripe_webhook_secret,
-                    store_path=args.store_path,
-                    enterprise_savings_rate_pct=args.enterprise_savings_rate_pct,
-                )
-            parser.error(f"unknown billing subcommand: {args.billing_command}")
-            return 2
         if args.command == "backup":
             from metis_cli.backup import run_backup_command
 
@@ -1022,12 +908,6 @@ def main(argv: list[str] | None = None) -> int:
                     signup_enabled=args.enable_signup,
                     signup_dashboard_url=args.signup_dashboard_url,
                     signup_accounts_path=args.signup_accounts_path,
-                    billing_enabled=args.enable_billing,
-                    billing_stripe_api_key=args.billing_stripe_api_key,
-                    billing_stripe_webhook_secret=args.billing_stripe_webhook_secret,
-                    billing_store_path=args.billing_store_path,
-                    billing_pro_price_id=args.billing_pro_price_id,
-                    billing_enterprise_metered_price_id=args.billing_enterprise_metered_price_id,
                 )
             )
     except KeyboardInterrupt:

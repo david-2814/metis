@@ -157,6 +157,7 @@ A local-first AI agent tool that sits between Claude Desktop and Cursor in capab
 **Strategy and ops:**
 
 - [`docs/STRATEGY.md`](STRATEGY.md) — Cost-optimization thesis, buyer ≠ user, three cost levers (skills / context / model selection), open strategic questions.
+- [`docs/business-model.md`](business-model.md) — Business / profitability synthesis: ratified pricing shape, validated savings claims, unit-economics intuition, risks.
 - [`docs/KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — Carryover review findings; spec promises the code doesn't yet honor.
 - [`AGENTS.md`](../AGENTS.md) — Current implementation state, conventions, gotchas. Read first.
 

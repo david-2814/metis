@@ -96,6 +96,8 @@ The commercial model is ratified at [`docs/specs/pricing.md §5.5.4`](docs/specs
 
 Metis does not resell tokens; provider usage is still billed by Anthropic / OpenAI / OpenRouter. The Wave 15 billing module is Stripe-backed and opt-in via gateway config.
 
+Full synthesis (thesis, validated savings claims, unit-economics intuition, risks) at [`docs/business-model.md`](docs/business-model.md).
+
 ## Sales toolkit
 
 The docs a salesperson reads before a buyer conversation. All sit

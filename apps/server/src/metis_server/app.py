@@ -23,7 +23,7 @@ talks to SessionManager directly.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -35,6 +35,7 @@ from metis_core.canonical.ids import new_message_id
 from metis_core.canonical.messages import Message
 from metis_core.events.envelope import Actor
 from metis_core.events.payloads import SessionEnded, make_event
+from metis_core.extensions import AnalyticsExtension, NoopAnalyticsExtension
 from metis_core.observability import METRICS_CONTENT_TYPE, MetricsCollector
 from metis_core.sessions.manager import UnknownAliasError
 from metis_core.tools.confirmation import ConfirmationDecision
@@ -77,6 +78,14 @@ DEFAULT_PORT = 8421
 class ServerConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    # Wave 17 (planned) — repo-split extension Protocol. metis-pro overlay
+    # mounts /analytics/by_user and /analytics/by_team here; OSS-only
+    # deployments stay on per-key analytics. See
+    # docs/operations/repo-split-plan.md §3 and
+    # packages/metis-core/src/metis_core/extensions.py. Scaffolding only in
+    # §4.1 — the field accepts Protocol implementations but `build_app` does
+    # not yet call `register_routes` (wired in §4.4).
+    analytics_extension: AnalyticsExtension = field(default_factory=NoopAnalyticsExtension)
 
 
 @dataclass

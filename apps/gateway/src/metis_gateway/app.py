@@ -27,6 +27,14 @@ from metis_core.adapters.tool_id_map import ToolIdMap
 from metis_core.canonical.ids import new_message_id
 from metis_core.events.envelope import Actor
 from metis_core.events.payloads import GatewayAuthFailed, make_event
+from metis_core.extensions import (
+    AnalyticsExtension,
+    BillingBackend,
+    NoopAnalyticsExtension,
+    NoopBillingBackend,
+    NoopSignupBackend,
+    SignupBackend,
+)
 from metis_core.observability import METRICS_CONTENT_TYPE, MetricsCollector
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
@@ -36,25 +44,6 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from metis_gateway.auth import extract_bearer_token, identity_from_key
-from metis_gateway.billing import (
-    BillingClient,
-    BillingConfig,
-    BillingState,
-    billing_cancel_handler,
-    billing_pause_handler,
-    billing_payment_method_handler,
-    billing_plan_handler,
-    billing_portal_handler,
-    billing_status_handler,
-    build_billing_state,
-    stripe_webhook_handler,
-)
-from metis_gateway.billing.routes import (
-    billing_error_response,
-    billing_resume_handler,
-    billing_subscribe_handler,
-)
-from metis_gateway.billing.subscriptions import BillingError
 from metis_gateway.endpoints.anthropic import (
     InboundTranslationError as AnthropicInboundTranslationError,
 )
@@ -79,7 +68,6 @@ from metis_gateway.middleware_versioning import VersioningMiddleware
 from metis_gateway.quotas import (
     QuotaExceeded,
     RequestQuotaCache,
-    TierCaps,
     enforce_quotas,
 )
 from metis_gateway.runtime import GatewayRuntime
@@ -178,11 +166,18 @@ class GatewayConfig:
     tls_key: Path | None = None
     # Wave 14 — self-serve signup. Off by default; SaaS deployments opt in.
     signup: SignupConfig | None = None
-    # Wave 15 — Stripe-backed billing per pricing.md §5.5.4. Off by default;
-    # mounting `/account/billing/*` + `/webhooks/stripe` requires the
-    # operator to flip `enabled=True` and supply `stripe_api_key` +
-    # `stripe_webhook_secret`. Pre-Wave-15 deployments are byte-identical.
-    billing: BillingConfig | None = None
+    # Wave 17 — repo-split extension Protocols. metis-pro overlays substitute
+    # real implementations via the composition root; OSS-only deployments
+    # keep the noop defaults. See docs/operations/repo-split-plan.md §3 and
+    # packages/metis-core/src/metis_core/extensions.py.
+    #
+    # §4.2b (2026-05-18) — billing moved to metis-pro. The OSS gateway only
+    # carries the Protocol field with the noop default; Pro deployments
+    # inject a `StripeBillingBackend` from `metis_pro.billing` and the
+    # `BillingConfig` lives there too.
+    billing_backend: BillingBackend = field(default_factory=NoopBillingBackend)
+    signup_backend: SignupBackend = field(default_factory=NoopSignupBackend)
+    analytics_extension: AnalyticsExtension = field(default_factory=NoopAnalyticsExtension)
 
     def __post_init__(self) -> None:
         if (self.tls_cert is None) != (self.tls_key is None):
@@ -211,7 +206,10 @@ class _AppState:
     started_at: datetime
     metrics: MetricsCollector
     signup: SignupState | None = None
-    billing: BillingState | None = None
+    # §4.2b — billing implementation moved to metis-pro. The OSS gateway
+    # carries only the Protocol field; Pro deployments inject a real
+    # backend via GatewayConfig.billing_backend. Default is the noop.
+    billing_backend: BillingBackend | None = None
 
 
 def build_app(
@@ -219,8 +217,7 @@ def build_app(
     *,
     rate_limit: RateLimitConfig | None = None,
     signup: SignupConfig | None = None,
-    billing: BillingConfig | None = None,
-    billing_client: BillingClient | None = None,
+    billing_backend: BillingBackend | None = None,
 ) -> Starlette:
     """Build the Starlette ASGI app bound to a fully-wired GatewayRuntime.
 
@@ -235,11 +232,11 @@ def build_app(
     this on in production requires the operator to swap in a real email
     sender before the endpoints face the open internet.
 
-    `billing` follows pricing.md §5.5.4 (Wave 15) — off by default;
-    passing a `BillingConfig(enabled=True, ...)` mounts the
-    ``/account/billing/*`` routes and the ``/webhooks/stripe``
-    listener. `billing_client` is the test-injection seam: pass a
-    `FakeBillingClient` to bypass the real Stripe wrapper.
+    `billing_backend` follows pricing.md §5.5.4 (Wave 15) + repo-split-plan.md
+    §4.2b — when ``None`` (the OSS default), no billing routes are mounted
+    and ``BillingBackend`` calls are noops. Pro deployments inject a
+    ``StripeBillingBackend`` from ``metis_pro.billing`` to mount
+    ``/account/billing/*`` and ``/webhooks/stripe``.
     """
     metrics = MetricsCollector(
         bus=runtime.bus,
@@ -254,18 +251,15 @@ def build_app(
     # caller that only passes `enabled=True` still gets the right wiring.
     signup_config = _resolve_signup_config(signup, runtime)
     signup_state = build_signup_state(signup_config)
-    billing_state = build_billing_state(billing, runtime.bus, client=billing_client)
     state = _AppState(
         runtime=runtime,
         started_at=datetime.now(UTC),
         metrics=metrics,
         signup=signup_state,
-        billing=billing_state,
+        billing_backend=billing_backend,
     )
 
     async def _err_handler(_request: Request, exc: Exception) -> Response:
-        if isinstance(exc, BillingError):
-            return billing_error_response(exc)
         if isinstance(exc, SignupError):
             return signup_error_response(exc)
         if isinstance(exc, HTTPException):
@@ -276,10 +270,6 @@ def build_app(
     async def _signup_err_handler(_request: Request, exc: Exception) -> Response:
         assert isinstance(exc, SignupError)
         return signup_error_response(exc)
-
-    async def _billing_err_handler(_request: Request, exc: Exception) -> Response:
-        assert isinstance(exc, BillingError)
-        return billing_error_response(exc)
 
     routes = [
         Route("/healthz", _health, methods=["GET"]),
@@ -301,48 +291,32 @@ def build_app(
                 ),
             ]
         )
-    if billing_state is not None:
-        # Billing routes piggy-back on the signup-session auth — the
-        # gateway's stance is "if you're not running signup, you don't
-        # have an account model to bill" so we require signup to be on.
-        if signup_state is None:
-            raise GatewayConfigError(
-                "BillingConfig.enabled=True requires SignupConfig.enabled=True"
-            )
-        routes.extend(
-            [
-                Route("/account/billing", billing_status_handler, methods=["GET"]),
-                Route("/account/billing/portal", billing_portal_handler, methods=["GET"]),
-                Route("/account/billing/plan", billing_plan_handler, methods=["POST"]),
-                Route(
-                    "/account/billing/subscribe",
-                    billing_subscribe_handler,
-                    methods=["POST"],
-                ),
-                Route(
-                    "/account/billing/payment-method",
-                    billing_payment_method_handler,
-                    methods=["POST"],
-                ),
-                Route("/account/billing/cancel", billing_cancel_handler, methods=["POST"]),
-                Route("/account/billing/pause", billing_pause_handler, methods=["POST"]),
-                Route("/account/billing/resume", billing_resume_handler, methods=["POST"]),
-                Route("/webhooks/stripe", stripe_webhook_handler, methods=["POST"]),
-            ]
-        )
+    if billing_backend is not None and signup_state is None:
+        # The Pro overlay's billing routes piggy-back on the signup-session
+        # auth; "if you're not running signup, you don't have an account
+        # model to bill" — surface it as a config error rather than mounting
+        # endpoints that can't authenticate anything.
+        raise GatewayConfigError("billing_backend requires SignupConfig.enabled=True")
     middleware_stack: list[Middleware] = [Middleware(VersioningMiddleware)]
     if rate_limit is not None and rate_limit.enabled:
         middleware_stack.append(Middleware(RateLimitMiddleware, config=rate_limit))
     app = Starlette(
         routes=routes,
         exception_handlers={
-            BillingError: _billing_err_handler,
             SignupError: _signup_err_handler,
             Exception: _err_handler,
         },
         middleware=middleware_stack,
     )
     app.state.app_state = state
+    # §4.2b — Pro extensions mount routes after Starlette construction via
+    # BillingBackend.register_routes. When billing_backend is None (OSS
+    # default), no Pro routes mount; metis-pro deployments inject a
+    # StripeBillingBackend that appends /account/billing/* + /webhooks/stripe
+    # onto app.router.routes and registers the BillingError exception handler
+    # via add_exception_handler.
+    if billing_backend is not None:
+        billing_backend.register_routes(app)
     return app
 
 
@@ -495,7 +469,7 @@ async def chat_completions(request: Request) -> Response:
             key=key,
             identity=identity,
             inbound_shape="openai",
-            tier_caps=_resolve_tier_caps(st, key),
+            tier_caps=None,  # tier-axis composition moved to metis-pro (§4.2b)
         )
         if verdict is not None:
             return _quota_exceeded_response(verdict, shape="openai")
@@ -708,7 +682,7 @@ async def messages(request: Request) -> Response:
             key=key,
             identity=identity,
             inbound_shape="anthropic",
-            tier_caps=_resolve_tier_caps(st, key),
+            tier_caps=None,  # tier-axis composition moved to metis-pro (§4.2b)
         )
         if verdict is not None:
             return _quota_exceeded_response(verdict, shape="anthropic")
@@ -950,11 +924,17 @@ async def run_gateway(runtime: GatewayRuntime, config: GatewayConfig | None = No
     if not _is_loopback_host(cfg.host):
         _log_non_loopback_warning(cfg)
 
+    # `billing_backend` is the noop default in OSS; Pro deployments wrap
+    # `run_gateway` and pass a real backend via `build_app` directly, or set
+    # it on the GatewayConfig field they construct.
+    billing_backend = (
+        cfg.billing_backend if not isinstance(cfg.billing_backend, NoopBillingBackend) else None
+    )
     app = build_app(
         runtime,
         rate_limit=cfg.rate_limit,
         signup=cfg.signup,
-        billing=cfg.billing,
+        billing_backend=billing_backend,
     )
     uvicorn_config = _build_uvicorn_config(app, cfg)
     server = uvicorn.Server(uvicorn_config)
@@ -1090,41 +1070,12 @@ def _build_quota_cache(runtime: GatewayRuntime) -> RequestQuotaCache | None:
     return RequestQuotaCache(runtime.quota_tracker)
 
 
-def _resolve_tier_caps(state: _AppState, key) -> TierCaps | None:
-    """Wave 15 — resolve the billing tier cap that composes with key caps.
-
-    Returns `None` when:
-      - billing isn't enabled on this deployment;
-      - signup isn't enabled (no account model to attach a tier to);
-      - the gateway key has no signup account (CLI-issued key);
-      - the account is on a tier without a configured cap (pro / enterprise
-        default unlimited at the tier layer).
-
-    On the Free tier, returns the configured `free_daily_cap_usd` /
-    `free_monthly_cap_usd` aggregated across every key under the account
-    so a buyer can't slide past the cap by issuing more keys.
-    """
-    if state.billing is None or state.signup is None:
-        return None
-    account = state.signup.store.account_for_key(key.key_id)
-    if account is None:
-        return None
-    state.billing.service.enforce_failed_payment_state(account_id=account.account_id)
-    customer = state.billing.store.get_customer(account.account_id)
-    tier = customer.tier if customer is not None else "free"
-    if tier != "free":
-        return None
-    cfg = state.billing.config
-    daily_cap = cfg.free_daily_cap_usd
-    monthly_cap = cfg.free_monthly_cap_usd
-    if daily_cap is None and monthly_cap is None:
-        return None
-    return TierCaps(
-        account_id=account.account_id,
-        key_ids=tuple(account.key_ids),
-        daily_cap_usd=daily_cap,
-        monthly_cap_usd=monthly_cap,
-    )
+# Wave 15's `_resolve_tier_caps` moved to metis-pro (repo-split-plan.md
+# §4.2b, 2026-05-18). The free-tier daily/monthly caps are part of the Pro
+# billing surface; OSS deployments hardcode `tier_caps=None` at the
+# `enforce_quotas` call sites, which preserves the pre-Wave-15 behavior of
+# per-(key/user/team/workspace) cap composition without a tier axis. Pro
+# deployments re-add the tier axis by overriding the gateway entry point.
 
 
 def _team_budget_remaining(quota_cache: RequestQuotaCache | None, key) -> Decimal | None:
