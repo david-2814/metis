@@ -238,13 +238,42 @@ Verification:
 - [x] Verify metis-pro `uv run pytest` green: **74 passed, 3 skipped** (was 54 + 3, +20 signup tests)
 - [x] Ruff clean on both repos (3 import-ordering fixes in metis-pro auto-fixed)
 
-### 4.4 Third move — per-user / per-team analytics route handlers
+### 4.4 Third move — per-user / per-team analytics route handlers — **DONE 2026-05-18**
 
-- [ ] Identify the *route handler* code (vs. the rollup SQL — the latter stays OSS)
-- [ ] Move only the route mounting to `metis-pro/src/metis_pro/analytics_overlays/`
-- [ ] Wrap under `AnalyticsExtension.register_routes()`
-- [ ] Leave the rollup functions in [packages/metis-core/analytics/](../../packages/metis-core/src/metis_core/analytics/) — they're library calls, not endpoints, and self-hosters benefit from them
-- [ ] Delete the route handlers from OSS; verify OSS gateway exposes only `/analytics/cost`, `/analytics/by_key`, `/analytics/savings`, `/analytics/quality` (per-key is Community)
+Moved the Pro-tier `/analytics/*` route handlers from OSS metis-server to `metis-pro/src/metis_pro/analytics_overlays/`. The rollup SQL methods (`AnalyticsStore.by_team`, `.user_export`, `.forget_user`) stayed in `metis_core.analytics` — self-hosters can still call them from library code.
+
+Pro endpoints moved:
+
+- `GET  /analytics/by_team`                       (multi-user.md §5.2)
+- `GET  /analytics/user/{user_id}/export`         (analytics-api.md §4.10.1)
+- `POST /analytics/user/{user_id}/forget`         (analytics-api.md §4.10.2)
+
+Community endpoints that stayed in OSS:
+
+- `/analytics/cost` (incl. `?group_by=user|team` filters), `/analytics/cache_effectiveness`, `/analytics/routing`, `/analytics/reliability`, `/analytics/sessions`, `/analytics/turns/{turn_id}`, `/analytics/savings`, `/analytics/by_key`, `/analytics/quality`.
+
+metis-pro additions:
+
+- [x] `src/metis_pro/analytics_overlays/__init__.py` exporting `ProAnalyticsExtension`.
+- [x] `src/metis_pro/analytics_overlays/handlers.py` — 3 handler functions migrated verbatim from `metis_server.analytics`. Handlers import OSS-private helpers (`_store`, `_envelope`, `_resolve_window_from_query`, `_pricing`) via documented private-import coupling — the Pro overlay is *expected* to compose with OSS internals rather than fork them.
+- [x] `src/metis_pro/analytics_overlays/extension.py` — `ProAnalyticsExtension` class implementing `AnalyticsExtension.register_routes`, appending the 3 routes to `app.router.routes` at boot.
+- [x] `tests/analytics_overlays/test_by_team.py` — 4 tests with a `principal_seeded_client` fixture that builds `build_app(runtime, analytics_extension=ProAnalyticsExtension())`. Tests moved from `apps/server/tests/test_analytics_http.py`.
+- [x] `tests/analytics_overlays/test_user_export.py` — 10 tests with a `seeded_client` fixture, same pattern. Whole file moved from `apps/server/tests/test_user_export_http.py`.
+- [x] `tests/analytics_overlays/conftest.py` — server-side `runtime` fixture (ChatRuntime, not GatewayRuntime). Copied from `apps/server/tests/conftest.py` as a subtree-scoped override so the analytics tests get the right runtime shape while the billing tests under `tests/billing/` keep the gateway-flavored `runtime` from `tests/conftest.py`.
+- [x] `pyproject.toml` — added `metis-server` to dependencies + `tool.uv.sources` path override. Also added `metis-cli` to deps because `metis-server.app` has an undeclared transitive coupling to `metis-cli.models_display` + `metis-cli.runtime` (a pre-existing OSS layering quirk; metis-pro itself does NOT import metis_cli — the dep is transitive-only).
+
+OSS deletions / refactors:
+
+- [x] `apps/server/src/metis_server/analytics.py` — removed the 3 handlers (`by_team`, `user_export`, `user_forget`) and the `_resolve_user_id_path` helper. Removed sole-user imports (`AnalyticsUserExported`, `AnalyticsUserForgotten`, `PseudonymizingRedactor`, `Redactor`, `pseudonym_for`, `Actor`, `make_event`, `StreamingResponse`, `invalid_user_id_path`).
+- [x] `apps/server/tests/test_user_export_http.py` — deleted (whole file moved to metis-pro).
+- [x] `apps/server/tests/test_analytics_http.py` — deleted the 4 `test_by_team_*` tests (lines 761–812); the `test_cost_group_by_user/_team/_filter_*` tests stayed because they exercise the Community-tier `/analytics/cost` endpoint's user/team filter params.
+- [x] `apps/server/src/metis_server/app.py` — removed the 3 route mounts; added `analytics_extension: AnalyticsExtension | None = None` parameter to `build_app`; calls `analytics_extension.register_routes(app)` after Starlette construction when set. The `ServerConfig.analytics_extension` field (added as scaffolding in §4.1) is now actually consumed at the production composition root via this parameter.
+
+Verification:
+
+- [x] OSS `uv run pytest`: **1767 passed, 1 skipped** (was 1781, −14 tests moved to metis-pro).
+- [x] metis-pro `uv run pytest`: **91 passed, 0 skipped** (was 77, +14 analytics tests).
+- [x] Ruff clean on both repos after auto-fix (2 imports in OSS, 4 imports in metis-pro auto-organized).
 
 ### 4.5 Fourth move — curated LLM-judge rubric library
 

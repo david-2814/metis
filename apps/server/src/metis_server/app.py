@@ -78,13 +78,13 @@ DEFAULT_PORT = 8421
 class ServerConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
-    # Wave 17 (planned) — repo-split extension Protocol. metis-pro overlay
-    # mounts /analytics/by_user and /analytics/by_team here; OSS-only
-    # deployments stay on per-key analytics. See
-    # docs/operations/repo-split-plan.md §3 and
-    # packages/metis-core/src/metis_core/extensions.py. Scaffolding only in
-    # §4.1 — the field accepts Protocol implementations but `build_app` does
-    # not yet call `register_routes` (wired in §4.4).
+    # §4.4 (2026-05-18) — repo-split extension Protocol. metis-pro overlay
+    # mounts /analytics/by_team and /analytics/user/{user_id}/{export,forget}
+    # via ProAnalyticsExtension; OSS-only deployments stay on the per-key /
+    # per-model Community analytics. See docs/operations/repo-split-plan.md
+    # §4.4 and apps/server/src/metis_server/app.py::build_app — `build_app`
+    # calls `analytics_extension.register_routes(app)` after Starlette
+    # construction when a non-noop is passed.
     analytics_extension: AnalyticsExtension = field(default_factory=NoopAnalyticsExtension)
 
 
@@ -100,13 +100,24 @@ class _AppState:
     started_at: datetime
 
 
-def build_app(runtime: ChatRuntime) -> Starlette:
+def build_app(
+    runtime: ChatRuntime,
+    *,
+    analytics_extension: AnalyticsExtension | None = None,
+) -> Starlette:
     """Build a Starlette app bound to a fully-wired runtime.
 
     The dispatcher's confirmation handler is swapped to a
     `RemoteConfirmationHandler` so tools that require confirmation block on
     a REST response (per server-api.md §4.2). CLI / TUI runtimes still use
     the original `AutoAllowHandler`.
+
+    §4.4 (2026-05-18) — `analytics_extension` follows the
+    `metis_core.extensions.AnalyticsExtension` Protocol. When ``None`` (the
+    OSS default), no per-team / per-user analytics routes mount. Pro
+    deployments inject a ``ProAnalyticsExtension`` from
+    ``metis_pro.analytics_overlays`` to mount `/analytics/by_team` and the
+    GDPR Article 15 / 17 endpoints.
     """
     hub = StreamingHub()
     confirmation = RemoteConfirmationHandler()
@@ -182,19 +193,10 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         Route("/analytics/turns/{turn_id}", analytics_handlers.turn, methods=["GET"]),
         Route("/analytics/savings", analytics_handlers.savings, methods=["GET"]),
         Route("/analytics/by_key", analytics_handlers.by_key, methods=["GET"]),
-        Route("/analytics/by_team", analytics_handlers.by_team, methods=["GET"]),
         Route("/analytics/quality", analytics_handlers.quality, methods=["GET"]),
-        # GDPR portability + forget (analytics-api.md §4.10)
-        Route(
-            "/analytics/user/{user_id}/export",
-            analytics_handlers.user_export,
-            methods=["GET"],
-        ),
-        Route(
-            "/analytics/user/{user_id}/forget",
-            analytics_handlers.user_forget,
-            methods=["POST"],
-        ),
+        # /analytics/by_team + /analytics/user/{user_id}/{export,forget}
+        # moved to metis_pro.analytics_overlays at §4.4 (2026-05-18). Pro
+        # deployments mount them via build_app(analytics_extension=...).
         WebSocketRoute("/sessions/{session_id}/stream", _stream),
         # Dashboard SPA — vanilla HTML + JS, served as static files from
         # `metis_server/static/`. Mounted last so API/WS routes take priority.
@@ -208,6 +210,10 @@ def build_app(runtime: ChatRuntime) -> Starlette:
         middleware=[Middleware(VersioningMiddleware)],
     )
     app.state.app_state = state
+    # §4.4 — Pro overlay mounts /analytics/by_team + GDPR endpoints after
+    # Starlette construction. When None (OSS default), no Pro routes mount.
+    if analytics_extension is not None:
+        analytics_extension.register_routes(app)
     return app
 
 
