@@ -48,20 +48,10 @@ from metis_gateway.billing import (
     BillingClient,
     BillingConfig,
     BillingState,
-    billing_cancel_handler,
-    billing_pause_handler,
-    billing_payment_method_handler,
-    billing_plan_handler,
-    billing_portal_handler,
-    billing_status_handler,
+    StripeBillingBackend,
     build_billing_state,
-    stripe_webhook_handler,
 )
-from metis_gateway.billing.routes import (
-    billing_error_response,
-    billing_resume_handler,
-    billing_subscribe_handler,
-)
+from metis_gateway.billing.routes import billing_error_response
 from metis_gateway.billing.subscriptions import BillingError
 from metis_gateway.endpoints.anthropic import (
     InboundTranslationError as AnthropicInboundTranslationError,
@@ -230,6 +220,9 @@ class _AppState:
     metrics: MetricsCollector
     signup: SignupState | None = None
     billing: BillingState | None = None
+    # §4.2a — Protocol-shaped adapter co-existing with `billing` until §4.2b
+    # moves the implementation to metis-pro. None when billing is disabled.
+    billing_backend: BillingBackend | None = None
 
 
 def build_app(
@@ -273,12 +266,19 @@ def build_app(
     signup_config = _resolve_signup_config(signup, runtime)
     signup_state = build_signup_state(signup_config)
     billing_state = build_billing_state(billing, runtime.bus, client=billing_client)
+    # §4.2a — when billing is enabled, build a Protocol-shaped adapter so
+    # route mounting (and future hot-path calls) go through BillingBackend.
+    # The existing _AppState.billing is preserved for the route handlers
+    # that still read state directly; the §4.2b move to metis-pro will
+    # collapse them onto the adapter.
+    billing_backend = StripeBillingBackend(billing_state) if billing_state is not None else None
     state = _AppState(
         runtime=runtime,
         started_at=datetime.now(UTC),
         metrics=metrics,
         signup=signup_state,
         billing=billing_state,
+        billing_backend=billing_backend,
     )
 
     async def _err_handler(_request: Request, exc: Exception) -> Response:
@@ -319,7 +319,7 @@ def build_app(
                 ),
             ]
         )
-    if billing_state is not None:
+    if billing_backend is not None:
         # Billing routes piggy-back on the signup-session auth — the
         # gateway's stance is "if you're not running signup, you don't
         # have an account model to bill" so we require signup to be on.
@@ -327,27 +327,6 @@ def build_app(
             raise GatewayConfigError(
                 "BillingConfig.enabled=True requires SignupConfig.enabled=True"
             )
-        routes.extend(
-            [
-                Route("/account/billing", billing_status_handler, methods=["GET"]),
-                Route("/account/billing/portal", billing_portal_handler, methods=["GET"]),
-                Route("/account/billing/plan", billing_plan_handler, methods=["POST"]),
-                Route(
-                    "/account/billing/subscribe",
-                    billing_subscribe_handler,
-                    methods=["POST"],
-                ),
-                Route(
-                    "/account/billing/payment-method",
-                    billing_payment_method_handler,
-                    methods=["POST"],
-                ),
-                Route("/account/billing/cancel", billing_cancel_handler, methods=["POST"]),
-                Route("/account/billing/pause", billing_pause_handler, methods=["POST"]),
-                Route("/account/billing/resume", billing_resume_handler, methods=["POST"]),
-                Route("/webhooks/stripe", stripe_webhook_handler, methods=["POST"]),
-            ]
-        )
     middleware_stack: list[Middleware] = [Middleware(VersioningMiddleware)]
     if rate_limit is not None and rate_limit.enabled:
         middleware_stack.append(Middleware(RateLimitMiddleware, config=rate_limit))
@@ -361,6 +340,13 @@ def build_app(
         middleware=middleware_stack,
     )
     app.state.app_state = state
+    # §4.2a — Pro extensions mount their routes after Starlette construction
+    # via BillingBackend.register_routes. The noop default is a no-op; the
+    # StripeBillingBackend adapter (still in OSS for §4.2a; moves to
+    # metis-pro in §4.2b) appends the nine /account/billing/* + /webhooks/stripe
+    # routes onto app.router.routes.
+    if billing_backend is not None:
+        billing_backend.register_routes(app)
     return app
 
 

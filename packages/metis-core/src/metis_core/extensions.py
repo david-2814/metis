@@ -38,12 +38,14 @@ if TYPE_CHECKING:  # pragma: no cover — type-only import
 class BillingBackend(Protocol):
     """Optional billing surface for the Pro / Enterprise tiers.
 
-    The OSS noop default records nothing, reports every account active, and
-    returns ``"free"`` as the tier. ``metis-pro`` provides a Stripe-backed
-    implementation. The gateway calls into the Protocol at turn-completion
-    time for ``record_usage`` (driven by the savings counterfactual from
-    ``analytics-api.md §4.7``) and at request entry for ``check_active`` /
-    ``current_tier`` when tier-axis quota composition is enabled.
+    The OSS noop default records nothing, reports every account active,
+    returns ``"free"`` as the tier, and mounts no routes. ``metis-pro``
+    provides a Stripe-backed implementation. The gateway calls into the
+    Protocol at request entry (``check_active`` / ``current_tier`` for
+    tier-axis quota composition), at turn-completion time (``record_usage``
+    driven by the savings counterfactual from ``analytics-api.md §4.7``),
+    and once at boot (``register_routes`` to mount ``/account/billing/*``
+    + ``/webhooks/stripe`` onto the gateway's Starlette app).
     """
 
     async def record_usage(self, account_id: str, savings_usd: Decimal) -> None:
@@ -62,6 +64,14 @@ class BillingBackend(Protocol):
     async def current_tier(self, account_id: str) -> str:
         """Return one of ``"free"`` / ``"pro"`` / ``"enterprise"``. Noop returns
         ``"free"`` so OSS-only deployments always see free-tier quota rules.
+        """
+        ...
+
+    def register_routes(self, app: Starlette) -> None:
+        """Mount billing routes onto the gateway's Starlette app at boot. Called
+        exactly once during ``build_app`` after the OSS routes are in place. The
+        noop mounts nothing; ``metis-pro`` mounts ``/account/billing/*`` and
+        ``/webhooks/stripe``.
         """
         ...
 
@@ -126,7 +136,9 @@ class JudgeRubricProvider(Protocol):
 
 
 class NoopBillingBackend:
-    """Free-tier billing: records nothing, reports every account active, tier='free'."""
+    """Free-tier billing: records nothing, reports every account active, tier='free',
+    mounts no routes.
+    """
 
     async def record_usage(self, account_id: str, savings_usd: Decimal) -> None:
         return None
@@ -136,6 +148,9 @@ class NoopBillingBackend:
 
     async def current_tier(self, account_id: str) -> str:
         return "free"
+
+    def register_routes(self, app: Starlette) -> None:
+        return None
 
 
 class NoopSignupBackend:

@@ -26,6 +26,7 @@ Production deployments install the `[billing]` extra to pull
 
 from __future__ import annotations
 
+from metis_gateway.billing.backend import StripeBillingBackend
 from metis_gateway.billing.client import (
     BillingClient,
     BillingClientError,
@@ -73,6 +74,7 @@ __all__ = [
     "FakeBillingClient",
     "Invoice",
     "PaymentMethod",
+    "StripeBillingBackend",
     "Subscription",
     "SubscriptionItem",
     "SubscriptionRecord",

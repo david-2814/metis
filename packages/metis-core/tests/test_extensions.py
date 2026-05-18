@@ -42,6 +42,7 @@ class FakeProBilling:
     def __init__(self) -> None:
         self.recorded: list[tuple[str, Decimal]] = []
         self.tier_for: dict[str, str] = {}
+        self.registered = False
 
     async def record_usage(self, account_id: str, savings_usd: Decimal) -> None:
         self.recorded.append((account_id, savings_usd))
@@ -51,6 +52,9 @@ class FakeProBilling:
 
     async def current_tier(self, account_id: str) -> str:
         return self.tier_for.get(account_id, "free")
+
+    def register_routes(self, app):
+        self.registered = True
 
 
 class FakeProSignup:
@@ -136,6 +140,9 @@ async def test_noop_billing_records_nothing_and_returns_free_active() -> None:
     await backend.record_usage("any-account", Decimal("12.34"))  # no exception, no state
     assert await backend.check_active("any-account") is True
     assert await backend.current_tier("any-account") == "free"
+    # No routes mounted — free deployments don't expose /account/billing/*.
+    sentinel = object()
+    assert backend.register_routes(sentinel) is None  # type: ignore[arg-type]
 
 
 def test_noop_signup_register_routes_is_a_noop() -> None:
@@ -183,6 +190,11 @@ async def test_fake_pro_billing_records_usage_and_reports_tier() -> None:
     assert await backend.check_active("acc-pro-1") is True
     assert await backend.check_active("lapsed-account") is False
 
+    # Boot-time route registration is observable via the side-effect flag.
+    assert backend.registered is False
+    backend.register_routes(object())
+    assert backend.registered is True
+
 
 def test_fake_pro_judge_rubrics_returns_workload_specific_prompts() -> None:
     provider = FakeProJudgeRubrics(
@@ -212,6 +224,8 @@ def test_billing_backend_method_signatures_are_stable() -> None:
     assert list(check.parameters)[1:] == ["account_id"]
     tier = inspect.signature(BillingBackend.current_tier)  # type: ignore[arg-type]
     assert list(tier.parameters)[1:] == ["account_id"]
+    register = inspect.signature(BillingBackend.register_routes)  # type: ignore[arg-type]
+    assert list(register.parameters)[1:] == ["app"]
 
 
 def test_judge_rubric_provider_method_signatures_are_stable() -> None:
