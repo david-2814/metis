@@ -758,55 +758,8 @@ async def test_cost_team_filter_sql_injection_guard(principal_seeded_client):
     assert r.json()["error"]["code"] == "invalid_team"
 
 
-async def test_by_team_endpoint_round_trip(principal_seeded_client):
-    r = await principal_seeded_client.get("/analytics/by_team")
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert "window" in body
-    assert "current_pricing_version" in body
-    by_team = {row["team_id"]: row for row in body["data"]}
-    eng = by_team["team_eng"]
-    assert eng["cost_usd"] == pytest.approx(0.35)
-    assert eng["call_count"] == 3
-    assert eng["user_count"] == 2
-    sub = {row["user_id"]: row for row in eng["by_user"]}
-    assert sub["usr_alice"]["cost_usd"] == pytest.approx(0.15)
-    assert sub["usr_bob"]["cost_usd"] == pytest.approx(0.20)
-    # bob spent more than alice → bob first within the team.
-    assert eng["by_user"][0]["user_id"] == "usr_bob"
-    # Order: team_sales is most expensive → first row.
-    assert body["data"][0]["team_id"] == "team_sales"
-    # Null bucket present with user_count == 0.
-    assert by_team[None]["user_count"] == 0
-    assert by_team[None]["cost_usd"] == pytest.approx(0.03)
-
-
-async def test_by_team_endpoint_filter_returns_one_team(principal_seeded_client):
-    r = await principal_seeded_client.get("/analytics/by_team", params={"team": "team_eng"})
-    assert r.status_code == 200
-    body = r.json()
-    assert len(body["data"]) == 1
-    assert body["data"][0]["team_id"] == "team_eng"
-
-
-async def test_by_team_endpoint_sql_injection_guard(principal_seeded_client):
-    r = await principal_seeded_client.get(
-        "/analytics/by_team",
-        params={"team": "DROP TABLE"},
-    )
-    assert r.status_code == 400
-    assert r.json()["error"]["code"] == "invalid_team"
-
-
-async def test_by_team_null_bucket_present_with_only_untagged(principal_seeded_client):
-    """When only un-tagged rows match, the null bucket still appears."""
-    r = await principal_seeded_client.get(
-        "/analytics/by_team",
-        params={
-            "from": "1970-01-01T00:00:00Z",
-            "to": "1970-01-02T00:00:00Z",
-        },
-    )
-    # Empty window — no rows at all.
-    assert r.status_code == 200
-    assert r.json()["data"] == []
+# §4.4 (2026-05-18) — the 4 test_by_team_* tests moved to
+# metis-pro/tests/analytics_overlays/test_by_team.py alongside the
+# /analytics/by_team handler. The OSS test_cost_group_by_user / _team /
+# _filter_* tests above stay because the /analytics/cost handler (with
+# its user/team filter params) remains Community-tier.

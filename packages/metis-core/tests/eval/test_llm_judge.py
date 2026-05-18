@@ -104,6 +104,7 @@ def _build_llm_judge(
     responses: list[_ScriptedResponse],
     budget: BudgetTracker | None = None,
     config: LLMJudgeConfig | None = None,
+    rubric_provider=None,
 ) -> tuple[LLMJudge, _ScriptedAnthropicAdapter]:
     adapter = _ScriptedAnthropicAdapter(responses)
     judge = LLMJudge(
@@ -111,6 +112,7 @@ def _build_llm_judge(
         pricing=DEFAULT_PRICE_TABLE,
         config=config or LLMJudgeConfig(),
         budget=budget or BudgetTracker(),
+        rubric_provider=rubric_provider,
     )
     return judge, adapter
 
@@ -400,3 +402,100 @@ async def test_hybrid_passes_through_for_tool_cycle_and_session() -> None:
     verdict = await hybrid.evaluate(ctx)
     assert verdict.judge_kind == "heuristic"
     assert len(adapter.requests) == 0
+
+
+# ----- §4.5: JudgeRubricProvider integration -------------------------------
+
+
+_FAKE_RUBRIC_LIBRARY_PROMPTS: dict[tuple[str, str], str] = {
+    ("turn", "regex-with-edge-cases"): "PRO_REGEX_RUBRIC_PROMPT",
+    ("workload", "regex-with-edge-cases"): "PRO_WORKLOAD_RUBRIC_PROMPT",
+}
+
+
+class _FakeRubricLibrary:
+    """Minimal `JudgeRubricProvider` stand-in.
+
+    Mirrors what `metis_pro.judges.rubrics.ProRubricLibrary` will look like:
+    a per-(subject_kind, workload_id) lookup table that returns custom
+    prompt strings, falling back to `None` for unknown combinations.
+    """
+
+    VERSION = "fake-pro-1.0"
+
+    def rubric_for(self, subject_kind: str, workload_id: str | None) -> str | None:
+        return _FAKE_RUBRIC_LIBRARY_PROMPTS.get((subject_kind, workload_id))
+
+    def rubric_version(self) -> str:
+        return self.VERSION
+
+
+async def test_llm_judge_falls_back_to_noop_rubric_when_no_provider() -> None:
+    """The default LLMJudge uses NoopJudgeRubricProvider → falls back to the
+    OSS `_SYSTEM_PROMPT`. The rubric_id / rubric_version on the verdict
+    must be the OSS built-in constants (pre-§4.5 behavior preserved).
+    """
+    judge, adapter = _build_llm_judge(
+        responses=[_judge_response(score=0.9, confidence=0.8, rationale="ok")]
+    )
+    verdict = await judge.evaluate(_clean_turn_ctx())
+    assert verdict.rubric_id == "turn-llm-v1"
+    assert verdict.rubric_version == "1.0.0"
+    # The adapter received the OSS prompt (a non-empty system_prompt that
+    # starts with the recognizable opening line).
+    assert adapter.requests[-1].system_prompt is not None
+    assert "You are an evaluator" in adapter.requests[-1].system_prompt
+
+
+async def test_llm_judge_consumes_pro_rubric_when_workload_matches() -> None:
+    """When the Pro provider returns a custom prompt for the
+    (subject_kind, workload_id) pair, LLMJudge uses it AND stamps the
+    provider's rubric_version on the verdict.
+
+    `workload_id` is resolved from `SubjectContext.signals_extra` (the
+    harness-injected pass-through dict) — `WorkloadRubric` doesn't carry
+    a workload_id field in v1.
+    """
+    judge, adapter = _build_llm_judge(
+        responses=[_judge_response(score=0.7, confidence=0.6, rationale="partial")],
+        rubric_provider=_FakeRubricLibrary(),
+    )
+    ctx = SubjectContext(
+        subject_kind="turn",
+        subject_id=new_turn_id(),
+        events=[
+            build_llm_completed(session_id=SESSION_ID, turn_id="t1"),
+            build_turn_completed(session_id=SESSION_ID, turn_id="t1"),
+        ],
+        session_id=SESSION_ID,
+        signals_extra={"workload_id": "regex-with-edge-cases"},
+    )
+    verdict = await judge.evaluate(ctx)
+    assert verdict.rubric_id == "fake-pro-1.0"
+    assert verdict.rubric_version == "fake-pro-1.0"
+    assert adapter.requests[-1].system_prompt == "PRO_REGEX_RUBRIC_PROMPT"
+
+
+async def test_llm_judge_falls_back_when_pro_rubric_unknown_workload() -> None:
+    """The Pro provider returns None for unknown (subject_kind,
+    workload_id) pairs; LLMJudge falls back to the OSS prompt + built-in
+    rubric stamping.
+    """
+    judge, adapter = _build_llm_judge(
+        responses=[_judge_response(score=0.9, confidence=0.8, rationale="ok")],
+        rubric_provider=_FakeRubricLibrary(),
+    )
+    ctx = SubjectContext(
+        subject_kind="turn",
+        subject_id=new_turn_id(),
+        events=[
+            build_llm_completed(session_id=SESSION_ID, turn_id="t2"),
+            build_turn_completed(session_id=SESSION_ID, turn_id="t2"),
+        ],
+        session_id=SESSION_ID,
+        signals_extra={"workload_id": "not-in-pro-library"},
+    )
+    verdict = await judge.evaluate(ctx)
+    assert verdict.rubric_id == "turn-llm-v1"
+    assert verdict.rubric_version == "1.0.0"
+    assert "You are an evaluator" in adapter.requests[-1].system_prompt

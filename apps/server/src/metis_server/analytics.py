@@ -13,7 +13,6 @@ but the SPA's expected concurrency is well within the loopback v1 envelope).
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
 from typing import Any
 
 import msgspec
@@ -27,16 +26,9 @@ from metis_core.analytics import (
     UnknownBaselineModelError,
     resolve_window,
 )
-from metis_core.events.envelope import Actor
-from metis_core.events.payloads import (
-    AnalyticsUserExported,
-    AnalyticsUserForgotten,
-    make_event,
-)
 from metis_core.pricing import PriceTable
-from metis_core.redaction import PseudonymizingRedactor, Redactor, pseudonym_for
 from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import Response
 
 from metis_server.errors import (
     invalid_gateway_key,
@@ -46,7 +38,6 @@ from metis_server.errors import (
     invalid_team,
     invalid_time_window,
     invalid_user,
-    invalid_user_id_path,
     turn_not_found,
     unknown_baseline_model,
 )
@@ -200,148 +191,12 @@ async def by_key(request: Request) -> Response:
     return _json(_envelope(window, _pricing(request).version, data))
 
 
-async def by_team(request: Request) -> Response:
-    """GET /analytics/by_team (multi-user.md §5.2).
-
-    Per-(team_id) cost + tokens + call_count rollup, with a `by_user`
-    sub-array per row. Rows with `team_id: null` cover agent-loop traffic
-    and pre-v1 gateway keys issued without `--team`. Sorted by
-    `cost_usd` DESC; the `by_user` sub-array is also `cost_usd` DESC.
-    """
-    window = _resolve_window_from_query(request)
-    team = request.query_params.get("team")
-    if team is not None and not _PRINCIPAL_ID_PATTERN.match(team):
-        raise invalid_team(f"team={team!r} does not look like a valid team id")
-    data = _store(request).by_team(window, team=team)
-    return _json(_envelope(window, _pricing(request).version, data))
-
-
-def _resolve_user_id_path(request: Request) -> str:
-    """Pull `{user_id}` off the path, apply the same shape guard as the filter param.
-
-    The portability / forget endpoints take the subject id in the URL path
-    rather than a query parameter; the shape guard keeps the surface
-    defense-in-depth even though every SQL/JSON write goes through a
-    placeholder.
-    """
-    raw = request.path_params["user_id"]
-    if not isinstance(raw, str) or not _PRINCIPAL_ID_PATTERN.match(raw):
-        raise invalid_user_id_path(f"user_id={raw!r} does not look like a valid user id")
-    return raw
-
-
-async def user_export(request: Request) -> Response:
-    """GET /analytics/user/{user_id}/export (analytics-api.md §4.10.1).
-
-    Streams every event stamped with `user_id` as JSONL (one event per
-    line). Optional `from` / `to` window narrows the export. Loopback-
-    only inherits from the rest of `/analytics/*` (analytics-api.md
-    §2.1.4); per-user authentication is downstream of the deployment-
-    shape fork in STRATEGY.md §3.
-
-    The body is a streaming response — the full result is never
-    materialized in memory, so 10k+ event exports cost O(1) RAM. PRIVATE-
-    tier fields are included verbatim (this is the subject's own data).
-
-    On successful stream completion, an `analytics.user_exported` audit
-    event is emitted onto the bus with the byte count + row count so a
-    later compliance review can reconcile the export artifact.
-    """
-    user_id = _resolve_user_id_path(request)
-    # Empty / mismatched window — return 400 the same way the other
-    # endpoints do.
-    has_window = (
-        request.query_params.get("from") is not None or request.query_params.get("to") is not None
-    )
-    window: TimeWindow | None = _resolve_window_from_query(request) if has_window else None
-
-    store = _store(request)
-    state = request.app.state.app_state
-    bus = state.runtime.bus
-    row_count_at_start = store.user_event_count(user_id, window=window)
-
-    async def _stream():
-        byte_count = 0
-        row_count = 0
-        for line in store.user_export(user_id, window=window):
-            byte_count += len(line)
-            row_count += 1
-            yield line
-        # Audit event fires after the body has been fully drained. If the
-        # client disconnects mid-stream the generator stops here and the
-        # event reflects what was actually delivered.
-        bus.emit(
-            make_event(
-                type="analytics.user_exported",
-                session_id="analytics",
-                actor=Actor.SYSTEM,
-                payload=AnalyticsUserExported(
-                    subject_user_id=user_id,
-                    requested_by=None,
-                    row_count=row_count,
-                    byte_count=byte_count,
-                    window_start=window.start if window is not None else None,
-                    window_end=window.end if window is not None else None,
-                ),
-                timestamp=datetime.now(UTC),
-            )
-        )
-
-    headers = {
-        # Suggest a filename for `curl -O` / browser saves. The id is
-        # already shape-checked above so no header injection risk.
-        "Content-Disposition": f'attachment; filename="{user_id}.jsonl"',
-        "X-Metis-Row-Count": str(row_count_at_start),
-    }
-    return StreamingResponse(
-        _stream(),
-        media_type="application/jsonl",
-        headers=headers,
-    )
-
-
-async def user_forget(request: Request) -> Response:
-    """POST /analytics/user/{user_id}/forget (analytics-api.md §4.10.2).
-
-    Triggers redaction.md's pseudonymization flow against every event
-    stamped with `user_id`. Idempotent: a second call returns 0
-    pseudonymized rows; the audit event fires either way. Loud audit
-    event (`analytics.user_forgotten`) lands on the bus regardless of
-    the row count.
-
-    Returns: `{user_id, pseudonym, pseudonymized_rows, timestamp}`.
-    """
-    user_id = _resolve_user_id_path(request)
-    state = request.app.state.app_state
-    redactor: Redactor = getattr(state, "redactor", None) or PseudonymizingRedactor(
-        state.runtime.db_file
-    )
-    bus = state.runtime.bus
-
-    rows = _store(request).forget_user(user_id, redactor=redactor)
-    pseudonym = pseudonym_for(user_id)
-    bus.emit(
-        make_event(
-            type="analytics.user_forgotten",
-            session_id="analytics",
-            actor=Actor.SYSTEM,
-            payload=AnalyticsUserForgotten(
-                subject_user_id=user_id,
-                pseudonym=pseudonym,
-                requested_by=None,
-                pseudonymized_rows=rows,
-            ),
-            timestamp=datetime.now(UTC),
-        )
-    )
-    return _json(
-        {
-            "user_id": user_id,
-            "pseudonym": pseudonym,
-            "pseudonymized_rows": rows,
-            "completed_at": datetime.now(UTC).isoformat(),
-        }
-    )
+# §4.4 (2026-05-18) — by_team / user_export / user_forget handlers moved to
+# metis_pro.analytics_overlays.handlers. The Pro overlay mounts them via
+# ProAnalyticsExtension.register_routes; OSS-only deployments do not expose
+# these endpoints (the rollup SQL — AnalyticsStore.by_team, .user_export,
+# .forget_user — stays in metis_core.analytics and remains callable from
+# library code).
 
 
 async def quality(request: Request) -> Response:

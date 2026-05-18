@@ -196,36 +196,111 @@ Sequenced so each step leaves the OSS repo with a green test suite. Do NOT batch
 - [x] Verify metis-pro `uv run pytest` green: **54 passed, 3 skipped**
 - [x] Ruff clean on both repos (1 unused-import in OSS app.py auto-fixed; 5 import-ordering + 2 format fixes in metis-pro auto-fixed)
 
-### 4.2c Tier-axis quota composition follow-on — **OPEN**
+### 4.2c Tier-axis quota composition follow-on — **DONE 2026-05-18**
 
-The 3 cap-blocking tests in `metis-pro/tests/billing/test_quota_composition.py` are skipped because tier-axis composition (formerly `_resolve_tier_caps` in `metis_gateway.app`) moved with the billing module but the *injection point* into the OSS gateway hot-path has not yet been re-added. The OSS gateway hardcodes `tier_caps=None` at the `enforce_quotas` call sites.
+Closes the 3 cap-blocking tests in `metis-pro/tests/billing/test_quota_composition.py` that were skipped at the end of §4.2b. Implementation: **Option A** — a new `TierCapsResolver` Protocol; Pro overlay provides the real implementation; OSS keeps a noop.
 
-Repair candidates (pick one when the work lands):
+The Protocol landed in **`apps/gateway/src/metis_gateway/extensions.py`** (NEW file) rather than `metis_core.extensions.py`. Reason: the signature references gateway-private types (`GatewayKey` from `metis_gateway.auth`, `TierCaps` from `metis_gateway.quotas`); keeping those types out of metis-core preserves the layering invariant that metis-core never references metis-gateway. The convention for the broader split is: Protocols whose signatures only need stdlib types (or Starlette via TYPE_CHECKING) live in `metis_core.extensions`; Protocols with gateway-private types live in `metis_gateway.extensions`.
 
-- **Option A — New OSS Protocol hook** on `GatewayConfig` (e.g. `tier_caps_resolver: TierCapsResolver`); Pro overlay implements it. Smallest API surface; keeps the call site in OSS.
-- **Option B — `build_pro_app(runtime, config)` wrapper** in `metis-pro` that wraps OSS `build_app` and replaces the two request handlers with tier-aware versions. Heavier; reproduces hot-path code.
+OSS changes:
 
-Option A is preferred. Adding `TierCapsResolver` as a 5th Protocol in `metis-core/extensions.py` keeps the boundary discipline; Pro implements `resolve(account_id, key) -> TierCaps | None` and the OSS handlers call it. The OSS noop returns None (the current behavior).
+- [x] `apps/gateway/src/metis_gateway/extensions.py` — new module exporting `TierCapsResolver` (runtime-checkable) and `NoopTierCapsResolver` (OSS default, returns `None` for every key).
+- [x] `apps/gateway/src/metis_gateway/app.py` — `GatewayConfig` gains a `tier_caps_resolver: TierCapsResolver` field with `NoopTierCapsResolver` as the default factory. `_AppState` carries the same field. `build_app(..., tier_caps_resolver=...)` accepts an override. Both `enforce_quotas` call sites (`chat_completions` line 428, `messages` line 641) now call `st.tier_caps_resolver(key)` instead of the §4.2b-era hardcoded `tier_caps=None`.
+- [x] `run_gateway` detects noop vs real `TierCapsResolver` (mirroring the billing / signup forwarding pattern) and passes through.
 
-### 4.3 Second move — `signup.py` + accounts store
+metis-pro changes:
 
-- [ ] Copy [apps/gateway/.../signup.py](../../apps/gateway/src/metis_gateway/signup.py) → `metis-pro/src/metis_pro/signup/`
-- [ ] Wrap the `/signup`, `/signup/verify`, `/account/keys` routes under `SignupBackend.register_routes()`
-- [ ] Move signup tests
-- [ ] Delete `signup.py` from OSS
-- [ ] Verify both repos green
+- [x] `src/metis_pro/quotas.py` — new module with `ProTierCapsResolver`. The class wraps `(SignupState, BillingState)` captured at composition time. Its `__call__(key)` lifts the pre-§4.2b `_resolve_tier_caps` body verbatim: walks `key → account_for_key → enforce_failed_payment_state → get_customer → tier`; returns the `TierCaps(account_id, key_ids, daily_cap_usd, monthly_cap_usd)` from `BillingConfig` only when the resolved tier is `"free"`. Non-free tiers and unknown keys return `None`.
+- [x] `tests/billing/conftest.py` — `billing_client_http` now constructs `ProTierCapsResolver(signup_state, billing_state)` alongside the `MagicLinkSignupBackend` + `StripeBillingBackend`, and passes all three to `build_app`.
+- [x] `tests/billing/test_quota_composition.py` — the 3 cap-blocking tests are un-skipped (the `_TIER_AXIS_INJECTION_PENDING` decorator is removed from all three).
 
-### 4.4 Third move — per-user / per-team analytics route handlers
+Verification:
 
-- [ ] Identify the *route handler* code (vs. the rollup SQL — the latter stays OSS)
-- [ ] Move only the route mounting to `metis-pro/src/metis_pro/analytics_overlays/`
-- [ ] Wrap under `AnalyticsExtension.register_routes()`
-- [ ] Leave the rollup functions in [packages/metis-core/analytics/](../../packages/metis-core/src/metis_core/analytics/) — they're library calls, not endpoints, and self-hosters benefit from them
-- [ ] Delete the route handlers from OSS; verify OSS gateway exposes only `/analytics/cost`, `/analytics/by_key`, `/analytics/savings`, `/analytics/quality` (per-key is Community)
+- [x] OSS `uv run pytest`: **1781 passed, 1 skipped** (unchanged from §4.3; the noop preserves the pre-§4.2c behavior, so no test results moved).
+- [x] metis-pro `uv run pytest`: **77 passed, 0 skipped** (was 74 + 3 skip; the 3 tier-axis tests are now active and green).
+- [x] Ruff clean on both repos (1 long-line fix in `metis_pro/quotas.py` auto-formatted).
 
-### 4.5 Fourth move — curated LLM-judge rubric library
+### 4.3 Second move — `signup.py` + accounts store — **DONE 2026-05-18**
 
-- [ ] Audit [packages/metis-core/eval/](../../packages/metis-core/src/metis_core/eval/) for embedded rubric strings / prompt templates
+- [x] Copy `apps/gateway/.../signup.py` → `metis-pro/src/metis_pro/signup.py` (984 LOC, single flat module — promoting to a package directory is a future refactor if it grows)
+- [x] Copy `apps/gateway/tests/test_signup.py` → `metis-pro/tests/test_signup.py`
+- [x] Add `MagicLinkSignupBackend` adapter at the end of `metis_pro/signup.py` implementing `SignupBackend` Protocol: wraps `SignupState`, stashes it on `app.state.signup`, mounts the 5 routes (`POST /signup`, `POST /signup/verify`, `GET /account/keys`, `POST /account/keys`, `DELETE /account/keys/{key_id}`), and registers the `SignupError → 4xx envelope` exception handler via `app.add_exception_handler`
+- [x] Update `_state(request)` in metis-pro's signup.py to read from `app.state.signup` (the new Pro stash) instead of the legacy `app.state.app_state.signup` (OSS's _AppState which no longer carries the field); legacy fallback preserved for callers that still pass the old shape
+- [x] Bulk-rewrite imports: `metis_gateway.signup` → `metis_pro.signup` (5 references — billing/routes.py + tests/billing/conftest.py)
+- [x] Delete `apps/gateway/src/metis_gateway/signup.py` from OSS
+- [x] Delete `apps/gateway/tests/test_signup.py` from OSS
+- [x] Refactor OSS `apps/gateway/src/metis_gateway/app.py`: remove the `from metis_gateway.signup import (...)` block (10 symbols); remove `signup: SignupConfig | None = None` from `GatewayConfig`; remove `signup: SignupState | None = None` from `_AppState`; remove `_resolve_signup_config` helper; remove `signup_state` construction + explicit signup route list + the `SignupError` exception handler. Replace the explicit signup route mounting with `signup_backend.register_routes(app)` called after Starlette construction (mirroring the §4.2a billing pattern)
+- [x] Refactor OSS `run_gateway`: detect noop vs real `SignupBackend` (mirror the billing pattern); pass through to `build_app(signup_backend=...)`
+- [x] Refactor OSS `apps/gateway/src/metis_gateway/cli.py`: remove `from metis_gateway.signup import SignupConfig`; remove `signup_enabled` / `signup_dashboard_url` / `signup_accounts_path` parameters; remove the `signup_cfg` construction block
+- [x] Refactor OSS `apps/cli/src/metis_cli/main.py`: remove the three `--enable-signup` / `--signup-dashboard-url` / `--signup-accounts-path` flags from the `gateway` subparser; remove the three matching args from the `run_gateway_command(...)` call
+- [x] Fix metis-pro test fixtures: `tests/test_signup.py::signup_client` + `tests/billing/conftest.py::billing_client_http` now compose `MagicLinkSignupBackend(build_signup_state(signup_config))` and pass it via `build_app(signup_backend=...)` — the Pro composition pattern
+- [x] Verify OSS `uv run pytest` green: **1781 passed, 1 skipped** (was 1801, -20 signup tests)
+- [x] Verify metis-pro `uv run pytest` green: **74 passed, 3 skipped** (was 54 + 3, +20 signup tests)
+- [x] Ruff clean on both repos (3 import-ordering fixes in metis-pro auto-fixed)
+
+### 4.4 Third move — per-user / per-team analytics route handlers — **DONE 2026-05-18**
+
+Moved the Pro-tier `/analytics/*` route handlers from OSS metis-server to `metis-pro/src/metis_pro/analytics_overlays/`. The rollup SQL methods (`AnalyticsStore.by_team`, `.user_export`, `.forget_user`) stayed in `metis_core.analytics` — self-hosters can still call them from library code.
+
+Pro endpoints moved:
+
+- `GET  /analytics/by_team`                       (multi-user.md §5.2)
+- `GET  /analytics/user/{user_id}/export`         (analytics-api.md §4.10.1)
+- `POST /analytics/user/{user_id}/forget`         (analytics-api.md §4.10.2)
+
+Community endpoints that stayed in OSS:
+
+- `/analytics/cost` (incl. `?group_by=user|team` filters), `/analytics/cache_effectiveness`, `/analytics/routing`, `/analytics/reliability`, `/analytics/sessions`, `/analytics/turns/{turn_id}`, `/analytics/savings`, `/analytics/by_key`, `/analytics/quality`.
+
+metis-pro additions:
+
+- [x] `src/metis_pro/analytics_overlays/__init__.py` exporting `ProAnalyticsExtension`.
+- [x] `src/metis_pro/analytics_overlays/handlers.py` — 3 handler functions migrated verbatim from `metis_server.analytics`. Handlers import OSS-private helpers (`_store`, `_envelope`, `_resolve_window_from_query`, `_pricing`) via documented private-import coupling — the Pro overlay is *expected* to compose with OSS internals rather than fork them.
+- [x] `src/metis_pro/analytics_overlays/extension.py` — `ProAnalyticsExtension` class implementing `AnalyticsExtension.register_routes`, appending the 3 routes to `app.router.routes` at boot.
+- [x] `tests/analytics_overlays/test_by_team.py` — 4 tests with a `principal_seeded_client` fixture that builds `build_app(runtime, analytics_extension=ProAnalyticsExtension())`. Tests moved from `apps/server/tests/test_analytics_http.py`.
+- [x] `tests/analytics_overlays/test_user_export.py` — 10 tests with a `seeded_client` fixture, same pattern. Whole file moved from `apps/server/tests/test_user_export_http.py`.
+- [x] `tests/analytics_overlays/conftest.py` — server-side `runtime` fixture (ChatRuntime, not GatewayRuntime). Copied from `apps/server/tests/conftest.py` as a subtree-scoped override so the analytics tests get the right runtime shape while the billing tests under `tests/billing/` keep the gateway-flavored `runtime` from `tests/conftest.py`.
+- [x] `pyproject.toml` — added `metis-server` to dependencies + `tool.uv.sources` path override. Also added `metis-cli` to deps because `metis-server.app` has an undeclared transitive coupling to `metis-cli.models_display` + `metis-cli.runtime` (a pre-existing OSS layering quirk; metis-pro itself does NOT import metis_cli — the dep is transitive-only).
+
+OSS deletions / refactors:
+
+- [x] `apps/server/src/metis_server/analytics.py` — removed the 3 handlers (`by_team`, `user_export`, `user_forget`) and the `_resolve_user_id_path` helper. Removed sole-user imports (`AnalyticsUserExported`, `AnalyticsUserForgotten`, `PseudonymizingRedactor`, `Redactor`, `pseudonym_for`, `Actor`, `make_event`, `StreamingResponse`, `invalid_user_id_path`).
+- [x] `apps/server/tests/test_user_export_http.py` — deleted (whole file moved to metis-pro).
+- [x] `apps/server/tests/test_analytics_http.py` — deleted the 4 `test_by_team_*` tests (lines 761–812); the `test_cost_group_by_user/_team/_filter_*` tests stayed because they exercise the Community-tier `/analytics/cost` endpoint's user/team filter params.
+- [x] `apps/server/src/metis_server/app.py` — removed the 3 route mounts; added `analytics_extension: AnalyticsExtension | None = None` parameter to `build_app`; calls `analytics_extension.register_routes(app)` after Starlette construction when set. The `ServerConfig.analytics_extension` field (added as scaffolding in §4.1) is now actually consumed at the production composition root via this parameter.
+
+Verification:
+
+- [x] OSS `uv run pytest`: **1767 passed, 1 skipped** (was 1781, −14 tests moved to metis-pro).
+- [x] metis-pro `uv run pytest`: **91 passed, 0 skipped** (was 77, +14 analytics tests).
+- [x] Ruff clean on both repos after auto-fix (2 imports in OSS, 4 imports in metis-pro auto-organized).
+
+### 4.5 Fourth move — curated LLM-judge rubric library — **DONE 2026-05-18**
+
+The audit found the OSS rubric surface much smaller than the plan anticipated: a single shared `_SYSTEM_PROMPT` constant in `packages/metis-core/src/metis_core/eval/llm_judge.py` plus 4 `*_RUBRIC_ID` / `*_RUBRIC_VERSION` constants that get stamped on verdicts (no per-workload variation in OSS). So §4.5's actual shape is **wiring** the `JudgeRubricProvider` Protocol from §4.1 (which was scaffold-only) and shipping a small Pro library that demonstrates the override path. The generic `_SYSTEM_PROMPT` stays in OSS as the fallback.
+
+OSS changes:
+
+- [x] `packages/metis-core/src/metis_core/eval/llm_judge.py`: `LLMJudge.__init__` takes a new `rubric_provider: JudgeRubricProvider | None = None` parameter; defaults to `NoopJudgeRubricProvider()`. Three new internal helpers — `_resolve_workload_id(ctx)` (reads from `signals_extra["workload_id"]` or `ctx.workload_rubric` via `getattr` so older `WorkloadRubric` shapes that don't carry the field don't break), `_resolve_system_prompt(ctx)` (consults the provider, falls back to `_SYSTEM_PROMPT`), `_resolve_rubric_stamp(ctx)` (returns `(provider.rubric_version(), provider.rubric_version())` when custom prompt active; otherwise `_llm_rubric_for(subject_kind)` returning the OSS constants). `_call_adapter` now uses `_resolve_system_prompt(ctx)` instead of the hardcoded `_SYSTEM_PROMPT`; `evaluate` uses `_resolve_rubric_stamp(ctx)` instead of `_llm_rubric_for(ctx.subject_kind)`. Noop semantics preserve the pre-§4.5 behavior end-to-end.
+- [x] `packages/metis-core/tests/eval/test_llm_judge.py`: added 3 contract tests — `test_llm_judge_falls_back_to_noop_rubric_when_no_provider`, `test_llm_judge_consumes_pro_rubric_when_workload_matches`, `test_llm_judge_falls_back_when_pro_rubric_unknown_workload`. The `_FakeRubricLibrary` test helper mirrors the eventual `ProRubricLibrary` shape (table-keyed lookup) so the OSS tests verify the wiring without depending on metis-pro.
+
+metis-pro additions:
+
+- [x] `src/metis_pro/judges/__init__.py` re-exporting `ProRubricLibrary` + `PRO_RUBRIC_VERSION`.
+- [x] `src/metis_pro/judges/rubrics.py` — `ProRubricLibrary` class implementing `JudgeRubricProvider`. Ships a minimal seed library: 2 entries (`("turn", "regex-with-edge-cases")` + `("workload", "regex-with-edge-cases")`) with workload-specific prompts. `PRO_RUBRIC_VERSION = "pro-rubrics-1.0.0"` is the library-wide stamp. Production curation grows the lookup table without touching the OSS substrate or the Protocol contract.
+- [x] `tests/judges/test_rubrics.py` — 4 contract tests: Protocol satisfaction via `isinstance(...)`, `None` for unregistered pairs (including any `workload_id=None`), non-empty workload-specific prompts for registered pairs (turn ≠ workload prompt for same workload), version stamp is stable. The LLMJudge → JudgeRubricProvider integration is already verified by the OSS-side contract tests using a structurally identical `_FakeRubricLibrary`, so a duplicate end-to-end integration test in metis-pro would be redundant.
+
+Verification:
+
+- [x] OSS `uv run pytest`: **1770 passed, 1 skipped** (was 1767, +3 contract tests).
+- [x] metis-pro `uv run pytest`: **95 passed, 0 skipped** (was 91, +4 contract tests).
+- [x] Ruff clean on both repos (1 RUF012 fix on the OSS `_FakeRubricLibrary` mutable class attribute, 1 format on metis-pro test).
+
+The "rubric library" is now end-to-end overridable: Pro deployments construct `LLMJudge(rubric_provider=ProRubricLibrary())` and the workload-specific prompts get injected at adapter-call time + the verdict stamps the Pro version. OSS deployments preserve the pre-§4.5 behavior byte-for-byte.
+
+#### Audit results (replaces the original to-do list)
+
+- [x] Audit [packages/metis-core/eval/](../../packages/metis-core/src/metis_core/eval/) for embedded rubric strings / prompt templates
 - [ ] Extract them to `metis-pro/src/metis_pro/judges/rubrics/`
 - [ ] Replace with `JudgeRubricProvider` Protocol calls in OSS
 - [ ] OSS evaluator ships a minimal example rubric (one workload, low-quality) so the substrate is demonstrably functional standalone
@@ -235,6 +310,61 @@ Option A is preferred. Adding `TierCapsResolver` as a 5th Protocol in `metis-cor
 
 - [ ] Hosted dashboard UI → `metis-pro/dashboard/`
 - [ ] SAML / OIDC / SCIM → `metis-pro/enterprise/`
+
+### 4.7 Apache-2.0 license + LICENSE file — **DONE 2026-05-18**
+
+The migration's code-move chapter closed with §4.5; §4.7 formalizes the OSS license so the repo is publish-ready. Apache-2.0 was the choice ratified in [`pricing.md §12`](../specs/pricing.md) (2026-05-17) — see that entry for the full rationale (buyer trust signal, four-leg moat is operational not source-level, reversible if a fork-and-SaaS threat materializes).
+
+Additions:
+
+- [x] `LICENSE` at repo root — full Apache License 2.0 text with `Copyright 2026 David Ji` in the appendix boilerplate.
+- [x] `CONTRIBUTING.md` at repo root — names the inbound=outbound Apache-2.0 contribution rule (no CLA required in v1), points at AGENTS.md / STRATEGY.md / specs as required reading, summarizes the OSS-substrate-vs-metis-pro boundary, lays out the local-dev + PR checklist.
+
+Refactors:
+
+- [x] `README.md:367` — replaced `_TBD_` with an Apache-2.0 reference pointing at the LICENSE file and CONTRIBUTING.md.
+- [x] All 5 `pyproject.toml` files (root + metis-core + metis-server + metis-gateway + metis-cli) — added `license = "Apache-2.0"` (PEP 639 SPDX expression) + `license-files = ["..."]` pointing at the repo-root LICENSE.
+- [x] `AGENTS.md` — "Working norms" bullet updated from `(Apache-2.0, target)` to `(Apache-2.0)` with pointers to LICENSE + CONTRIBUTING.md, and the extension-Protocol count corrected to **five** (the §4.2c `TierCapsResolver` lives in `metis_gateway.extensions`, not metis-core).
+
+Verification:
+
+- [x] OSS `uv run pytest`: 1770 passed, 1 skipped (unchanged — license artifacts don't touch code paths).
+- [x] Ruff clean (no Python source changes in this step).
+- [x] No metis-pro work required — Pro repo stays all-rights-reserved as documented in `metis-pro/AGENTS.md`.
+
+The repo is now **publish-ready**. §4.8 (the actual publish event — visibility flip, GitHub Actions setup, PyPI registration) remains an owner-decision step, not in the execution scope of this plan.
+
+### 4.9 Public marketing site (`product-site/`) → metis-pro — **DONE 2026-05-18**
+
+Added to the migration plan after §4.7 as a final separation step: the OSS repo's `/product-site/` directory (Astro + Tailwind site for `https://2sum.ai`) moves to `metis-pro/product-site/`. Buyer-facing marketing material aligns with the Pro tier; the OSS substrate's public face going forward is the mkdocs-built docs site at `~/git/metis/docs/` (planned for GitHub Pages deployment on the OSS repo).
+
+Files moved (31 tracked entries via `git ls-files`):
+
+- [x] `product-site/` — entire Astro project tree (src/, public/, infra/ CDK, package.json, astro.config.mjs, tsconfig.json, HOSTING.md, .gitignore).
+- [x] `.github/workflows/deploy-product-site.yml` — the GitHub Actions deploy workflow (73 lines, AWS OIDC + CDK + S3 + CloudFront invalidation).
+
+The `.github/` directory in OSS is now empty and removed entirely; any future OSS CI workflows (e.g. publish-to-PyPI) recreate it under metis.
+
+OSS cross-reference cleanup:
+
+- [x] `AGENTS.md`: removed the "Product-site GA polish (Wave 14)" bullet entirely; rewrote the "GA launch artifacts (Wave 16, 16a-5)" bullet to drop the product-site portions while preserving the `docs/sales/` content references; pointer added to this §4.9 entry for traceability.
+- [x] `docs/operations/status-page.md`: target-hostname reference updated to note that the product-site moved to metis-pro (kept the `https://status.2sum.ai` agreement intact).
+- [x] `docs/STRATEGY.md` and `docs/specs/CHANGES.md`: untouched. Those references sit inside dated decision-log / changelog entries that describe past work — historical fact, not forward-looking pointers.
+
+metis-pro additions:
+
+- [x] `product-site/` mirroring the OSS tree byte-for-byte (tracked files only; node_modules / dist / .astro cache regenerate on first `npm install` + `npm run build`).
+- [x] `.github/workflows/deploy-product-site.yml` — same workflow; will execute on metis-pro pushes once the metis-pro repo is wired to its own OIDC role + S3 bucket.
+- [x] `README.md`: "What's in this repo" section now enumerates `src/metis_pro/` (Python overlay), `tests/`, `product-site/` (Astro), `.github/workflows/`.
+- [x] `AGENTS.md`: status sentence updated to "§4.2b + §4.3 + §4.2c + §4.4 + §4.5 + §4.7 + §4.9 complete"; new "Product-site (`product-site/`)" section with the local-dev recipe and a pointer to HOSTING.md for production-deploy details. Notes the OSS doc-site / Pro marketing-site split for orientation.
+
+Verification:
+
+- [x] OSS `uv run pytest`: 1770 passed, 1 skipped (unchanged — no Python source changes).
+- [x] metis-pro `uv run pytest`: 95 passed, 0 skipped (unchanged — product-site is pure-static and untested via pytest).
+- [x] OSS no longer has a `product-site/` directory or `.github/` directory; git status clean after the move.
+
+Production-deploy plumbing (AWS CDK + GitHub OIDC + Route 53 + CloudFront) requires the metis-pro repo to be wired with the same secrets the OSS repo had before the move — that's an owner-side step, parallel to §4.8 (OSS publish).
 
 ## 5. Repo setup
 

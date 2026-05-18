@@ -55,6 +55,7 @@ from metis_gateway.endpoints.anthropic import (
 from metis_gateway.endpoints.anthropic import (
     render_sse_stream as render_anthropic_sse_stream,
 )
+from metis_gateway.extensions import NoopTierCapsResolver, TierCapsResolver
 from metis_gateway.harness import (
     ClientDisconnected,
     GatewayHarness,
@@ -71,18 +72,6 @@ from metis_gateway.quotas import (
     enforce_quotas,
 )
 from metis_gateway.runtime import GatewayRuntime
-from metis_gateway.signup import (
-    SignupConfig,
-    SignupError,
-    SignupState,
-    account_keys_create_handler,
-    account_keys_list_handler,
-    account_keys_revoke_handler,
-    build_signup_state,
-    signup_error_response,
-    signup_handler,
-    signup_verify_handler,
-)
 from metis_gateway.translators import (
     InboundTranslationError,
     parse_openai_request,
@@ -164,8 +153,6 @@ class GatewayConfig:
     reuse_port: bool = False
     tls_cert: Path | None = None
     tls_key: Path | None = None
-    # Wave 14 — self-serve signup. Off by default; SaaS deployments opt in.
-    signup: SignupConfig | None = None
     # Wave 17 — repo-split extension Protocols. metis-pro overlays substitute
     # real implementations via the composition root; OSS-only deployments
     # keep the noop defaults. See docs/operations/repo-split-plan.md §3 and
@@ -178,6 +165,11 @@ class GatewayConfig:
     billing_backend: BillingBackend = field(default_factory=NoopBillingBackend)
     signup_backend: SignupBackend = field(default_factory=NoopSignupBackend)
     analytics_extension: AnalyticsExtension = field(default_factory=NoopAnalyticsExtension)
+    # §4.2c (2026-05-18) — tier-axis quota composition Protocol. Pro overlays
+    # inject a `ProTierCapsResolver` from `metis_pro.quotas`; OSS keeps the
+    # noop so per-request flow is unchanged on Community deployments. See
+    # apps/gateway/src/metis_gateway/extensions.py for the contract.
+    tier_caps_resolver: TierCapsResolver = field(default_factory=NoopTierCapsResolver)
 
     def __post_init__(self) -> None:
         if (self.tls_cert is None) != (self.tls_key is None):
@@ -205,19 +197,22 @@ class _AppState:
     runtime: GatewayRuntime
     started_at: datetime
     metrics: MetricsCollector
-    signup: SignupState | None = None
     # §4.2b — billing implementation moved to metis-pro. The OSS gateway
     # carries only the Protocol field; Pro deployments inject a real
     # backend via GatewayConfig.billing_backend. Default is the noop.
     billing_backend: BillingBackend | None = None
+    # §4.2c — tier-axis composition Protocol. Always present; the OSS
+    # default is the noop returning None for every key.
+    tier_caps_resolver: TierCapsResolver = field(default_factory=NoopTierCapsResolver)
 
 
 def build_app(
     runtime: GatewayRuntime,
     *,
     rate_limit: RateLimitConfig | None = None,
-    signup: SignupConfig | None = None,
+    signup_backend: SignupBackend | None = None,
     billing_backend: BillingBackend | None = None,
+    tier_caps_resolver: TierCapsResolver | None = None,
 ) -> Starlette:
     """Build the Starlette ASGI app bound to a fully-wired GatewayRuntime.
 
@@ -225,12 +220,12 @@ def build_app(
     `RateLimitConfig(enabled=True, ...)` to engage the per-key / per-IP
     buckets in front of the provider-shape paths.
 
-    `signup` follows gateway.md §"Self-serve signup" (Wave 14) — off by
-    default; passing a `SignupConfig(enabled=True, ...)` mounts the
-    ``/signup``, ``/signup/verify``, and ``/account/keys`` routes. Magic
-    links are logged to stdout in v1 (no real email transport); flipping
-    this on in production requires the operator to swap in a real email
-    sender before the endpoints face the open internet.
+    `signup_backend` follows the SignupBackend Protocol
+    (metis_core.extensions). §4.3 (2026-05-18) moved the implementation
+    to metis-pro. When ``None`` (the OSS default), no signup routes are
+    mounted. Pro deployments inject a ``MagicLinkSignupBackend`` from
+    ``metis_pro.signup`` to mount ``/signup``, ``/signup/verify``, and
+    ``/account/keys``.
 
     `billing_backend` follows pricing.md §5.5.4 (Wave 15) + repo-split-plan.md
     §4.2b — when ``None`` (the OSS default), no billing routes are mounted
@@ -247,29 +242,19 @@ def build_app(
         trace_wal_bytes_getter=lambda: runtime.trace.wal_size_bytes(),
     )
     metrics.attach()
-    # Resolve signup paths against the runtime's db_path / keystore so a
-    # caller that only passes `enabled=True` still gets the right wiring.
-    signup_config = _resolve_signup_config(signup, runtime)
-    signup_state = build_signup_state(signup_config)
     state = _AppState(
         runtime=runtime,
         started_at=datetime.now(UTC),
         metrics=metrics,
-        signup=signup_state,
         billing_backend=billing_backend,
+        tier_caps_resolver=tier_caps_resolver or NoopTierCapsResolver(),
     )
 
     async def _err_handler(_request: Request, exc: Exception) -> Response:
-        if isinstance(exc, SignupError):
-            return signup_error_response(exc)
         if isinstance(exc, HTTPException):
             return _error_response(exc.detail or "request rejected", status=exc.status_code)
         logger.exception("unhandled error in gateway endpoint")
         return _error_response("internal server error", status=500, code="internal_error")
-
-    async def _signup_err_handler(_request: Request, exc: Exception) -> Response:
-        assert isinstance(exc, SignupError)
-        return signup_error_response(exc)
 
     routes = [
         Route("/healthz", _health, methods=["GET"]),
@@ -277,63 +262,34 @@ def build_app(
         Route("/v1/chat/completions", chat_completions, methods=["POST"]),
         Route("/v1/messages", messages, methods=["POST"]),
     ]
-    if signup_state is not None:
-        routes.extend(
-            [
-                Route("/signup", signup_handler, methods=["POST"]),
-                Route("/signup/verify", signup_verify_handler, methods=["POST"]),
-                Route("/account/keys", account_keys_list_handler, methods=["GET"]),
-                Route("/account/keys", account_keys_create_handler, methods=["POST"]),
-                Route(
-                    "/account/keys/{key_id}",
-                    account_keys_revoke_handler,
-                    methods=["DELETE"],
-                ),
-            ]
-        )
-    if billing_backend is not None and signup_state is None:
+    if billing_backend is not None and signup_backend is None:
         # The Pro overlay's billing routes piggy-back on the signup-session
         # auth; "if you're not running signup, you don't have an account
         # model to bill" — surface it as a config error rather than mounting
         # endpoints that can't authenticate anything.
-        raise GatewayConfigError("billing_backend requires SignupConfig.enabled=True")
+        raise GatewayConfigError("billing_backend requires a SignupBackend overlay")
     middleware_stack: list[Middleware] = [Middleware(VersioningMiddleware)]
     if rate_limit is not None and rate_limit.enabled:
         middleware_stack.append(Middleware(RateLimitMiddleware, config=rate_limit))
     app = Starlette(
         routes=routes,
         exception_handlers={
-            SignupError: _signup_err_handler,
             Exception: _err_handler,
         },
         middleware=middleware_stack,
     )
     app.state.app_state = state
-    # §4.2b — Pro extensions mount routes after Starlette construction via
-    # BillingBackend.register_routes. When billing_backend is None (OSS
-    # default), no Pro routes mount; metis-pro deployments inject a
-    # StripeBillingBackend that appends /account/billing/* + /webhooks/stripe
-    # onto app.router.routes and registers the BillingError exception handler
-    # via add_exception_handler.
+    # §4.3 (2026-05-18) — Pro overlays mount routes after Starlette
+    # construction via SignupBackend.register_routes and
+    # BillingBackend.register_routes. When None (OSS default), no Pro
+    # routes mount. Order matters: signup first so the SignupError
+    # exception handler is in place before billing routes (which depend
+    # on signup-session auth) start.
+    if signup_backend is not None:
+        signup_backend.register_routes(app)
     if billing_backend is not None:
         billing_backend.register_routes(app)
     return app
-
-
-def _resolve_signup_config(
-    config: SignupConfig | None, runtime: GatewayRuntime
-) -> SignupConfig | None:
-    """Fill defaults that depend on the runtime (db path, keystore path).
-
-    The signup module ships with home-relative fallbacks for both, but a
-    caller that wires the runtime against a non-default DB / keystore
-    expects signup to honor those without restating them.
-    """
-    if config is None or not config.enabled:
-        return config
-    if config.db_path is None:
-        config.db_path = runtime.db_file
-    return config
 
 
 def _state(request: Request) -> _AppState:
@@ -469,7 +425,7 @@ async def chat_completions(request: Request) -> Response:
             key=key,
             identity=identity,
             inbound_shape="openai",
-            tier_caps=None,  # tier-axis composition moved to metis-pro (§4.2b)
+            tier_caps=st.tier_caps_resolver(key),
         )
         if verdict is not None:
             return _quota_exceeded_response(verdict, shape="openai")
@@ -682,7 +638,7 @@ async def messages(request: Request) -> Response:
             key=key,
             identity=identity,
             inbound_shape="anthropic",
-            tier_caps=None,  # tier-axis composition moved to metis-pro (§4.2b)
+            tier_caps=st.tier_caps_resolver(key),
         )
         if verdict is not None:
             return _quota_exceeded_response(verdict, shape="anthropic")
@@ -924,17 +880,26 @@ async def run_gateway(runtime: GatewayRuntime, config: GatewayConfig | None = No
     if not _is_loopback_host(cfg.host):
         _log_non_loopback_warning(cfg)
 
-    # `billing_backend` is the noop default in OSS; Pro deployments wrap
-    # `run_gateway` and pass a real backend via `build_app` directly, or set
-    # it on the GatewayConfig field they construct.
+    # Extension backends are the noop defaults in OSS; Pro deployments wrap
+    # `run_gateway` and pass real backends via `build_app` directly, or set
+    # the fields on the GatewayConfig they construct.
     billing_backend = (
         cfg.billing_backend if not isinstance(cfg.billing_backend, NoopBillingBackend) else None
+    )
+    signup_backend = (
+        cfg.signup_backend if not isinstance(cfg.signup_backend, NoopSignupBackend) else None
+    )
+    tier_caps_resolver = (
+        cfg.tier_caps_resolver
+        if not isinstance(cfg.tier_caps_resolver, NoopTierCapsResolver)
+        else None
     )
     app = build_app(
         runtime,
         rate_limit=cfg.rate_limit,
-        signup=cfg.signup,
+        signup_backend=signup_backend,
         billing_backend=billing_backend,
+        tier_caps_resolver=tier_caps_resolver,
     )
     uvicorn_config = _build_uvicorn_config(app, cfg)
     server = uvicorn.Server(uvicorn_config)

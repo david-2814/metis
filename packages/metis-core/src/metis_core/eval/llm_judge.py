@@ -36,6 +36,7 @@ from metis_core.canonical.ids import next_monotonic_ulid
 from metis_core.eval.budget import BudgetTracker
 from metis_core.eval.judge import HeuristicJudge, Judge, SubjectContext
 from metis_core.eval.verdict import EvalVerdict, clamp_unit
+from metis_core.extensions import JudgeRubricProvider, NoopJudgeRubricProvider
 from metis_core.pricing.table import PriceTable
 
 logger = logging.getLogger(__name__)
@@ -160,6 +161,7 @@ class LLMJudge:
         config: LLMJudgeConfig | None = None,
         budget: BudgetTracker | None = None,
         heuristic_for_unsupported: Judge | None = None,
+        rubric_provider: JudgeRubricProvider | None = None,
     ) -> None:
         self._adapter = adapter
         self._pricing = pricing
@@ -169,6 +171,13 @@ class LLMJudge:
         # delegates to this for those subject kinds rather than re-imple-
         # menting the heuristic.
         self._fallback = heuristic_for_unsupported or HeuristicJudge()
+        # §4.5 (2026-05-18) — Pro overlays inject a curated rubric library
+        # via `metis_core.extensions.JudgeRubricProvider`. OSS noop returns
+        # None for every lookup so the judge falls back to the generic
+        # `_SYSTEM_PROMPT` (preserving pre-§4.5 behavior). metis-pro's
+        # `metis_pro.judges.rubrics.ProRubricLibrary` is the canonical
+        # implementation; see docs/operations/repo-split-plan.md §4.5.
+        self._rubric_provider = rubric_provider or NoopJudgeRubricProvider()
 
     @property
     def budget(self) -> BudgetTracker:
@@ -186,7 +195,7 @@ class LLMJudge:
             return await self._fallback.evaluate(ctx)
 
         started_ns = time.perf_counter_ns()
-        rubric_id, rubric_version = _llm_rubric_for(ctx.subject_kind)
+        rubric_id, rubric_version = self._resolve_rubric_stamp(ctx)
 
         # Budget pre-check. The estimate is conservative; the call is only
         # made when projected spend fits both per-session and per-day caps.
@@ -257,6 +266,55 @@ class LLMJudge:
 
     # ---- internals ----------------------------------------------------
 
+    def _resolve_workload_id(self, ctx: SubjectContext) -> str | None:
+        """Best-effort extract the workload_id from the subject context.
+
+        For `subject_kind="workload"` it comes off the embedded
+        WorkloadRubric (carries the workload name). For `turn` it may be
+        present in `signals_extra` if the harness propagated it; otherwise
+        None. None signals "no per-workload customization" and the Pro
+        library is expected to fall back to a generic prompt for the
+        subject_kind.
+        """
+        if ctx.workload_rubric is not None:
+            wid = getattr(ctx.workload_rubric, "workload_id", None)
+            if wid:
+                return str(wid)
+        if ctx.signals_extra is not None:
+            wid = ctx.signals_extra.get("workload_id")
+            if wid:
+                return str(wid)
+        return None
+
+    def _resolve_system_prompt(self, ctx: SubjectContext) -> str:
+        """Return the rubric prompt for the call.
+
+        Consults `JudgeRubricProvider.rubric_for(subject_kind, workload_id)`
+        first; falls back to the OSS generic `_SYSTEM_PROMPT` when the
+        provider returns None. The noop returns None for every call, so
+        OSS-only deployments always see `_SYSTEM_PROMPT` (the pre-§4.5
+        behavior).
+        """
+        workload_id = self._resolve_workload_id(ctx)
+        custom = self._rubric_provider.rubric_for(ctx.subject_kind, workload_id)
+        return custom if custom is not None else _SYSTEM_PROMPT
+
+    def _resolve_rubric_stamp(self, ctx: SubjectContext) -> tuple[str, str]:
+        """Return `(rubric_id, rubric_version)` for verdict stamping.
+
+        When the provider returned a custom prompt for this call, use the
+        provider's `rubric_version()` as both id and version (the Pro
+        library is responsible for distinguishing its rubric vintages
+        through this single string). Otherwise stamp the OSS built-in
+        constants by subject_kind / judge_kind.
+        """
+        workload_id = self._resolve_workload_id(ctx)
+        custom = self._rubric_provider.rubric_for(ctx.subject_kind, workload_id)
+        if custom is not None:
+            version = self._rubric_provider.rubric_version()
+            return version, version
+        return _llm_rubric_for(ctx.subject_kind)
+
     async def _call_adapter(self, ctx: SubjectContext) -> CanonicalResponse:
         user_text = _build_user_message(ctx)
         # Reuse the canonical user-message shape rather than depending on a
@@ -275,7 +333,7 @@ class LLMJudge:
                 )
             ],
             tools=[],
-            system_prompt=_SYSTEM_PROMPT,
+            system_prompt=self._resolve_system_prompt(ctx),
             model=self._config.judge_model,
             max_output_tokens=self._config.max_output_tokens,
             temperature=0.0,
