@@ -5,6 +5,7 @@ description = "Metis CLI + Textual TUI. Provides the `metis` entry point for cha
 authors = [
     { name = "David Ji", email = "david.ji.2814@gmail.com" }
 ]
+license = "Apache-2.0"
 requires-python = ">=3.13"
 dependencies = [
     "metis-core",

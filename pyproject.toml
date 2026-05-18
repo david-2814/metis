@@ -5,6 +5,8 @@ description = "Metis monorepo root: metis-core library, metis-server HTTP/WS sur
 authors = [
     { name = "David Ji", email = "david.ji.2814@gmail.com" }
 ]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
     "metis-core",

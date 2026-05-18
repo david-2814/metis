@@ -311,6 +311,29 @@ The "rubric library" is now end-to-end overridable: Pro deployments construct `L
 - [ ] Hosted dashboard UI → `metis-pro/dashboard/`
 - [ ] SAML / OIDC / SCIM → `metis-pro/enterprise/`
 
+### 4.7 Apache-2.0 license + LICENSE file — **DONE 2026-05-18**
+
+The migration's code-move chapter closed with §4.5; §4.7 formalizes the OSS license so the repo is publish-ready. Apache-2.0 was the choice ratified in [`pricing.md §12`](../specs/pricing.md) (2026-05-17) — see that entry for the full rationale (buyer trust signal, four-leg moat is operational not source-level, reversible if a fork-and-SaaS threat materializes).
+
+Additions:
+
+- [x] `LICENSE` at repo root — full Apache License 2.0 text with `Copyright 2026 David Ji` in the appendix boilerplate.
+- [x] `CONTRIBUTING.md` at repo root — names the inbound=outbound Apache-2.0 contribution rule (no CLA required in v1), points at AGENTS.md / STRATEGY.md / specs as required reading, summarizes the OSS-substrate-vs-metis-pro boundary, lays out the local-dev + PR checklist.
+
+Refactors:
+
+- [x] `README.md:367` — replaced `_TBD_` with an Apache-2.0 reference pointing at the LICENSE file and CONTRIBUTING.md.
+- [x] All 5 `pyproject.toml` files (root + metis-core + metis-server + metis-gateway + metis-cli) — added `license = "Apache-2.0"` (PEP 639 SPDX expression) + `license-files = ["..."]` pointing at the repo-root LICENSE.
+- [x] `AGENTS.md` — "Working norms" bullet updated from `(Apache-2.0, target)` to `(Apache-2.0)` with pointers to LICENSE + CONTRIBUTING.md, and the extension-Protocol count corrected to **five** (the §4.2c `TierCapsResolver` lives in `metis_gateway.extensions`, not metis-core).
+
+Verification:
+
+- [x] OSS `uv run pytest`: 1770 passed, 1 skipped (unchanged — license artifacts don't touch code paths).
+- [x] Ruff clean (no Python source changes in this step).
+- [x] No metis-pro work required — Pro repo stays all-rights-reserved as documented in `metis-pro/AGENTS.md`.
+
+The repo is now **publish-ready**. §4.8 (the actual publish event — visibility flip, GitHub Actions setup, PyPI registration) remains an owner-decision step, not in the execution scope of this plan.
+
 ## 5. Repo setup
 
 ### 5.1 `metis` (the OSS repo)

@@ -366,4 +366,8 @@ The design is specified before code lands. Start here:
 
 ## License
 
-_TBD_
+Apache License 2.0 — see [LICENSE](LICENSE) for the full text.
+
+The OSS substrate in this repo is permissively licensed so a CTO doesn't need legal review to install. The paid-tier overlay (`metis-pro`) lives in a separate private repo under a different license; the architectural boundary between the two is documented in [docs/operations/repo-split-plan.md](docs/operations/repo-split-plan.md).
+
+Contributions to this repo are accepted under the same Apache-2.0 terms (see [CONTRIBUTING.md](CONTRIBUTING.md)).
