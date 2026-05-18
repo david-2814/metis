@@ -207,13 +207,23 @@ Repair candidates (pick one when the work lands):
 
 Option A is preferred. Adding `TierCapsResolver` as a 5th Protocol in `metis-core/extensions.py` keeps the boundary discipline; Pro implements `resolve(account_id, key) -> TierCaps | None` and the OSS handlers call it. The OSS noop returns None (the current behavior).
 
-### 4.3 Second move — `signup.py` + accounts store
+### 4.3 Second move — `signup.py` + accounts store — **DONE 2026-05-18**
 
-- [ ] Copy [apps/gateway/.../signup.py](../../apps/gateway/src/metis_gateway/signup.py) → `metis-pro/src/metis_pro/signup/`
-- [ ] Wrap the `/signup`, `/signup/verify`, `/account/keys` routes under `SignupBackend.register_routes()`
-- [ ] Move signup tests
-- [ ] Delete `signup.py` from OSS
-- [ ] Verify both repos green
+- [x] Copy `apps/gateway/.../signup.py` → `metis-pro/src/metis_pro/signup.py` (984 LOC, single flat module — promoting to a package directory is a future refactor if it grows)
+- [x] Copy `apps/gateway/tests/test_signup.py` → `metis-pro/tests/test_signup.py`
+- [x] Add `MagicLinkSignupBackend` adapter at the end of `metis_pro/signup.py` implementing `SignupBackend` Protocol: wraps `SignupState`, stashes it on `app.state.signup`, mounts the 5 routes (`POST /signup`, `POST /signup/verify`, `GET /account/keys`, `POST /account/keys`, `DELETE /account/keys/{key_id}`), and registers the `SignupError → 4xx envelope` exception handler via `app.add_exception_handler`
+- [x] Update `_state(request)` in metis-pro's signup.py to read from `app.state.signup` (the new Pro stash) instead of the legacy `app.state.app_state.signup` (OSS's _AppState which no longer carries the field); legacy fallback preserved for callers that still pass the old shape
+- [x] Bulk-rewrite imports: `metis_gateway.signup` → `metis_pro.signup` (5 references — billing/routes.py + tests/billing/conftest.py)
+- [x] Delete `apps/gateway/src/metis_gateway/signup.py` from OSS
+- [x] Delete `apps/gateway/tests/test_signup.py` from OSS
+- [x] Refactor OSS `apps/gateway/src/metis_gateway/app.py`: remove the `from metis_gateway.signup import (...)` block (10 symbols); remove `signup: SignupConfig | None = None` from `GatewayConfig`; remove `signup: SignupState | None = None` from `_AppState`; remove `_resolve_signup_config` helper; remove `signup_state` construction + explicit signup route list + the `SignupError` exception handler. Replace the explicit signup route mounting with `signup_backend.register_routes(app)` called after Starlette construction (mirroring the §4.2a billing pattern)
+- [x] Refactor OSS `run_gateway`: detect noop vs real `SignupBackend` (mirror the billing pattern); pass through to `build_app(signup_backend=...)`
+- [x] Refactor OSS `apps/gateway/src/metis_gateway/cli.py`: remove `from metis_gateway.signup import SignupConfig`; remove `signup_enabled` / `signup_dashboard_url` / `signup_accounts_path` parameters; remove the `signup_cfg` construction block
+- [x] Refactor OSS `apps/cli/src/metis_cli/main.py`: remove the three `--enable-signup` / `--signup-dashboard-url` / `--signup-accounts-path` flags from the `gateway` subparser; remove the three matching args from the `run_gateway_command(...)` call
+- [x] Fix metis-pro test fixtures: `tests/test_signup.py::signup_client` + `tests/billing/conftest.py::billing_client_http` now compose `MagicLinkSignupBackend(build_signup_state(signup_config))` and pass it via `build_app(signup_backend=...)` — the Pro composition pattern
+- [x] Verify OSS `uv run pytest` green: **1781 passed, 1 skipped** (was 1801, -20 signup tests)
+- [x] Verify metis-pro `uv run pytest` green: **74 passed, 3 skipped** (was 54 + 3, +20 signup tests)
+- [x] Ruff clean on both repos (3 import-ordering fixes in metis-pro auto-fixed)
 
 ### 4.4 Third move — per-user / per-team analytics route handlers
 
