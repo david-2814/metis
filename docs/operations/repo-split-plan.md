@@ -275,9 +275,32 @@ Verification:
 - [x] metis-pro `uv run pytest`: **91 passed, 0 skipped** (was 77, +14 analytics tests).
 - [x] Ruff clean on both repos after auto-fix (2 imports in OSS, 4 imports in metis-pro auto-organized).
 
-### 4.5 Fourth move — curated LLM-judge rubric library
+### 4.5 Fourth move — curated LLM-judge rubric library — **DONE 2026-05-18**
 
-- [ ] Audit [packages/metis-core/eval/](../../packages/metis-core/src/metis_core/eval/) for embedded rubric strings / prompt templates
+The audit found the OSS rubric surface much smaller than the plan anticipated: a single shared `_SYSTEM_PROMPT` constant in `packages/metis-core/src/metis_core/eval/llm_judge.py` plus 4 `*_RUBRIC_ID` / `*_RUBRIC_VERSION` constants that get stamped on verdicts (no per-workload variation in OSS). So §4.5's actual shape is **wiring** the `JudgeRubricProvider` Protocol from §4.1 (which was scaffold-only) and shipping a small Pro library that demonstrates the override path. The generic `_SYSTEM_PROMPT` stays in OSS as the fallback.
+
+OSS changes:
+
+- [x] `packages/metis-core/src/metis_core/eval/llm_judge.py`: `LLMJudge.__init__` takes a new `rubric_provider: JudgeRubricProvider | None = None` parameter; defaults to `NoopJudgeRubricProvider()`. Three new internal helpers — `_resolve_workload_id(ctx)` (reads from `signals_extra["workload_id"]` or `ctx.workload_rubric` via `getattr` so older `WorkloadRubric` shapes that don't carry the field don't break), `_resolve_system_prompt(ctx)` (consults the provider, falls back to `_SYSTEM_PROMPT`), `_resolve_rubric_stamp(ctx)` (returns `(provider.rubric_version(), provider.rubric_version())` when custom prompt active; otherwise `_llm_rubric_for(subject_kind)` returning the OSS constants). `_call_adapter` now uses `_resolve_system_prompt(ctx)` instead of the hardcoded `_SYSTEM_PROMPT`; `evaluate` uses `_resolve_rubric_stamp(ctx)` instead of `_llm_rubric_for(ctx.subject_kind)`. Noop semantics preserve the pre-§4.5 behavior end-to-end.
+- [x] `packages/metis-core/tests/eval/test_llm_judge.py`: added 3 contract tests — `test_llm_judge_falls_back_to_noop_rubric_when_no_provider`, `test_llm_judge_consumes_pro_rubric_when_workload_matches`, `test_llm_judge_falls_back_when_pro_rubric_unknown_workload`. The `_FakeRubricLibrary` test helper mirrors the eventual `ProRubricLibrary` shape (table-keyed lookup) so the OSS tests verify the wiring without depending on metis-pro.
+
+metis-pro additions:
+
+- [x] `src/metis_pro/judges/__init__.py` re-exporting `ProRubricLibrary` + `PRO_RUBRIC_VERSION`.
+- [x] `src/metis_pro/judges/rubrics.py` — `ProRubricLibrary` class implementing `JudgeRubricProvider`. Ships a minimal seed library: 2 entries (`("turn", "regex-with-edge-cases")` + `("workload", "regex-with-edge-cases")`) with workload-specific prompts. `PRO_RUBRIC_VERSION = "pro-rubrics-1.0.0"` is the library-wide stamp. Production curation grows the lookup table without touching the OSS substrate or the Protocol contract.
+- [x] `tests/judges/test_rubrics.py` — 4 contract tests: Protocol satisfaction via `isinstance(...)`, `None` for unregistered pairs (including any `workload_id=None`), non-empty workload-specific prompts for registered pairs (turn ≠ workload prompt for same workload), version stamp is stable. The LLMJudge → JudgeRubricProvider integration is already verified by the OSS-side contract tests using a structurally identical `_FakeRubricLibrary`, so a duplicate end-to-end integration test in metis-pro would be redundant.
+
+Verification:
+
+- [x] OSS `uv run pytest`: **1770 passed, 1 skipped** (was 1767, +3 contract tests).
+- [x] metis-pro `uv run pytest`: **95 passed, 0 skipped** (was 91, +4 contract tests).
+- [x] Ruff clean on both repos (1 RUF012 fix on the OSS `_FakeRubricLibrary` mutable class attribute, 1 format on metis-pro test).
+
+The "rubric library" is now end-to-end overridable: Pro deployments construct `LLMJudge(rubric_provider=ProRubricLibrary())` and the workload-specific prompts get injected at adapter-call time + the verdict stamps the Pro version. OSS deployments preserve the pre-§4.5 behavior byte-for-byte.
+
+#### Audit results (replaces the original to-do list)
+
+- [x] Audit [packages/metis-core/eval/](../../packages/metis-core/src/metis_core/eval/) for embedded rubric strings / prompt templates
 - [ ] Extract them to `metis-pro/src/metis_pro/judges/rubrics/`
 - [ ] Replace with `JudgeRubricProvider` Protocol calls in OSS
 - [ ] OSS evaluator ships a minimal example rubric (one workload, low-quality) so the substrate is demonstrably functional standalone
