@@ -206,9 +206,11 @@ nav:
       - Compliance overview: operations/compliance-overview.md
       - SOC2 readiness: operations/soc2-readiness.md
       - Phase claim proposal: operations/phase-claim-proposal.md
+      - Repo split plan: operations/repo-split-plan.md
 
   - Strategy:
       - Strategy: STRATEGY.md
+      - Business model: business-model.md
       - Known issues: KNOWN_ISSUES.md
       - Sales:
           - One-pager: sales/one-pager.md

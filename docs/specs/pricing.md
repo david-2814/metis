@@ -433,7 +433,7 @@ These are deliberately deferred. The list is what differentiates v1 from a compl
 2. **Discount / volume / partner pricing.** Standard B2B contract knobs; owner negotiates per-deal until a public list emerges.
 3. **Billing-infrastructure choice.** Stripe / Lago / Maxio / invoice-by-PDF.
 4. **Currency / tax handling.** USD-only v1 is the assumed default; expansion is downstream.
-5. **OSS license selection.** Apache-2.0 / BUSL / AGPL / dual-license.
+5. ~~**OSS license selection.** Apache-2.0 / BUSL / AGPL / dual-license.~~ **Resolved 2026-05-17 — Apache-2.0 for the OSS substrate; all-rights-reserved for the private `metis-pro` repo.** See §12 decision log and [`docs/operations/repo-split-plan.md`](../operations/repo-split-plan.md).
 6. **Trial-to-paid conversion mechanics.** Self-serve credit card vs. sales-touch; how long trials last; downgrade behavior.
 7. **Refund / SLA / credit policy.** SaaS-standard terms — deferred behind the §6.3 SaaS-vs-VPC decision.
 8. **Marketplace listings.** AWS / GCP / Azure marketplace pricing surfaces.
@@ -484,6 +484,7 @@ Promises this spec makes that downstream specs and implementation must preserve.
 | 2026-05-14 | Multi-user identity layer is the headline Pro feature | Maps the conversion trigger ("single-user works free; team use upgrades") directly to the most distinctive paid primitive. |
 | 2026-05-14 | Savings counterfactual visible on Free at deployment-aggregate; Pro unlocks slicing | Free buyers see the savings story (marketing); Pro buyers can attribute it (operational). Owner can revisit per §10.2. |
 | 2026-05-14 | Pricing.md does not close STRATEGY.md §6.8 | The spec frames the recommendation; the commercial decision is the owner's. §6.8 stays open with a pointer to this spec until the owner ratifies. |
+| 2026-05-17 | OSS license + repo strategy: Apache-2.0 single OSS repo (`metis`); private `metis-pro` repo for paid-tier code | Closes §9.5 (was "out of scope"). Two-repo "thin Pro repo" pattern: the OSS substrate is genuinely standalone-usable (gateway + canonical IR + adapters + routing + pattern store + bounded memory + tools + skills + heuristic evaluator + per-key analytics + agent CLI/TUI). `metis-pro` holds the operationally-sensitive surfaces (billing, signup, accounts store, hosted dashboard UI, curated LLM-judge rubric library, enterprise SAML/OIDC/SCIM glue). OSS defines extension Protocols (`BillingBackend`, `SignupBackend`, `AnalyticsExtension`, `JudgeRubricProvider`) with noop defaults; Pro overlays implement them at boot. Apache-2.0 chosen over BUSL/AGPL for the OSS substrate because (a) buyer trust signal is load-bearing pre-revenue, (b) the four-leg moat ([`STRATEGY.md §4`](../STRATEGY.md)) is operational/compounding, not source-level, (c) reversible — can switch to BUSL later if a real fork-and-SaaS threat materializes, (d) matches the playbook of comparable projects (LiteLLM Apache-2.0; Supabase Apache-2.0; PostHog Apache-2.0 + selective BUSL). Concrete migration plan in [`docs/operations/repo-split-plan.md`](../operations/repo-split-plan.md). |
 
 ---
 

@@ -63,6 +63,17 @@ Per-seat properties:
 - **Capacity-modelable** — N customers × M seats × $X is a simple revenue ladder a CFO can plan against.
 - **Enterprise add-on is the upside** — large accounts opt into the %-of-savings add-on with a cap, so Metis captures upside on the highest-spend buyers without exposing every buyer to audit-export overhead.
 
+## 5a. Implementation pattern — two repos, "thin Pro repo"
+
+The commercial model maps to a **two-repo layout** ([STRATEGY.md §5 2026-05-17](STRATEGY.md), [pricing.md §9.5 / §12](specs/pricing.md)):
+
+- **`metis` (OSS, Apache-2.0)** — the entire substrate that delivers savings: gateway, canonical IR, adapters, routing chain, pattern store, bounded memory, tools, skills, heuristic evaluator, per-key analytics, agent CLI/TUI/serve, concierge CLIs. Standalone-usable end-to-end.
+- **`metis-pro` (private, all-rights-reserved)** — only operationally-sensitive surfaces: billing, signup, accounts store, hosted dashboard UI, curated LLM-judge rubric library, enterprise SAML/OIDC/SCIM. Plugs into OSS via extension Protocols (`BillingBackend`, `SignupBackend`, `AnalyticsExtension`, `JudgeRubricProvider`) with noop defaults.
+
+The split is deliberately thin — most `pricing.md §7.2` Pro features are *access-restricted* (route handlers, rollup endpoints) rather than *code-restricted* (sensitive logic). Apache-2.0 is the OSI-approved permissive choice because (a) buyer trust signal is load-bearing pre-revenue, (b) the four-leg moat ([STRATEGY.md §4](STRATEGY.md)) is operational/compounding, not source-level — LiteLLM (Apache-2.0, ~17.5k stars) and Supabase / PostHog / Cal.com all survive permissive licensing because moat lives in roadmap velocity + accumulated buyer data + brand, and (c) reversible (single-repo merge or BUSL relicense remain on the table if a real fork-and-SaaS threat materializes — a 2028+ problem at current scale).
+
+Concrete migration checklist: [`docs/operations/repo-split-plan.md`](operations/repo-split-plan.md). No code has moved yet — the migration is scheduled, not executed.
+
 ## 6. What's deliberately NOT decided
 
 Per [pricing.md §7.5](specs/pricing.md):
