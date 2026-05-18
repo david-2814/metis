@@ -143,6 +143,18 @@ sessions       ←  (nothing else in core)
 - **Cross-spec discipline.** When a spec change touches a contract, add an entry to `docs/specs/CHANGES.md` (date, change, type, references to verify, status). See the file's header for the format.
 - **Solo, part-time owner.** One engineer, ~part-time pace. Scope decisions should favor what one person can land and maintain, not what a team could.
 - **Bounded memory is a feature.** `MEMORY.md` and `USER.md` are intentionally small (~2 KB / ~1.5 KB). Don't propose unbounded growth — the eviction is the point.
+- **This repo is OSS (Apache-2.0, target).** A private companion repo `metis-pro` (at `~/git/metis-pro/`) holds the paid-tier overlay — billing, signup, accounts, hosted dashboard UI, curated LLM-judge rubric library, enterprise SAML/OIDC/SCIM. The two repos integrate via four extension Protocols defined in [`packages/metis-core/src/metis_core/extensions.py`](packages/metis-core/src/metis_core/extensions.py) (to be created in migration step §4.1) — `BillingBackend`, `SignupBackend`, `AnalyticsExtension`, `JudgeRubricProvider`. **The OSS substrate must stay standalone-usable end-to-end** with noop default implementations. Decision recorded in [`docs/STRATEGY.md §5`](docs/STRATEGY.md) (2026-05-17) and [`docs/specs/pricing.md §12`](docs/specs/pricing.md); migration checklist in [`docs/operations/repo-split-plan.md`](docs/operations/repo-split-plan.md). **No code has moved yet** — the split is scheduled, not executed.
+
+### Working across both repos
+
+If a change touches both repos, the discipline is:
+
+1. **OSS first, always.** Add the Protocol method (or new event payload, or new HTTP route) here, with noop default + extension-contract test. Merge.
+2. **Wait for PyPI release** of `metis-core` / `metis-server` / `metis-gateway`.
+3. **Bump pin in `metis-pro/pyproject.toml`** and implement against the new contract.
+4. Never the reverse — `metis-pro` cannot consume a Protocol method that doesn't exist in the released OSS yet.
+
+For Claude Code sessions: single-repo work runs from the relevant repo's directory and inherits its `AGENTS.md`. Cross-repo work either runs as two sequenced sessions (cleaner) or one session with absolute paths and explicit `git -C <repo> …` for each commit. See [`metis-pro/AGENTS.md`](../metis-pro/AGENTS.md) for the Pro repo's conventions.
 
 ## Implementation conventions
 

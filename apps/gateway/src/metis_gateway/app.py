@@ -27,6 +27,14 @@ from metis_core.adapters.tool_id_map import ToolIdMap
 from metis_core.canonical.ids import new_message_id
 from metis_core.events.envelope import Actor
 from metis_core.events.payloads import GatewayAuthFailed, make_event
+from metis_core.extensions import (
+    AnalyticsExtension,
+    BillingBackend,
+    NoopAnalyticsExtension,
+    NoopBillingBackend,
+    NoopSignupBackend,
+    SignupBackend,
+)
 from metis_core.observability import METRICS_CONTENT_TYPE, MetricsCollector
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
@@ -183,6 +191,16 @@ class GatewayConfig:
     # operator to flip `enabled=True` and supply `stripe_api_key` +
     # `stripe_webhook_secret`. Pre-Wave-15 deployments are byte-identical.
     billing: BillingConfig | None = None
+    # Wave 17 (planned) — repo-split extension Protocols. metis-pro overlays
+    # substitute real implementations via the composition root; OSS-only
+    # deployments keep the noop defaults. See docs/operations/repo-split-plan.md
+    # §3 and packages/metis-core/src/metis_core/extensions.py. These fields
+    # are scaffolding in §4.1 — they accept Protocol implementations but the
+    # gateway hot-path still routes through the existing billing/signup
+    # modules until the migration steps §4.2 / §4.3 land.
+    billing_backend: BillingBackend = field(default_factory=NoopBillingBackend)
+    signup_backend: SignupBackend = field(default_factory=NoopSignupBackend)
+    analytics_extension: AnalyticsExtension = field(default_factory=NoopAnalyticsExtension)
 
     def __post_init__(self) -> None:
         if (self.tls_cert is None) != (self.tls_key is None):
