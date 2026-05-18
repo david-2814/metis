@@ -334,6 +334,38 @@ Verification:
 
 The repo is now **publish-ready**. §4.8 (the actual publish event — visibility flip, GitHub Actions setup, PyPI registration) remains an owner-decision step, not in the execution scope of this plan.
 
+### 4.9 Public marketing site (`product-site/`) → metis-pro — **DONE 2026-05-18**
+
+Added to the migration plan after §4.7 as a final separation step: the OSS repo's `/product-site/` directory (Astro + Tailwind site for `https://2sum.ai`) moves to `metis-pro/product-site/`. Buyer-facing marketing material aligns with the Pro tier; the OSS substrate's public face going forward is the mkdocs-built docs site at `~/git/metis/docs/` (planned for GitHub Pages deployment on the OSS repo).
+
+Files moved (31 tracked entries via `git ls-files`):
+
+- [x] `product-site/` — entire Astro project tree (src/, public/, infra/ CDK, package.json, astro.config.mjs, tsconfig.json, HOSTING.md, .gitignore).
+- [x] `.github/workflows/deploy-product-site.yml` — the GitHub Actions deploy workflow (73 lines, AWS OIDC + CDK + S3 + CloudFront invalidation).
+
+The `.github/` directory in OSS is now empty and removed entirely; any future OSS CI workflows (e.g. publish-to-PyPI) recreate it under metis.
+
+OSS cross-reference cleanup:
+
+- [x] `AGENTS.md`: removed the "Product-site GA polish (Wave 14)" bullet entirely; rewrote the "GA launch artifacts (Wave 16, 16a-5)" bullet to drop the product-site portions while preserving the `docs/sales/` content references; pointer added to this §4.9 entry for traceability.
+- [x] `docs/operations/status-page.md`: target-hostname reference updated to note that the product-site moved to metis-pro (kept the `https://status.2sum.ai` agreement intact).
+- [x] `docs/STRATEGY.md` and `docs/specs/CHANGES.md`: untouched. Those references sit inside dated decision-log / changelog entries that describe past work — historical fact, not forward-looking pointers.
+
+metis-pro additions:
+
+- [x] `product-site/` mirroring the OSS tree byte-for-byte (tracked files only; node_modules / dist / .astro cache regenerate on first `npm install` + `npm run build`).
+- [x] `.github/workflows/deploy-product-site.yml` — same workflow; will execute on metis-pro pushes once the metis-pro repo is wired to its own OIDC role + S3 bucket.
+- [x] `README.md`: "What's in this repo" section now enumerates `src/metis_pro/` (Python overlay), `tests/`, `product-site/` (Astro), `.github/workflows/`.
+- [x] `AGENTS.md`: status sentence updated to "§4.2b + §4.3 + §4.2c + §4.4 + §4.5 + §4.7 + §4.9 complete"; new "Product-site (`product-site/`)" section with the local-dev recipe and a pointer to HOSTING.md for production-deploy details. Notes the OSS doc-site / Pro marketing-site split for orientation.
+
+Verification:
+
+- [x] OSS `uv run pytest`: 1770 passed, 1 skipped (unchanged — no Python source changes).
+- [x] metis-pro `uv run pytest`: 95 passed, 0 skipped (unchanged — product-site is pure-static and untested via pytest).
+- [x] OSS no longer has a `product-site/` directory or `.github/` directory; git status clean after the move.
+
+Production-deploy plumbing (AWS CDK + GitHub OIDC + Route 53 + CloudFront) requires the metis-pro repo to be wired with the same secrets the OSS repo had before the move — that's an owner-side step, parallel to §4.8 (OSS publish).
+
 ## 5. Repo setup
 
 ### 5.1 `metis` (the OSS repo)

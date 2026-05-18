@@ -19,8 +19,9 @@ steps are (a) flipping the toggle / running the curl against a real
 account, and (b) pointing DNS at the result.
 
 **Target hostname:** `https://status.2sum.ai` — agreed in Wave 14
-(product-site nav badge + footer link already point here per the
-`Wave 14 product-site GA polish` entry in CLAUDE.md / AGENTS.md).
+(the product-site nav badge + footer link reference this URL; the
+product site itself moved to the private `metis-pro` repo during the
+repo split, see [`repo-split-plan.md`](repo-split-plan.md) §4.9).
 DNS, TLS cert, and the actual deploy do not exist yet.
 
 **Selected path (per Wave 11):** Tier B — Uptime Kuma self-hosted,
