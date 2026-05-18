@@ -55,6 +55,7 @@ from metis_gateway.endpoints.anthropic import (
 from metis_gateway.endpoints.anthropic import (
     render_sse_stream as render_anthropic_sse_stream,
 )
+from metis_gateway.extensions import NoopTierCapsResolver, TierCapsResolver
 from metis_gateway.harness import (
     ClientDisconnected,
     GatewayHarness,
@@ -164,6 +165,11 @@ class GatewayConfig:
     billing_backend: BillingBackend = field(default_factory=NoopBillingBackend)
     signup_backend: SignupBackend = field(default_factory=NoopSignupBackend)
     analytics_extension: AnalyticsExtension = field(default_factory=NoopAnalyticsExtension)
+    # §4.2c (2026-05-18) — tier-axis quota composition Protocol. Pro overlays
+    # inject a `ProTierCapsResolver` from `metis_pro.quotas`; OSS keeps the
+    # noop so per-request flow is unchanged on Community deployments. See
+    # apps/gateway/src/metis_gateway/extensions.py for the contract.
+    tier_caps_resolver: TierCapsResolver = field(default_factory=NoopTierCapsResolver)
 
     def __post_init__(self) -> None:
         if (self.tls_cert is None) != (self.tls_key is None):
@@ -195,6 +201,9 @@ class _AppState:
     # carries only the Protocol field; Pro deployments inject a real
     # backend via GatewayConfig.billing_backend. Default is the noop.
     billing_backend: BillingBackend | None = None
+    # §4.2c — tier-axis composition Protocol. Always present; the OSS
+    # default is the noop returning None for every key.
+    tier_caps_resolver: TierCapsResolver = field(default_factory=NoopTierCapsResolver)
 
 
 def build_app(
@@ -203,6 +212,7 @@ def build_app(
     rate_limit: RateLimitConfig | None = None,
     signup_backend: SignupBackend | None = None,
     billing_backend: BillingBackend | None = None,
+    tier_caps_resolver: TierCapsResolver | None = None,
 ) -> Starlette:
     """Build the Starlette ASGI app bound to a fully-wired GatewayRuntime.
 
@@ -237,6 +247,7 @@ def build_app(
         started_at=datetime.now(UTC),
         metrics=metrics,
         billing_backend=billing_backend,
+        tier_caps_resolver=tier_caps_resolver or NoopTierCapsResolver(),
     )
 
     async def _err_handler(_request: Request, exc: Exception) -> Response:
@@ -414,7 +425,7 @@ async def chat_completions(request: Request) -> Response:
             key=key,
             identity=identity,
             inbound_shape="openai",
-            tier_caps=None,  # tier-axis composition moved to metis-pro (§4.2b)
+            tier_caps=st.tier_caps_resolver(key),
         )
         if verdict is not None:
             return _quota_exceeded_response(verdict, shape="openai")
@@ -627,7 +638,7 @@ async def messages(request: Request) -> Response:
             key=key,
             identity=identity,
             inbound_shape="anthropic",
-            tier_caps=None,  # tier-axis composition moved to metis-pro (§4.2b)
+            tier_caps=st.tier_caps_resolver(key),
         )
         if verdict is not None:
             return _quota_exceeded_response(verdict, shape="anthropic")
@@ -878,11 +889,17 @@ async def run_gateway(runtime: GatewayRuntime, config: GatewayConfig | None = No
     signup_backend = (
         cfg.signup_backend if not isinstance(cfg.signup_backend, NoopSignupBackend) else None
     )
+    tier_caps_resolver = (
+        cfg.tier_caps_resolver
+        if not isinstance(cfg.tier_caps_resolver, NoopTierCapsResolver)
+        else None
+    )
     app = build_app(
         runtime,
         rate_limit=cfg.rate_limit,
         signup_backend=signup_backend,
         billing_backend=billing_backend,
+        tier_caps_resolver=tier_caps_resolver,
     )
     uvicorn_config = _build_uvicorn_config(app, cfg)
     server = uvicorn.Server(uvicorn_config)

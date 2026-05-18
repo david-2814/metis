@@ -196,16 +196,29 @@ Sequenced so each step leaves the OSS repo with a green test suite. Do NOT batch
 - [x] Verify metis-pro `uv run pytest` green: **54 passed, 3 skipped**
 - [x] Ruff clean on both repos (1 unused-import in OSS app.py auto-fixed; 5 import-ordering + 2 format fixes in metis-pro auto-fixed)
 
-### 4.2c Tier-axis quota composition follow-on — **OPEN**
+### 4.2c Tier-axis quota composition follow-on — **DONE 2026-05-18**
 
-The 3 cap-blocking tests in `metis-pro/tests/billing/test_quota_composition.py` are skipped because tier-axis composition (formerly `_resolve_tier_caps` in `metis_gateway.app`) moved with the billing module but the *injection point* into the OSS gateway hot-path has not yet been re-added. The OSS gateway hardcodes `tier_caps=None` at the `enforce_quotas` call sites.
+Closes the 3 cap-blocking tests in `metis-pro/tests/billing/test_quota_composition.py` that were skipped at the end of §4.2b. Implementation: **Option A** — a new `TierCapsResolver` Protocol; Pro overlay provides the real implementation; OSS keeps a noop.
 
-Repair candidates (pick one when the work lands):
+The Protocol landed in **`apps/gateway/src/metis_gateway/extensions.py`** (NEW file) rather than `metis_core.extensions.py`. Reason: the signature references gateway-private types (`GatewayKey` from `metis_gateway.auth`, `TierCaps` from `metis_gateway.quotas`); keeping those types out of metis-core preserves the layering invariant that metis-core never references metis-gateway. The convention for the broader split is: Protocols whose signatures only need stdlib types (or Starlette via TYPE_CHECKING) live in `metis_core.extensions`; Protocols with gateway-private types live in `metis_gateway.extensions`.
 
-- **Option A — New OSS Protocol hook** on `GatewayConfig` (e.g. `tier_caps_resolver: TierCapsResolver`); Pro overlay implements it. Smallest API surface; keeps the call site in OSS.
-- **Option B — `build_pro_app(runtime, config)` wrapper** in `metis-pro` that wraps OSS `build_app` and replaces the two request handlers with tier-aware versions. Heavier; reproduces hot-path code.
+OSS changes:
 
-Option A is preferred. Adding `TierCapsResolver` as a 5th Protocol in `metis-core/extensions.py` keeps the boundary discipline; Pro implements `resolve(account_id, key) -> TierCaps | None` and the OSS handlers call it. The OSS noop returns None (the current behavior).
+- [x] `apps/gateway/src/metis_gateway/extensions.py` — new module exporting `TierCapsResolver` (runtime-checkable) and `NoopTierCapsResolver` (OSS default, returns `None` for every key).
+- [x] `apps/gateway/src/metis_gateway/app.py` — `GatewayConfig` gains a `tier_caps_resolver: TierCapsResolver` field with `NoopTierCapsResolver` as the default factory. `_AppState` carries the same field. `build_app(..., tier_caps_resolver=...)` accepts an override. Both `enforce_quotas` call sites (`chat_completions` line 428, `messages` line 641) now call `st.tier_caps_resolver(key)` instead of the §4.2b-era hardcoded `tier_caps=None`.
+- [x] `run_gateway` detects noop vs real `TierCapsResolver` (mirroring the billing / signup forwarding pattern) and passes through.
+
+metis-pro changes:
+
+- [x] `src/metis_pro/quotas.py` — new module with `ProTierCapsResolver`. The class wraps `(SignupState, BillingState)` captured at composition time. Its `__call__(key)` lifts the pre-§4.2b `_resolve_tier_caps` body verbatim: walks `key → account_for_key → enforce_failed_payment_state → get_customer → tier`; returns the `TierCaps(account_id, key_ids, daily_cap_usd, monthly_cap_usd)` from `BillingConfig` only when the resolved tier is `"free"`. Non-free tiers and unknown keys return `None`.
+- [x] `tests/billing/conftest.py` — `billing_client_http` now constructs `ProTierCapsResolver(signup_state, billing_state)` alongside the `MagicLinkSignupBackend` + `StripeBillingBackend`, and passes all three to `build_app`.
+- [x] `tests/billing/test_quota_composition.py` — the 3 cap-blocking tests are un-skipped (the `_TIER_AXIS_INJECTION_PENDING` decorator is removed from all three).
+
+Verification:
+
+- [x] OSS `uv run pytest`: **1781 passed, 1 skipped** (unchanged from §4.3; the noop preserves the pre-§4.2c behavior, so no test results moved).
+- [x] metis-pro `uv run pytest`: **77 passed, 0 skipped** (was 74 + 3 skip; the 3 tier-axis tests are now active and green).
+- [x] Ruff clean on both repos (1 long-line fix in `metis_pro/quotas.py` auto-formatted).
 
 ### 4.3 Second move — `signup.py` + accounts store — **DONE 2026-05-18**
 
