@@ -1,7 +1,7 @@
 [project]
 name = "metis-workspace"
 version = "0.1.0"
-description = "Metis monorepo root. The shipped package is `metis` under packages/metis/."
+description = "Metis monorepo root. The shipped package is `metis-llm` (importable as `metis`) under packages/metis/."
 authors = [
     { name = "David Ji", email = "david.ji.2814@gmail.com" }
 ]
@@ -9,7 +9,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
-    "metis",
+    "metis-llm",
 ]
 
 [tool.uv]
@@ -19,7 +19,7 @@ package = false
 members = ["packages/metis"]
 
 [tool.uv.sources]
-metis = { workspace = true }
+metis-llm = { workspace = true }
 
 [dependency-groups]
 dev = [
