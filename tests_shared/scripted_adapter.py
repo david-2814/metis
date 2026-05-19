@@ -15,13 +15,13 @@ from __future__ import annotations
 import json as _json
 from dataclasses import dataclass
 
-from metis_core.adapters.protocol import (
+from metis.core.adapters.protocol import (
     CanonicalRequest,
     CanonicalResponse,
     StopReason,
     TokenUsage,
 )
-from metis_core.adapters.streaming import (
+from metis.core.adapters.streaming import (
     MessageComplete,
     MessageStart,
     TextDelta,
@@ -29,9 +29,9 @@ from metis_core.adapters.streaming import (
     ToolUseInputDelta,
     ToolUseStart,
 )
-from metis_core.canonical.capabilities import AdapterCapabilities
-from metis_core.canonical.content import TextBlock, ToolUseBlock
-from metis_core.canonical.ids import new_message_id
+from metis.core.canonical.capabilities import AdapterCapabilities
+from metis.core.canonical.content import TextBlock, ToolUseBlock
+from metis.core.canonical.ids import new_message_id
 
 
 @dataclass

@@ -15,14 +15,14 @@ import os
 from decimal import Decimal
 from pathlib import Path
 
-from metis_core.adapters.anthropic import AnthropicAdapter
-from metis_core.eval.judge import HeuristicJudge, SubjectContext
-from metis_core.eval.llm_judge import (
+from metis.core.adapters.anthropic import AnthropicAdapter
+from metis.core.eval.judge import HeuristicJudge, SubjectContext
+from metis.core.eval.llm_judge import (
     HybridJudge,
     LLMJudge,
     LLMJudgeConfig,
 )
-from metis_core.pricing import DEFAULT_PRICE_TABLE
+from metis.core.pricing import DEFAULT_PRICE_TABLE
 
 JUDGE_MODEL = "anthropic:claude-haiku-4-5"
 SESSION_ID = "sess_smoke_eval"

@@ -28,7 +28,7 @@ from typing import Any
 
 import yaml
 
-from metis_core.routing.policy import (
+from metis.core.routing.policy import (
     AllOf,
     AnyOf,
     CostTodayExceedsUsd,
@@ -50,7 +50,7 @@ from metis_core.routing.policy import (
     WorkspacePathMatches,
     WorkspaceScope,
 )
-from metis_core.routing.registry import ModelRegistry
+from metis.core.routing.registry import ModelRegistry
 
 SUPPORTED_SCHEMA_VERSIONS = {1}
 

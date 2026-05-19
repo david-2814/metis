@@ -26,10 +26,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import msgspec
-from metis_core.events.bus import EventBus
-from metis_core.events.envelope import Actor
-from metis_core.events.payloads import LLMCallCompleted, make_event
-from metis_core.trace.store import TraceStore
+from metis.core.events.bus import EventBus
+from metis.core.events.envelope import Actor
+from metis.core.events.payloads import LLMCallCompleted, make_event
+from metis.core.trace.store import TraceStore
 
 
 # Synthetic event template. Held outside the loop so we measure

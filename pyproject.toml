@@ -1,7 +1,7 @@
 [project]
-name = "metis"
+name = "metis-workspace"
 version = "0.1.0"
-description = "Metis monorepo root: metis-core library, metis-server HTTP/WS surface, metis-gateway transparent proxy, metis-cli (chat/tui/serve/gateway)."
+description = "Metis monorepo root. The shipped package is `metis` under packages/metis/."
 authors = [
     { name = "David Ji", email = "david.ji.2814@gmail.com" }
 ]
@@ -9,23 +9,17 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
-    "metis-core",
-    "metis-server",
-    "metis-gateway",
-    "metis-cli",
+    "metis",
 ]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["packages/*", "apps/*"]
+members = ["packages/metis"]
 
 [tool.uv.sources]
-metis-core = { workspace = true }
-metis-server = { workspace = true }
-metis-gateway = { workspace = true }
-metis-cli = { workspace = true }
+metis = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -45,9 +39,6 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = [
-    "packages/metis-core/tests",
-    "apps/server/tests",
-    "apps/gateway/tests",
-    "apps/cli/tests",
+    "packages/metis/tests",
 ]
 asyncio_mode = "auto"
