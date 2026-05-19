@@ -40,7 +40,7 @@ Inherited from [AGENTS.md](AGENTS.md) "Working norms" — the highlights:
 ## How to land a change
 
 ```bash
-git clone https://github.com/2sumAI/metis.git
+git clone https://github.com/david-2814/metis.git
 cd metis
 uv sync                                       # resolves the workspace
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env    # for live-API smoke tests

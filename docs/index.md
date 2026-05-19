@@ -4,7 +4,7 @@ Metis is a local-first AI dev agent — provider-agnostic, self-improving,
 and cost-aware. Canonical message format, layered routing, bounded
 portable memory, transparent cost attribution per turn / user / team.
 
-This site is built from the [`docs/`](https://github.com/2sumAI/metis/tree/main/docs)
+This site is built from the [`docs/`](https://github.com/david-2814/metis/tree/main/docs)
 tree in the repo. The four sections in the top nav line up with how the
 project itself is organized.
 
@@ -65,7 +65,7 @@ platforms, routing layers, skills & memory).
 
 Every page on this site has an **Edit this page** and **View source**
 action in the top-right. Both point at GitHub —
-[`2sumAI/metis`](https://github.com/2sumAI/metis), `main` branch — at
+[`david-2814/metis`](https://github.com/david-2814/metis), `main` branch — at
 the exact file backing the page. Spec edits go through a PR; the change
 log is in [specs/CHANGES.md](specs/CHANGES.md).
 

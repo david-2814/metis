@@ -20,8 +20,8 @@ site_author: Metis maintainers
 
 # Source links — each page renders an "Edit this page" + "View source"
 # action that lands the reader on GitHub at the right line.
-repo_name: 2sumAI/metis
-repo_url: https://github.com/2sumAI/metis
+repo_name: david-2814/metis
+repo_url: https://github.com/david-2814/metis
 edit_uri: edit/main/docs/
 
 docs_dir: docs
@@ -134,7 +134,7 @@ extra:
   generator: false
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/2sumAI/metis
+      link: https://github.com/david-2814/metis
 
 # Nav structure — Getting Started / Specs / Operations / Strategy.
 # Files stay in their current paths (specs in docs/specs/, ops in
