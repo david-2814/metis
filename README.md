@@ -116,9 +116,6 @@ turn loop: sessions, tools, memory, skills, routing, tracing, evaluation, and
 persistence. The **gateway path** is a transparent OpenAI / Anthropic-shaped
 proxy for existing clients such as Claude Code, Cursor, and SDK apps.
 
-<details>
-<summary>Architecture diagram</summary>
-
 ```mermaid
 flowchart LR
   subgraph Clients
@@ -197,8 +194,6 @@ flowchart LR
   Home --> Trace
   Home --> Analytics
 ```
-
-</details>
 
 ### Agent path
 
