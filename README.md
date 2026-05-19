@@ -76,7 +76,7 @@ Sanity-check the loop against the real API in under a minute (~$0.015 with haiku
 - **Local-first.** Everything runs on your machine. SQLite trace store + session store under `~/.metis/`. Bounded memory under `<workspace>/.metis/`. The gateway is loopback-only by default; non-loopback binds require the documented hardening checklist.
 - **Specs before code.** Component contracts live in [`docs/specs/`](docs/specs/) and ship before the implementation; an integration test suite covers them end-to-end.
 
-The repo is a uv-workspace monorepo with one published package — installed as `metis-ai`, imported as `metis` — at [`packages/metis/`](packages/metis/). It's organized internally into four subpackages: `metis.core` is the library (canonical types, events, adapters, routing, tools, memory, sessions, pricing, skills, trace); `metis.server`, `metis.gateway`, and `metis.cli` are the deployable surfaces. The `metis` console-script ships from `metis.cli`. (The bare `metis` name on PyPI is already taken by an unrelated graph-partitioning library; the install-vs-import name split follows the PyYAML pattern.)
+The repo is a uv-workspace monorepo with one published package — installed as `metis-llm`, imported as `metis` — at [`packages/metis/`](packages/metis/). It's organized internally into four subpackages: `metis.core` is the library (canonical types, events, adapters, routing, tools, memory, sessions, pricing, skills, trace); `metis.server`, `metis.gateway`, and `metis.cli` are the deployable surfaces. The `metis` console-script ships from `metis.cli`. (The bare `metis` name on PyPI is already taken by an unrelated graph-partitioning library; the install-vs-import name split follows the PyYAML pattern.)
 
 ## Try the gateway
 
