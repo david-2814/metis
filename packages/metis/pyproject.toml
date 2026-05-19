@@ -1,7 +1,7 @@
 [project]
-name = "metis"
+name = "metis-llm"
 version = "0.1.0"
-description = "Metis: local-first AI dev agent. Canonical types, event bus, adapters, routing, tools, memory, sessions, pricing, HTTP/WebSocket server, transparent provider-shape gateway, and CLI/TUI."
+description = "Metis: local-first AI dev agent. Canonical types, event bus, adapters, routing, tools, memory, sessions, pricing, HTTP/WebSocket server, transparent provider-shape gateway, and CLI/TUI. Installs as `pip install metis-llm`; imported as `metis`."
 authors = [
     { name = "David Ji", email = "david.ji.2814@gmail.com" }
 ]
@@ -28,3 +28,9 @@ metis = "metis.cli.main:main"
 [build-system]
 requires = ["uv_build>=0.10.0,<0.11.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# Distribution name (`metis-llm`) differs from the importable package name
+# (`metis`). uv_build infers the package from the distribution name by
+# default; this override tells it to ship `src/metis/` instead.
+module-name = "metis"
