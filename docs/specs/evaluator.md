@@ -5,7 +5,7 @@
 
 > Defines the feedback loop that turns "was this turn successful?" into a
 > recorded signal the pattern store and the analytics surface can read. This
-> closes the open question in [`STRATEGY.md §6.7`](../STRATEGY.md): without an
+> closes the open question in the project strategy (private): without an
 > evaluator, "is the system actually saving money vs naive sonnet-everywhere?"
 > stays an open question forever — savings without quality is just a smaller
 > bill for worse work.
@@ -58,7 +58,7 @@ reconcile before either implementation lands.
 
 ### 2.1 Goals
 
-1. **Closes STRATEGY.md §6.7.** Every turn (and every workload run, and
+1. **Closes the project strategy (private)** Every turn (and every workload run, and
    every flagged tool cycle) yields a recorded verdict. "Is the system saving
    money on tasks that succeeded?" becomes a join, not a guess.
 2. **Heuristic floor, LLM ceiling.** v1 ships heuristic judges that cost
@@ -70,7 +70,7 @@ reconcile before either implementation lands.
    same subjects — the dashboard's "evaluator agreement rate over time" tile
    ([§9.2](#92-analytics-quality)) is a query, not a side-table.
 4. **Single-user / local-first.** Workspace-scoped by default per
-   [`STRATEGY.md §2`](../STRATEGY.md); the verdict store lives next to the
+   the project strategy (private); the verdict store lives next to the
    trace store. No external service, no labeling pipeline.
 5. **Budget-explicit.** LLM-as-judge calls cost money. The evaluator's
    own spend is recorded (`eval.completed.judge_cost_usd`), capped per
@@ -115,7 +115,7 @@ reconcile before either implementation lands.
    mid-stream).** The judge sees the completed turn / cycle / session — the
    atomic unit. Token-level scoring is a different research project.
 7. **No remote / multi-tenant rollups.** Per
-   [`STRATEGY.md §2`](../STRATEGY.md); deferred until the gateway path
+   the project strategy (private); deferred until the gateway path
    ([`deployment-shape.md`](deployment-shape.md)) needs it.
 
 ---
@@ -1047,7 +1047,7 @@ These are **live**. Do not unilaterally close them.
 7. **Per-user calibration.** A future signal: "user X consistently
    thumbs-down turns the heuristic scored ≥ 0.8." The eval rubric could
    learn a per-user offset. Defer until multi-user / multi-profile
-   lands per [`STRATEGY.md §2`](../STRATEGY.md).
+   lands per the project strategy (private).
 8. **Evaluating the evaluator.** Spot-checking via benchmark workloads
    with hand-asserted expectations is the v1 calibration plan. A more
    rigorous "golden verdict" corpus (a sampled set of turns the operator
@@ -1188,7 +1188,7 @@ The three open items listed in the original draft are closed:
 | 2026-05-13 | Per-session AND per-day cost caps                                       | One chatty session can exhaust a daily budget alone; both caps are needed.                              |
 | 2026-05-13 | LLM judge defaults to a small model (haiku-class)                       | Spending opus to grade haiku inverts the cost story; small-model classification is the right tier.       |
 | 2026-05-13 | No mid-turn evaluation                                                  | Preserves turn-locked-model invariant; the routing chain stays out of the evaluator's path.              |
-| 2026-05-13 | Single-user / local-first / per-workspace by default                    | Per [`STRATEGY.md §2`](../STRATEGY.md); multi-user is downstream of the gateway / replacement-agent fork. |
+| 2026-05-13 | Single-user / local-first / per-workspace by default                    | Per the project strategy (private); multi-user is downstream of the gateway / replacement-agent fork. |
 | 2026-05-13 | Re-evaluation produces new verdict, doesn't mutate old                  | Agreement-rate-over-time is a query, not a side-table; preserves audit trail.                            |
 | 2026-05-13 | `judge_cost_usd` is `Decimal`, serialized as string in event payload    | Matches `Usage.cost_usd` convention from [`canonical-message-format.md §6.4`](canonical-message-format.md). |
 | 2026-05-13 | Rubrics versioned via `rubric_id` + `rubric_version`                    | Changing the rubric is a version bump that produces a new score series; old verdicts remain comparable.   |
@@ -1214,7 +1214,7 @@ The three open items listed in the original draft are closed:
 - [`context-assembler.md`](context-assembler.md) — prompt-cache discipline
   the LLM judge should follow (open question 13.3).
 - [`memory-store.md`](memory-store.md) — sibling spec for shape reference.
-- [`../STRATEGY.md §6.7`](../STRATEGY.md) — the open question this spec
+- `../the project strategy (private)` — the open question this spec
   closes.
 - [`../project-overview.md`](../project-overview.md) — Evaluator's role in
   the architecture diagram; Phase 3 ("full evaluator") deliverable.

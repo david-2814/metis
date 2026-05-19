@@ -13,13 +13,12 @@ schema_version: 1
 owner:
   primary_doc: "docs/operations/status-page.md"
   incident_doc: "docs/operations/incident-response.md"
-  support_doc: "docs/operations/support-channels.md"
-  target_status_url: "https://status.2sum.ai"
+  target_status_url: "https://status.example.com"
   selected_path: "tier_b_uptime_kuma_self_hosted"
   hosting_state: "not_provisioned_owner_side"
 
 placeholders:
-  status_url: "https://status.2sum.ai"
+  status_url: "https://status.example.com"
   gateway_url: "https://gateway.example.com"
   metrics_url_internal: "http://metis-gateway.metis-gateway.svc:8422/metrics"
   synthetic_anthropic_key: "${SYNTHETIC_GATEWAY_KEY}"
@@ -32,7 +31,7 @@ placeholders:
 
 status_page:
   page_name: "Metis Status"
-  public_url: "https://status.2sum.ai"
+  public_url: "https://status.example.com"
   visibility: "public_read_only"
   timezone: "UTC"
   uptime_window_days: 90
@@ -88,12 +87,12 @@ helm_values_overlay:
     enabled: true
     ingress:
       enabled: true
-      host: "status.2sum.ai"
+      host: "status.example.com"
       className: "nginx"
       tls:
         - secretName: "status-page-tls"
           hosts:
-            - "status.2sum.ai"
+            - "status.example.com"
 
 monitors:
   - id: "gateway-healthz"
@@ -279,9 +278,8 @@ incident_templates:
       <queue / fail / return 503>. Update posted when complete.
 
 owner_provisioning_checklist:
-  - "Provision DNS for status.2sum.ai."
+  - "Provision DNS for status.example.com."
   - "Provision TLS cert status-page-tls or the SaaS provider equivalent."
   - "Enable statusPage.enabled=true or create the external status-page account."
   - "Issue the capped synthetic gateway key and store it outside the repo."
   - "Paste the monitors and incident templates above into the provider UI."
-  - "Run docs/operations/pre-launch-dry-run-checklist.md before launch day."

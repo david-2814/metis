@@ -171,12 +171,11 @@ class LLMJudge:
         # delegates to this for those subject kinds rather than re-imple-
         # menting the heuristic.
         self._fallback = heuristic_for_unsupported or HeuristicJudge()
-        # §4.5 (2026-05-18) — Pro overlays inject a curated rubric library
-        # via `metis_core.extensions.JudgeRubricProvider`. OSS noop returns
-        # None for every lookup so the judge falls back to the generic
-        # `_SYSTEM_PROMPT` (preserving pre-§4.5 behavior). metis-pro's
-        # `metis_pro.judges.rubrics.ProRubricLibrary` is the canonical
-        # implementation; see docs/operations/repo-split-plan.md §4.5.
+        # Pro overlays inject a curated rubric library via
+        # `metis_core.extensions.JudgeRubricProvider`. OSS noop returns None
+        # for every lookup so the judge falls back to the generic
+        # `_SYSTEM_PROMPT`. metis-pro's `metis_pro.judges.rubrics.ProRubricLibrary`
+        # is the canonical implementation.
         self._rubric_provider = rubric_provider or NoopJudgeRubricProvider()
 
     @property

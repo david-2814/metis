@@ -1471,7 +1471,7 @@ the points relevant to this spec:
 - **Audit exemption.** Event types whose `PAYLOAD_REGISTRY` entry is
   flagged `audit=True` (Wave 12a-1) are never deleted, regardless of
   age. This is the bridge between the per-event sensitivity floor
-  (§4.4) and the compliance posture in STRATEGY.md §2 — sensitivity
+  (§4.4) and the compliance posture in the project strategy (private) — sensitivity
   controls *how* an event can be projected; the audit flag controls
   *when* it can be deleted.
 - **`trace.swept` records every sweep** (§6.14) with row counts, the

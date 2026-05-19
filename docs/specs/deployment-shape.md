@@ -3,7 +3,7 @@
 **Status:** Draft v1 — recommendation, awaiting owner sign-off
 **Last updated:** 2026-05-13
 
-> Resolves the architectural fork in [`STRATEGY.md §3`](../STRATEGY.md) and the open question in §6.1: **replacement agent vs. transparent gateway vs. hybrid**. This spec is the recommendation and the rationale; the STRATEGY.md edits land only after sign-off.
+> Resolves the architectural fork in the project strategy (private) and the open question in §6.1: **replacement agent vs. transparent gateway vs. hybrid**. This spec is the recommendation and the rationale; the the project strategy (private) edits land only after sign-off.
 
 ---
 
@@ -16,7 +16,7 @@ Concretely:
 1. **Phase 2 wedge** — ship a transparent HTTP gateway (`apps/gateway/`) that speaks OpenAI-shape (and later Anthropic-shape) inbound, routes through the existing engine and adapters, and tracks cost per API key. The buyer flips one env var; their devs keep using Claude Code / Cursor / Codex / Continue without behavior changes. See [`gateway.md`](gateway.md).
 2. **Phase 3+** — continue investing in the replacement agent (CLI / TUI / future desktop) as the **upgrade path**. Skills, bounded memory, the context assembler, learned routing, and agent-internal delegation are the high-ceiling features that the gateway form factor cannot deliver. They become "Metis Pro" — what a buyer adopts after the gateway has already proved savings on their workload.
 3. **Shared substrate** — both deployments compose the same `metis-core` library (canonical IR, routing engine, adapters, pricing, trace store, memory). The gateway and the agent are different *front doors* to the same engine; they do not fork the codebase.
-4. **Not on the table** — gateway-only (caps the ceiling and walks away from work already built) and agent-only (caps the floor and ignores the dominant adoption-friction risk in [`STRATEGY.md §3`](../STRATEGY.md)).
+4. **Not on the table** — gateway-only (caps the ceiling and walks away from work already built) and agent-only (caps the floor and ignores the dominant adoption-friction risk in the project strategy (private)).
 
 The remainder of this spec is the survey and effort math behind that recommendation.
 
@@ -28,16 +28,16 @@ The remainder of this spec is the survey and effort math behind that recommendat
 
 The current build trajectory: a replacement coding agent (CLI today, TUI shipped, desktop later) where Metis owns the entire loop — routing, context, tools, memory, skills.
 
-- **Ceiling:** very high. All three cost levers from [`STRATEGY.md §1`](../STRATEGY.md) (context > skills > model selection) are reachable. The "agent that gets cheaper as it learns your workload" pitch from `synthesis.md` only works here.
+- **Ceiling:** very high. All three cost levers from the project strategy (private) (context > skills > model selection) are reachable. The "agent that gets cheaper as it learns your workload" pitch from `synthesis.md` only works here.
 - **Floor:** very low. The savings story only materializes after a dev adopts the tool *and* uses it for weeks. The buyer can't measure savings on day one because the workload that produced the baseline isn't running through the agent yet.
-- **Adoption friction:** the highest cost in B2B dev-tooling per [`STRATEGY.md §3`](../STRATEGY.md). Asking devs to switch from Claude Code (122k★) / Cursor / Codex / Cline / OpenCode (157k★) is the #1 reason such buys don't land.
+- **Adoption friction:** the highest cost in B2B dev-tooling per the project strategy (private). Asking devs to switch from Claude Code (122k★) / Cursor / Codex / Cline / OpenCode (157k★) is the #1 reason such buys don't land.
 - **Market position:** the TUI multi-provider agent lane has eight credible OSS options already. Metis enters as competitor N+1 on architecture and differentiates only on memory + skill-learning mechanics that take quarters of buildout to make legible to a buyer.
 
 ### 2.2 Gateway-only
 
 Metis becomes a transparent HTTP proxy: OpenAI-shape (and Anthropic-shape) inbound, provider-native outbound via the existing adapter set. Devs keep using whatever agent they already use. The buyer changes one env var.
 
-- **Ceiling:** lower. The gateway sees one LLM call at a time. It can route, cache, fall back, and meter cost — but it cannot shape the prompt envelope inside someone else's agent loop. Skills, bounded memory, context assembly, and cross-turn pattern learning are unreachable. The headline savings lever (context engineering, per [`STRATEGY.md §1`](../STRATEGY.md)) is left on the table.
+- **Ceiling:** lower. The gateway sees one LLM call at a time. It can route, cache, fall back, and meter cost — but it cannot shape the prompt envelope inside someone else's agent loop. Skills, bounded memory, context assembly, and cross-turn pattern learning are unreachable. The headline savings lever (context engineering, per the project strategy (private)) is left on the table.
 - **Floor:** very high. Buyer flips `OPENAI_BASE_URL`; devs don't notice; savings show up on the dashboard within hours. This is the GTM motion LiteLLM / Portkey / Helicone all run.
 - **Adoption friction:** near-zero — that's the point.
 - **Market position:** competing on margin with LiteLLM (46k★), Portkey (12k★), Helicone (6k★). The defensible wedge per [`synthesis.md`](../market-research/synthesis.md) — lossless canonical IR that round-trips Anthropic's `cache_control` / `thinking` / `tool_use` / citations — is *real* in the gateway shape (see §3.4 below) but it doesn't differentiate on the dashboard.
@@ -139,7 +139,7 @@ Surveyed gaps (from `apps/cli/src/metis_cli/tui/app.py` — currently 557 lines,
 | Real tool-confirmation handler (replace `AutoAllowHandler` — currently auto-approves writes and shell) | 1 week |
 | Onboarding flow: first-run wizard, model discovery, `.env` setup, sample skills | 1–2 weeks |
 | Public docs / install scripts / "5-minute setup" page | 1 week |
-| Savings benchmark + demo workload (called out as the biggest gap in [`STRATEGY.md §2`](../STRATEGY.md)) | 2–3 weeks |
+| Savings benchmark + demo workload (called out as the biggest gap in the project strategy (private)) | 2–3 weeks |
 | Context assembler design + spec + first implementation (the biggest cost lever; currently architecture-diagram-only) | **separate, large — 4–6 weeks** |
 
 **Estimate.** Polish-only (ignoring context assembler, which is a build, not polish): **5–8 engineer-weeks.** With context assembler — which is what makes the replacement-agent ceiling story real: **10–14 weeks.**
@@ -182,7 +182,7 @@ The agent-specific column is what's already mostly built. The gateway-specific c
 | Gateway-only | hours (env var flip) | fast | medium (model selection + cache only) |
 | Hybrid | hours (gateway) → weeks (agent upsell) | fast floor, high ceiling | high |
 
-The gateway gives Metis the artifact the project doesn't yet have and needs most: **proof of savings on the buyer's actual workload** ([`STRATEGY.md §2`](../STRATEGY.md): *"This is currently the biggest gap between 'the architecture should work' and 'we can show it works.'"*).
+The gateway gives Metis the artifact the project doesn't yet have and needs most: **proof of savings on the buyer's actual workload** (the project strategy (private): *"This is currently the biggest gap between 'the architecture should work' and 'we can show it works.'"*).
 
 ### 5.3 Risk math
 
@@ -194,10 +194,10 @@ The gateway gives Metis the artifact the project doesn't yet have and needs most
 
 ## 6. What this means for adjacent open questions
 
-- **[`STRATEGY.md §6.3`](../STRATEGY.md) — local-first vs. SaaS.** The gateway-first GTM motion implies a server-mode-or-SaaS posture, not strict local-first-on-laptop. Buyers want "flip a URL" not "install a daemon on every laptop." Local-first remains a *deployment* property (BYO keys, BYO infra) but the v1 product is "deployed Metis instance" — either in the buyer's VPC or hosted by Metis. This narrows §6.3 without resolving it; the choice between SaaS and self-host-in-VPC is downstream of GTM evidence we don't yet have.
-- **[`STRATEGY.md §6.4`](../STRATEGY.md) — savings benchmark.** The gateway *is* the benchmark. Once it's running on a buyer's workload, the savings counterfactual that `analytics-api.md §4.7` already specifies becomes a contract Metis can hold up to a buyer with their own numbers. No synthetic workload needed.
-- **[`STRATEGY.md §6.5`](../STRATEGY.md) — context-assembler design.** Deferred behind the gateway. The biggest cost lever is unreachable from the gateway form factor, which means the spec design can wait until the gateway has proven that buyers want more savings beyond what model selection alone delivers. Context-assembler becomes the "Metis Pro" anchor feature.
-- **[`STRATEGY.md §6.8`](../STRATEGY.md) — pricing model.** Gateway → likely per-seat *or* % of savings (the gateway's per-key cost data makes savings-share contracts measurable for the first time). Agent → flat per-seat. The hybrid supports both, with the gateway as the on-ramp.
+- **the project strategy (private) — local-first vs. SaaS.** The gateway-first GTM motion implies a server-mode-or-SaaS posture, not strict local-first-on-laptop. Buyers want "flip a URL" not "install a daemon on every laptop." Local-first remains a *deployment* property (BYO keys, BYO infra) but the v1 product is "deployed Metis instance" — either in the buyer's VPC or hosted by Metis. This narrows §6.3 without resolving it; the choice between SaaS and self-host-in-VPC is downstream of GTM evidence we don't yet have.
+- **the project strategy (private) — savings benchmark.** The gateway *is* the benchmark. Once it's running on a buyer's workload, the savings counterfactual that `analytics-api.md §4.7` already specifies becomes a contract Metis can hold up to a buyer with their own numbers. No synthetic workload needed.
+- **the project strategy (private) — context-assembler design.** Deferred behind the gateway. The biggest cost lever is unreachable from the gateway form factor, which means the spec design can wait until the gateway has proven that buyers want more savings beyond what model selection alone delivers. Context-assembler becomes the "Metis Pro" anchor feature.
+- **the project strategy (private) — pricing model.** Gateway → likely per-seat *or* % of savings (the gateway's per-key cost data makes savings-share contracts measurable for the first time). Agent → flat per-seat. The hybrid supports both, with the gateway as the on-ramp.
 
 ---
 
@@ -221,9 +221,9 @@ The gateway gives Metis the artifact the project doesn't yet have and needs most
 
 ## 9. Sign-off
 
-This spec is the recommendation only. It does not retire [`STRATEGY.md §6.1`](../STRATEGY.md) or land any STRATEGY.md edits. Those follow on owner sign-off.
+This spec is the recommendation only. It does not retire the project strategy (private) or land any the project strategy (private) edits. Those follow on owner sign-off.
 
-When signed off, the STRATEGY.md edits queued are:
+When signed off, the the project strategy (private) edits queued are:
 
 - **§5** — new dated entry: *"2026-05-13 — Adopt hybrid deployment (gateway first → agent upgrade). See [`deployment-shape.md`](specs/deployment-shape.md)."*
 - **§6.1** — retire the question; add: *"Resolved 2026-05-13: hybrid. See [`deployment-shape.md`](specs/deployment-shape.md)."*

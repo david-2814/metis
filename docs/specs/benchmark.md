@@ -6,7 +6,7 @@
 > Defines the workload suite, baseline, and measurement methodology that turn
 > `analytics-api.md /analytics/savings.actual_repriced_usd` and
 > `baseline_repriced_usd` into a credible "Metis saved you X%" number — the
-> artifact [`STRATEGY.md §6.4`](../STRATEGY.md) names as "currently the biggest
+> artifact the project strategy (private) names as "currently the biggest
 > gap between 'the architecture should work' and 'we can show it works.'"
 
 ---
@@ -77,13 +77,13 @@ This spec depends on:
 1. **No latency benchmarking.** The headline number is cost; latency is a
    secondary metric ([§7](#7-secondary-metrics)) but not the value prop.
 2. **No quality scoring of model outputs in v1.** "Did the agent solve the
-   task correctly?" is the evaluator's job ([`STRATEGY.md §6.7`](../STRATEGY.md));
+   task correctly?" is the evaluator's job (strategic context, private);
    benchmark v1 asserts that turns *completed* and *exercised expected events*,
    not that the answers were good. A workload whose outputs are wrong but cost
    the right amount still scores. This is a known v1 limitation.
 3. **No multi-tenant / multi-user simulation.** Single workspace, single
    session per workload. Multi-user pricing is downstream of the
-   [`STRATEGY.md §3`](../STRATEGY.md) replacement-agent-vs-gateway fork.
+   the project strategy (private) replacement-agent-vs-gateway fork.
 4. **No CI integration in v1.** The suite runs against real APIs and costs
    real money. Promotion to CI is a separate decision; v1 ships the harness
    so a human can run it on demand.
@@ -525,7 +525,7 @@ These are **live**. Do not unilaterally close them.
 | 2026-05-13 | Three workloads in v1                                         | Enough variation to avoid single-workload accident; few enough to stay under the cost ceiling. |
 | 2026-05-13 | Soft floors / hard ceilings, no goldens                       | LLM variance breaks goldens; tolerance windows catch real regressions without churn.       |
 | 2026-05-13 | Run analytics in-process (not via HTTP)                       | Avoids uvicorn lifecycle in a one-shot script; dashboard agreement is by construction.     |
-| 2026-05-13 | Quality scoring deferred to the evaluator                     | Benchmark v1 measures spend, not correctness — evaluator's job per STRATEGY.md §6.7.       |
+| 2026-05-13 | Quality scoring deferred to the evaluator                     | Benchmark v1 measures spend, not correctness — evaluator's job per the project strategy (private)       |
 | 2026-05-15 | `signal_strength: high \| marginal` partition + `--include-marginal` flag | §A3-rev6 Q1 finding ([`RESULTS.md`](../../benchmarks/RESULTS.md)): the per-workload haiku-vs-sonnet quality gap in the v1 suite is within run-to-run variance. v2 splits the suite by smoke-validated gap so the default run trains the K-NN only on high-signal workloads. 13a-1 smoke (2026-05-15) tested 3 candidate workloads; none cleared the 0.4 gate, so the default suite ships empty pending future candidates. |
 
 ---
@@ -541,7 +541,7 @@ These are **live**. Do not unilaterally close them.
   schema for `events`, `messages`, `sessions`.
 - [`provider-adapter-contract.md`](provider-adapter-contract.md) (planned) —
   the contract for `CanonicalRequest.temperature` honored across adapters.
-- [`../STRATEGY.md §6.4`](../STRATEGY.md) — the open question this spec
+- `../the project strategy (private)` — the open question this spec
   closes.
 - [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — prompt-caching gap; the
   benchmark's `cache_hit_rate` column doubles as a forcing function.

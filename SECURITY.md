@@ -16,9 +16,7 @@ Please **do not** open a public GitHub issue for security
 vulnerabilities.
 
 Use [GitHub Security Advisories](https://github.com/david-2814/metis/security/advisories/new)
-to report privately. Alternatively, email
-`security@2sum.ai` (TODO(owner): confirm this address is monitored;
-set up forwarding or change to the real address if not).
+to report privately.
 
 We aim to:
 
@@ -37,8 +35,8 @@ In scope:
 
 Out of scope:
 
-- The paid-tier overlay (`metis-pro`) -- report via
-  `security@2sum.ai`
+- The paid-tier overlay (`metis-pro`) -- closed-source; report
+  via the maintainers of that repo
 - Third-party dependencies (report to upstream maintainers)
 - Issues in user deployments (configuration, network, secrets
   management) -- these are operator responsibilities

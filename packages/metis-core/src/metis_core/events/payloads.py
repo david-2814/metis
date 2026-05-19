@@ -674,8 +674,7 @@ class GatewayKeyIssued(msgspec.Struct, frozen=True):
     allowed_models: list[str] | None = None
     daily_cap_usd: Decimal | None = None
     monthly_cap_usd: Decimal | None = None
-    # Wave 14b concierge-onboarding tag — optional. Pre-Wave-14b key
-    # issuances omit this; pre-existing audit consumers ignore the field.
+    # Optional customer-tier tag. Pre-existing audit consumers ignore the field.
     customer_tier: str | None = None
 
 

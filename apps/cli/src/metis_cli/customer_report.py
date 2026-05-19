@@ -2,10 +2,9 @@
 
 Generates a single HTML or JSON file summarizing what a buyer's trace DB
 shows for a workspace over a window. The report is the "what landed in the
-trial" artifact the concierge-onboarding flow hands to the buyer on day 7
-(`docs/operations/concierge-onboarding.md §day-7`): cost, quality, savings
-counterfactual, and per-key / per-user / per-team rollups derived from the
-same `/analytics/*` projections that back the dashboard.
+trial" artifact handed to the buyer at the end of an evaluation: cost,
+quality, savings counterfactual, and per-key / per-user / per-team rollups
+derived from the same `/analytics/*` projections that back the dashboard.
 
 The report is **offline-share-able** — no JS, no external assets, no
 network fetches. Inline CSS only. The buyer should be able to email it to

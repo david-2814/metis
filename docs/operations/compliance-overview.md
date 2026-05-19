@@ -93,9 +93,8 @@ control documentation for the organizational layer.
 
 ## Compliance posture by deployment shape
 
-[`STRATEGY.md §6.3`](../STRATEGY.md) leaves local-first vs in-VPC vs
-SaaS open as a GTM positioning question; the engineering shape is
-unified ([`deployment-shape.md §6`](../specs/deployment-shape.md)). The
+The engineering shape is unified
+([`deployment-shape.md §6`](../specs/deployment-shape.md)). The
 compliance story does differ by deployment posture — useful when the
 buyer's compliance team asks which shape they're signing off on.
 

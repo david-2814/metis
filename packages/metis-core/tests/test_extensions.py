@@ -1,11 +1,10 @@
 """Contract tests for the repo-split extension Protocols.
 
-These tests are the safety net described in
-``docs/operations/repo-split-plan.md §6``: they verify the four Protocols
-exist with the documented method shapes, that the Noop defaults satisfy
-them, and that a ``FakePro`` implementation built outside ``metis-core``
-also satisfies them. They catch accidental Protocol changes before
-``metis-pro`` consumes a new OSS version.
+These tests are the safety net for the OSS / `metis-pro` boundary:
+they verify the four Protocols exist with the documented method shapes,
+that the Noop defaults satisfy them, and that a ``FakePro`` implementation
+built outside ``metis-core`` also satisfies them. They catch accidental
+Protocol changes before ``metis-pro`` consumes a new OSS version.
 
 If a method signature changes here without a coordinated PR in
 ``metis-pro``, this is the gate that catches it.

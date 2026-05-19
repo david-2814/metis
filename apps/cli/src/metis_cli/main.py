@@ -492,7 +492,7 @@ def build_parser() -> argparse.ArgumentParser:
         "customer-report",
         help=(
             "Generate an offline-share-able usage report (HTML / JSON) for a "
-            "trial workspace over a window. See docs/operations/concierge-onboarding.md."
+            "trial workspace over a window."
         ),
     )
     customer_report.add_argument(
@@ -561,7 +561,7 @@ def build_parser() -> argparse.ArgumentParser:
         "trial-status",
         help=(
             "Print spend / quality / days-into-trial / readiness for a trial "
-            "workspace. Read-only. See docs/operations/concierge-onboarding.md."
+            "workspace. Read-only."
         ),
     )
     trial_status.add_argument(

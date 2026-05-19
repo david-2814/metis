@@ -166,14 +166,13 @@ Cost envelope: ~$1.10 real-API spend across three passes.
 
 ## Where this fits in the bigger story
 
-The thesis is in [`docs/STRATEGY.md §1`](STRATEGY.md): a buyer's LLM
-bill bends through three levers — context engineering, skills, and
-model selection — applied together. Model selection is the cleanest to
-demonstrate against a benchmark, which is why it's the artifact above.
-Context engineering and skills compound on top of it; both are
-already-shipped (universal prompt-cache placement, agentskills.io-
-compatible skill store) and the savings from each surface separately
-in the dashboard.
+The thesis: a buyer's LLM bill bends through three levers — context
+engineering, skills, and model selection — applied together. Model
+selection is the cleanest to demonstrate against a benchmark, which is
+why it's the artifact above. Context engineering and skills compound on
+top of it; both are already-shipped (universal prompt-cache placement,
+agentskills.io-compatible skill store) and the savings from each
+surface separately in the dashboard.
 
-The mechanism for model selection shipped. The breadth across
-workloads is the in-progress work tracked in `STRATEGY.md §1`.
+The mechanism for model selection shipped. Broader workload coverage is
+in-progress.

@@ -3,7 +3,7 @@
 **Status:** v1 — §3, §4 (gateway identity stamping), §5 (analytics rollups), and §5.1 + §6.1 + §6.3 (key-scoped quota caps with hard breakers, soft alerts at 80%/95%, and the `team_budget_remaining_lt` routing predicate) shipped. User/team-scoped caps and `users.json` / `teams.json` storage land in a follow-on (see §8.1).
 **Last updated:** 2026-05-14
 
-> Adds a per-user / per-team identity layer on top of the existing per-(gateway-key) cost attribution shipped in [`gateway.md`](gateway.md) §3.3 / §6. Extends [`analytics-api.md`](analytics-api.md) with `group_by=user` and `group_by=team`, a new `/analytics/by_team` rollup, and `?user=` / `?team=` filter parameters on existing endpoints. Adds routing-rule predicates and gateway-level circuit breakers for per-user and per-team budget caps. Closes the "multi-user from day one is real" requirement called out in [`STRATEGY.md §2`](../STRATEGY.md) and the "team-level rollups" follow-on listed in [`gateway.md §11`](gateway.md).
+> Adds a per-user / per-team identity layer on top of the existing per-(gateway-key) cost attribution shipped in [`gateway.md`](gateway.md) §3.3 / §6. Extends [`analytics-api.md`](analytics-api.md) with `group_by=user` and `group_by=team`, a new `/analytics/by_team` rollup, and `?user=` / `?team=` filter parameters on existing endpoints. Adds routing-rule predicates and gateway-level circuit breakers for per-user and per-team budget caps. Closes the "multi-user from day one is real" requirement called out in the project strategy (private) and the "team-level rollups" follow-on listed in [`gateway.md §11`](gateway.md).
 >
 > This spec depends on:
 >
@@ -13,7 +13,7 @@
 > - [`routing-engine.md`](routing-engine.md) — the rule predicate set; new predicates land in §5.3.2.
 > - [`analytics-api.md`](analytics-api.md) — the rollup surface this spec extends.
 >
-> This spec **does not** depend on a particular deployment shape ([`STRATEGY.md §6.3`](../STRATEGY.md) is still open). The identity model is intentionally portable: local-first laptop-served, self-hosted-in-VPC, and SaaS deployments all consume the same struct shape. Storage location varies (local JSON files vs server-side SQLite) but the wire and event contracts do not.
+> This spec **does not** depend on a particular deployment shape (the project strategy (private) is still open). The identity model is intentionally portable: local-first laptop-served, self-hosted-in-VPC, and SaaS deployments all consume the same struct shape. Storage location varies (local JSON files vs server-side SQLite) but the wire and event contracts do not.
 
 ---
 
@@ -38,7 +38,7 @@ This spec adds two stable identity dimensions — `User` (a developer) and `Team
 2. **Per-team budget caps as a first-class primitive.** Both soft (route to cheaper model) and hard (reject the request) caps land in v1.
 3. **Backward compatibility with gateway v1.** Existing keys (issued without `--user` / `--team`) keep working; their traffic rolls up under `user_id: null` / `team_id: null` in the analytics surface — the same "ungrouped" convention `gateway.md §6` already uses for agent-loop traffic that has no `gateway_key_id`.
 4. **Deployment-shape neutral.** The struct, the events, and the HTTP surface are the same in local-first and SaaS deployments. Only the **storage** of `users.json` / `teams.json` differs (local FS vs server-side DB) — that's an operational concern, not a contract one.
-5. **No external identity provider in v1.** Metis-issued user/team records, persisted to disk alongside the keystore. SSO / OIDC / SCIM / SAML are all explicitly out of scope ([§8.1](#8-out-of-scope-for-v1)). The [`STRATEGY.md §6.2`](../STRATEGY.md) startup-CTO default — small teams who don't want to wire an IdP — is what v1 targets.
+5. **No external identity provider in v1.** Metis-issued user/team records, persisted to disk alongside the keystore. SSO / OIDC / SCIM / SAML are all explicitly out of scope ([§8.1](#8-out-of-scope-for-v1)). The the project strategy (private) startup-CTO default — small teams who don't want to wire an IdP — is what v1 targets.
 6. **Privacy by default.** Plaintext PII (emails, real names) lives in the user record only. The trace store carries the stable `user_id` and never the email. This keeps a single trace-store dump from being a PII spill.
 
 ### 2.2 Non-goals
@@ -120,7 +120,7 @@ The single-developer agent surfaces — `metis chat`, `metis tui`, `metis serve`
 - Adding `--user` / `--team` flags to `metis chat` would force the local-first dev to opt into an identity layer they don't need.
 - The analytics surface already handles the null case cleanly (see [`analytics-api.md §4.8`](analytics-api.md)) — the "agent-loop traffic" bucket gets a friendly label in the SPA.
 
-A future "team agent surface" (multi-dev `metis serve` behind an authenticated dashboard) would re-introduce per-request `user_id` binding via the auth context. That's downstream of the [`STRATEGY.md §6.3`](../STRATEGY.md) local-first-vs-SaaS resolution; v1 leaves the door open without specifying a contract.
+A future "team agent surface" (multi-dev `metis serve` behind an authenticated dashboard) would re-introduce per-request `user_id` binding via the auth context. That's downstream of the the project strategy (private) local-first-vs-SaaS resolution; v1 leaves the door open without specifying a contract.
 
 ---
 
@@ -403,7 +403,7 @@ The `route.decided` event is still emitted on hard-cap rejection (the chain ran 
 
 ### 7.1 What audit means
 
-[`STRATEGY.md §2`](../STRATEGY.md) names **audit and compliance** as a B2B requirement: "Trace events are the raw material; aggregation/retention/redaction policies for buyer-facing artifacts are not yet designed." This spec is not the full audit spec — but it pins what the *identity-relevant* audit events look like, so the eventual audit-export surface has them to project from.
+the project strategy (private) names **audit and compliance** as a B2B requirement: "Trace events are the raw material; aggregation/retention/redaction policies for buyer-facing artifacts are not yet designed." This spec is not the full audit spec — but it pins what the *identity-relevant* audit events look like, so the eventual audit-export surface has them to project from.
 
 The principle: **the trace store is the source of truth.** Audit log = filtered projection of trace events, not a parallel write path. This matches [`analytics-api.md §2.1.5`](analytics-api.md)'s rule that catalog-sourced data is the only source.
 
@@ -472,8 +472,8 @@ These are not in scope to **answer** in this spec — they're surfaced for the o
 
 These are deliberately not in this spec; they're the upgrade reasons that distinguish v1 from a full enterprise identity layer.
 
-1. **SSO / OIDC / SAML / SCIM / LDAP.** v1 ships Metis-issued user records in `users.json`. A future "Identity Provider Bridge" spec defines the pluggable interface (likely an `IdentityProvider` Protocol with `authenticate(token) -> User` / `enumerate_users() -> Iterable[User]`). Until a buyer asks, the startup-CTO default ([`STRATEGY.md §6.2`](../STRATEGY.md)) is "manual user list works fine."
-2. **Per-user dashboard authentication.** v1 dashboards inherit loopback-only ([`analytics-api.md §2.1.4`](analytics-api.md)). Multi-user authenticated dashboard access is downstream of the local-first-vs-SaaS resolution in [`STRATEGY.md §6.3`](../STRATEGY.md).
+1. **SSO / OIDC / SAML / SCIM / LDAP.** v1 ships Metis-issued user records in `users.json`. A future "Identity Provider Bridge" spec defines the pluggable interface (likely an `IdentityProvider` Protocol with `authenticate(token) -> User` / `enumerate_users() -> Iterable[User]`). Until a buyer asks, the startup-CTO default (strategic context, private) is "manual user list works fine."
+2. **Per-user dashboard authentication.** v1 dashboards inherit loopback-only ([`analytics-api.md §2.1.4`](analytics-api.md)). Multi-user authenticated dashboard access is downstream of the local-first-vs-SaaS resolution in the project strategy (private).
 3. **Role-based access control (RBAC).** No "viewers" vs "admins" within a deployment. The operator who can run `metis gateway issue-key` can also `revoke-key`, set caps, etc. Splitting roles is RBAC territory — a Phase 4 design.
 4. **Multi-org tenancy.** v1 assumes one deployment per organization, matching [`gateway.md §10.1`](gateway.md). Multi-org (separate keystores per org, trace-store partitioning, dashboard filtering) is a separate design.
 5. **Multi-workspace per key.** A single key still maps to exactly one workspace ([`gateway.md §3.3`](gateway.md)). A future v2 may allow `--workspace A --workspace B` on one key; the analytics surface would need a workspace-dimension addition. Default for v1 stays at one-workspace-per-key per §10.1.
@@ -482,7 +482,7 @@ These are deliberately not in this spec; they're the upgrade reasons that distin
 
 ### 8.1 Why no IdP in v1
 
-The startup-CTO buyer ([`STRATEGY.md §6.2`](../STRATEGY.md)) has 10–50 devs and is using whatever auth their cloud provider gives them — they do not have a Keycloak / Okta tenant they're eager to wire Metis into. Forcing one upfront is friction with no value for the v1 buyer. By the time a buyer needs SSO, they need SSO for **everything** (CI, dashboards, gateway, audit), so a single IdP-bridge spec covering all of those is more useful than a half-built one in v1.
+The startup-CTO buyer (strategic context, private) has 10–50 devs and is using whatever auth their cloud provider gives them — they do not have a Keycloak / Okta tenant they're eager to wire Metis into. Forcing one upfront is friction with no value for the v1 buyer. By the time a buyer needs SSO, they need SSO for **everything** (CI, dashboards, gateway, audit), so a single IdP-bridge spec covering all of those is more useful than a half-built one in v1.
 
 The chosen default — Metis-issued user records — is also the cheapest thing to **discard** if v2 deletes it in favor of an IdP bridge. The 5-line `User` struct and a single JSON file are a trivial migration vs the operational sunk cost of an early SSO integration.
 
@@ -508,7 +508,7 @@ The chosen default — Metis-issued user records — is also the cheapest thing 
 | 2026-05-14 | One workspace per key, one (user, team) per key in v1                   | Matches the shipped [`gateway.md §3.3`](gateway.md) contract; avoids "which team is this turn for" ambiguity in routing predicates. |
 | 2026-05-14 | `user_id` / `team_id` are additive fields on `LLMCallCompleted` / `TurnCompleted` | Mirrors the existing `gateway_key_id` / `inbound_shape` additive pattern; existing consumers ignore unknown fields. |
 | 2026-05-14 | Plaintext email lives in `users.json` only; trace events carry stable `user_id` | Privacy by default. A trace-store dump is not a PII spill.                                                          |
-| 2026-05-14 | Metis-issued user records in v1; no SSO / OIDC / SAML / SCIM            | Startup-CTO default ([`STRATEGY.md §6.2`](../STRATEGY.md)) does not need IdP integration; a full IdP-bridge spec is cheaper to write once than to evolve a v1 partial. |
+| 2026-05-14 | Metis-issued user records in v1; no SSO / OIDC / SAML / SCIM            | Startup-CTO default (strategic context, private) does not need IdP integration; a full IdP-bridge spec is cheaper to write once than to evolve a v1 partial. |
 | 2026-05-14 | Hard caps short-circuit before routing; soft caps live in `configured_rules` | Hard cap is a precondition failure (refuse), not a routing decision (route cheaper). Distinct shapes deserve distinct surfaces. |
 | 2026-05-14 | New `/analytics/by_team` endpoint mirrors the shipped `/analytics/by_key` | Same shape, same query parameter style, same null-bucket convention. Minimizes SPA learning curve.                  |
 | 2026-05-14 | Disabled users/teams produce 401, not 403                               | A disabled subject is a credential revocation, not an in-scope permission denial. OAuth-style semantics.            |
@@ -525,7 +525,7 @@ These are **live**. The owner closes them when evidence shows up; agents working
 1. **Identity provider for v2.** When the buyer asks for SSO, which protocol is the first integration — OIDC (broadest, simplest) or SAML (enterprise-incumbent, more painful)? Default lean: OIDC, on the assumption that the next buyer cohort up from startup-CTO is a Series-B-shaped company already running Auth0 / Clerk / WorkOS.
 2. **Email handling on the gateway side.** Should the gateway *prompt for* an email when `--user` creates a user, or treat email as optional metadata that the buyer fills in later via `metis gateway user set-email`? v1 leans optional — a key issuance flow with a forced email prompt is friction; the email is only load-bearing if SSO ships.
 3. **Multi-workspace per key.** A single Claude Code instance often spans repos. v1 forces a separate key per repo. Is that OK, or does v2 need a key with a workspace allowlist? Wait for evidence (a buyer asking, or an internal user complaint).
-4. **Per-user dashboards.** When does a developer want to see *their own* cost (vs the buyer-facing rollup)? Probably never the headline view — but a "self-serve" page would be a low-cost addition once authenticated dashboards exist. Couples to [`STRATEGY.md §6.3`](../STRATEGY.md).
+4. **Per-user dashboards.** When does a developer want to see *their own* cost (vs the buyer-facing rollup)? Probably never the headline view — but a "self-serve" page would be a low-cost addition once authenticated dashboards exist. Couples to the project strategy (private).
 5. **Right-to-delete pathway.** GDPR / CCPA. The append-only trace store is a problem; the closest equivalent is "purge events older than N days for this user_id." Surface honestly in a future audit-export spec; do not commit to a contract in v1. **Partial close 2026-05-15:** [`analytics-api.md §4.10`](analytics-api.md) now ships `GET /analytics/user/{user_id}/export` (portability) and `POST /analytics/user/{user_id}/forget` (pseudonymize-in-place, idempotent). The forget half delegates pseudonymization to [`redaction.md`](redaction.md)'s `Redactor` protocol; this satisfies "the closest equivalent" while preserving the append-only invariant.
 6. **Quota reset windows.** Daily cap = UTC midnight (matches `cost_today_exceeds_usd`). Monthly cap = UTC first-of-month. Should the operator be able to configure these (per-team timezone, per-team reset day)? Probably yes, but not in v1 — the structural decisions go in first, configurability follows usage signal.
 7. **Should `team_id` flow through the agent path?** A future "team agent surface" (multi-dev `metis serve` behind auth) would need it. v1 leaves the field `null` on the agent path; a future spec defines how authenticated dashboard / agent sessions resolve the binding.
@@ -566,6 +566,6 @@ These are **live**. The owner closes them when evidence shows up; agents working
 - [`routing-engine.md`](routing-engine.md) — new predicates in §5.3.2; the soft-cap pattern matches the existing `cost_today_exceeds_usd` shape.
 - [`analytics-api.md`](analytics-api.md) — base surface this spec extends; `/analytics/by_team` mirrors the shipped `/analytics/by_key`.
 - [`deployment-shape.md`](deployment-shape.md) — the identity model is intentionally deployment-shape neutral.
-- [`../STRATEGY.md §2`](../STRATEGY.md) — buyer ≠ user framing; multi-user-from-day-one requirement.
-- [`../STRATEGY.md §6.2`](../STRATEGY.md) — startup-CTO default for the v1 buyer profile.
+- `../the project strategy (private)` — buyer ≠ user framing; multi-user-from-day-one requirement.
+- `../the project strategy (private)` — startup-CTO default for the v1 buyer profile.
 - [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — open infra/identity items.

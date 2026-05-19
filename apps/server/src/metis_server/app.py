@@ -78,13 +78,11 @@ DEFAULT_PORT = 8421
 class ServerConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
-    # §4.4 (2026-05-18) — repo-split extension Protocol. metis-pro overlay
-    # mounts /analytics/by_team and /analytics/user/{user_id}/{export,forget}
-    # via ProAnalyticsExtension; OSS-only deployments stay on the per-key /
-    # per-model Community analytics. See docs/operations/repo-split-plan.md
-    # §4.4 and apps/server/src/metis_server/app.py::build_app — `build_app`
-    # calls `analytics_extension.register_routes(app)` after Starlette
-    # construction when a non-noop is passed.
+    # metis-pro overlay mounts /analytics/by_team and
+    # /analytics/user/{user_id}/{export,forget} via ProAnalyticsExtension;
+    # OSS-only deployments stay on the per-key / per-model Community analytics.
+    # `build_app` calls `analytics_extension.register_routes(app)` after
+    # Starlette construction when a non-noop is passed.
     analytics_extension: AnalyticsExtension = field(default_factory=NoopAnalyticsExtension)
 
 

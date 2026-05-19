@@ -1,6 +1,6 @@
 # Project Overview
 
-> **Working context first.** Before reading this doc, AI agents working in the repo should read [AGENTS.md](../AGENTS.md) for current implementation state and conventions, and [docs/STRATEGY.md](STRATEGY.md) for the *why* — the cost-optimization thesis, B2B framing, and open strategic questions that aren't visible from the code. Spec/impl gaps are tracked in [docs/KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+> **Working context first.** Before reading this doc, AI agents working in the repo should read [AGENTS.md](../AGENTS.md) for current implementation state and conventions. Spec/impl gaps are tracked in [docs/KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 >
 > This doc describes the *shape* of the system (vision, principles, architecture, phasing). It is not the current build status — see AGENTS.md for that.
 
@@ -154,12 +154,10 @@ A local-first AI agent tool that sits between Claude Desktop and Cursor in capab
 
 ## Specs and documents
 
-**Strategy and ops:**
+**Working context:**
 
-- [`docs/STRATEGY.md`](STRATEGY.md) — Cost-optimization thesis, buyer ≠ user, three cost levers (skills / context / model selection), open strategic questions.
-- [`docs/business-model.md`](business-model.md) — Business / profitability synthesis: ratified pricing shape, validated savings claims, unit-economics intuition, risks.
-- [`docs/KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — Carryover review findings; spec promises the code doesn't yet honor.
 - [`AGENTS.md`](../AGENTS.md) — Current implementation state, conventions, gotchas. Read first.
+- [`docs/KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — Carryover review findings; spec promises the code doesn't yet honor.
 
 **Component specs:**
 

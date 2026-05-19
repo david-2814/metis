@@ -22,7 +22,7 @@
 The pattern store is the per-workspace, bounded, agent-curated record of
 "how a similar task went last time, and which model was used." It is the
 storage substrate behind the third leg of Metis's differentiating trio
-(per `STRATEGY.md §4`): bounded memory, lossless canonical IR, and
+(per the project strategy (private)): bounded memory, lossless canonical IR, and
 **task-fingerprint pattern learning**.
 
 The store answers one question for the routing engine: *given the current
@@ -56,7 +56,7 @@ This spec depends on:
 
 1. **Bounded by design.** Both the row count and the per-row age are
    capped. Unbounded vector slop is the dominant competitor pattern
-   (`STRATEGY.md §4`); bounded is the wedge. The peer with the same
+   (strategic context, private); bounded is the wedge. The peer with the same
    stance is Letta (Series-A; per-block character caps with agent
    self-edit tools). Metis's pattern store extends that stance from
    episodic memory into routing-decision history.
@@ -65,7 +65,7 @@ This spec depends on:
    providers are pluggable for Phase 3+ but never required.
 3. **Workspace-scoped.** One store per workspace, mirroring `MEMORY.md`.
    Per-user, per-team, and global rollups are out of scope (Phase 3+;
-   `STRATEGY.md §6.6` defers).
+   the project strategy (private) defers).
 4. **Honest cost arithmetic.** All costs are `Decimal`, all averages
    propagate `pricing_version` (per `event-bus §6.3` `llm.call_completed`)
    so historical fingerprints can be re-priced under a current price table
@@ -87,7 +87,7 @@ This spec depends on:
 
 1. **Cross-workspace pattern sharing.** v1 is workspace-scoped, period.
    Multi-user / team rollups are deferred to Phase 3+ (sync layer);
-   `STRATEGY.md §2` and §6.6 are unresolved on whether team patterns are
+   the project strategy (private) and §6.6 are unresolved on whether team patterns are
    even a desirable surface.
 2. **Real-time learning.** Patterns are written at session end, not
    mid-turn. A turn can't observe the pattern from earlier in the same
@@ -457,7 +457,7 @@ roughly bounded by `|unique_fingerprints| * |models|` rather than
 ### 6.1 Why bounded
 
 Same wedge as `memory-store.md §5.2`: unbounded vector slop is what
-competitors ship (per `STRATEGY.md §4`). Bounded patterns force
+competitors ship (per the project strategy (private)). Bounded patterns force
 relevance — old, rarely-touched fingerprints age out and don't dilute
 the K-nearest cluster with stale signal. The model registry changes
 quarterly (new Anthropic / OpenAI releases); patterns from 6 months ago
@@ -1120,7 +1120,7 @@ Worth investing in:
 ## 13. Open questions
 
 These are **live**; AI agents shouldn't unilaterally close them.
-`STRATEGY.md §6.6` calls out the pattern store as a deferred owner
+the project strategy (private) calls out the pattern store as a deferred owner
 decision. The questions below are the ones that surfaced during this
 draft.
 
@@ -1154,12 +1154,12 @@ draft.
    v1: no, hard isolation. Argument for: a Python developer's "deep
    for architecture" pattern probably transfers. Argument against:
    workspace isolation is the privacy floor; mixing leaks information
-   across project boundaries. Tied to `STRATEGY.md §6.2` buyer profile
+   across project boundaries. Tied to the project strategy (private) buyer profile
    resolution. **Deferred to owner.**
 
 6. **Multi-user / team patterns.** Should multiple users in the same
    buyer org's deployment share patterns? Tied directly to
-   `STRATEGY.md §2` (buyer ≠ user) and §6.6. **Deferred to owner;
+   the project strategy (private) (buyer ≠ user) and §6.6. **Deferred to owner;
    v1 is per-workspace-per-process.**
 
 7. **Sample-size weighting in K-NN mean.** §8.4 picks
@@ -1194,7 +1194,7 @@ draft.
 
 | Date       | Decision                                                                 | Rationale                                                                                  |
 |------------|--------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
-| 2026-05-13 | Per-workspace SQLite at `<workspace>/.metis/patterns.db`                 | Mirrors `MEMORY.md` placement; STRATEGY.md §2 defers multi-user.                            |
+| 2026-05-13 | Per-workspace SQLite at `<workspace>/.metis/patterns.db`                 | Mirrors `MEMORY.md` placement; the project strategy (private) defers multi-user.                            |
 | 2026-05-13 | Bounded store with soft + hard caps, default 5k / 10k rows               | "Eviction is a feature" per AGENTS.md; mirrors `memory-store.md` stance.                    |
 | 2026-05-13 | Hard cap auto-evicts (asymmetric with memory)                            | Pattern writes are mechanical projections; no agent curation step possible.                 |
 | 2026-05-13 | Unit of fingerprinting is the turn                                       | Matches the routing engine's query unit; per-tool-cycle is too granular.                    |
@@ -1525,7 +1525,7 @@ turns get the exact same vector regardless of upstream drift.
 **Provider lock-in stance.** No provider is a "default"; an unset
 `embedding_provider` keeps the workspace on v1 structural-only.
 Selecting `local:sentence-transformers:*` is the recommended choice
-for buyers who self-host everything (per `STRATEGY.md §6.2`); the
+for buyers who self-host everything (per the project strategy (private)); the
 hosted options exist for users who already pay for those APIs and
 don't want a 200MB Torch install.
 
@@ -2498,7 +2498,7 @@ opt out of v2 with `fingerprint_version=v1`).
   `pricing_version` on stored cost.
 - `canonical-message-format.md §9.1` — SQLite session/message store
   pattern; pattern store mirrors the SQLite-WAL approach.
-- `STRATEGY.md §4`, §6.2, §6.6 — pattern store named as the third
+- the project strategy (private), §6.2, §6.6 — pattern store named as the third
   differentiating leg + open question; §6.2 self-hosting buyer profile
   motivates the local-sentence-transformers option in §16.3.
 - `benchmark.md` — once the workload suite runs end-to-end, it is the

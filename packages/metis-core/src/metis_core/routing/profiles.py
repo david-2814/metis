@@ -15,7 +15,7 @@ Two sources of truth:
    wrong; when in doubt, leave the profile empty rather than mislead.
 
 Tag vocabulary is intentionally free-form for v1 so usage can shape the
-canonical set before snapping to an enum (see `STRATEGY.md §1` — Layer 1).
+canonical set before snapping to an enum.
 
 See `docs/standard-model-profiles.md` for the rubric behind each assignment.
 """

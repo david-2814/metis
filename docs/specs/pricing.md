@@ -3,12 +3,12 @@
 **Status:** Ratified — §5.5.4 open-core gateway + per-seat Pro + enterprise %-of-savings add-on (2026-05-16)
 **Last updated:** 2026-05-16
 
-> Frames the commercial pricing model for the Metis product itself: gateway access, the analytics dashboard, multi-user identity, the upgrade-tier agent. Surveys the candidate models, names the trade-offs each one creates, and proposes one for the owner to ratify or reject. **The spec lays out the choice; the owner closes [`STRATEGY.md §6.8`](../STRATEGY.md).**
+> Frames the commercial pricing model for the Metis product itself: gateway access, the analytics dashboard, multi-user identity, the upgrade-tier agent. Surveys the candidate models, names the trade-offs each one creates, and proposes one for the owner to ratify or reject. **The spec lays out the choice; the owner closes the project strategy (private).**
 >
 > This spec depends on:
 >
-> - [`../STRATEGY.md §2`](../STRATEGY.md) — *buyer ≠ user* framing; the buyer is the budget owner.
-> - [`../STRATEGY.md §6.8`](../STRATEGY.md) — the open question this spec exists to close.
+> - `../the project strategy (private)` — *buyer ≠ user* framing; the buyer is the budget owner.
+> - `../the project strategy (private)` — the open question this spec exists to close.
 > - [`deployment-shape.md`](deployment-shape.md) — hybrid (gateway-first → agent-upgrade); pricing must accommodate "trial without payment" → "convert to paid."
 > - [`multi-user.md §5`](multi-user.md) — per-user / per-team identity layer; pricing must compose with the shipped per-team budget cap primitive.
 > - [`analytics-api.md §4.7`](analytics-api.md) — `actual_repriced_usd` / `baseline_repriced_usd` / `savings_pct`; the measurement substrate any "% of savings" model would depend on.
@@ -47,7 +47,7 @@ What this spec deliberately does **not** do: settle list prices, name competitor
 
 1. **Price points.** $/seat, $/call, %-of-savings thresholds — the spec frames the dimensions; the numbers come from market evidence (competitor benchmarks, first buyer conversations) the project does not yet have.
 2. **Billing infrastructure.** Stripe vs. Lago vs. invoice-by-PDF, currency support, tax handling, dunning, prorating, annual-vs-monthly: all downstream of model choice.
-3. **Contract / SLA structure.** Service credits, uptime guarantees, support tiers: tied to the deployment-posture choice in [`STRATEGY.md §6.3`](../STRATEGY.md) which is still open.
+3. **Contract / SLA structure.** Service credits, uptime guarantees, support tiers: tied to the deployment-posture choice in the project strategy (private) which is still open.
 4. **Channel pricing.** Reseller / partner / OEM pricing, marketplace listings (AWS / GCP / Azure): zero v1 evidence anything will use these.
 5. **Open-source license choice.** Apache 2.0 vs. BUSL vs. AGPL is a separate decision, made when the OSS surface is published. The spec assumes "permissive enough that a CTO does not need to read it"; the actual license is the owner's call.
 
@@ -58,8 +58,8 @@ What this spec deliberately does **not** do: settle list prices, name competitor
 Metis sells three artifacts to the same buyer:
 
 1. **The gateway** — a transparent HTTP proxy that any OpenAI- or Anthropic-shape client can speak ([`gateway.md`](gateway.md)). Provides routing, lossless canonical IR, cost attribution, and per-(key / user / team) rollups. Per-request stateless. This is the foot-in-the-door (§4.1).
-2. **The agent** — the replacement coding agent (CLI / TUI / future desktop) that owns context assembly, skill loading, bounded memory, and learned routing ([`STRATEGY.md §7`](../STRATEGY.md), "If hybrid"). High-ceiling cost lever; takes weeks of use to materialize. This is the upgrade (§4.2).
-3. **The dashboard** — the analytics surface ([`analytics-api.md`](analytics-api.md)) that turns trace events into per-(user / team / model / inbound shape) cost rollups, cache-effectiveness panels, the savings counterfactual. The *artifact that closes the deal* per [`STRATEGY.md §2`](../STRATEGY.md). This is the *evidence* the gateway tier surfaces — the thing that makes the upgrade worth buying.
+2. **The agent** — the replacement coding agent (CLI / TUI / future desktop) that owns context assembly, skill loading, bounded memory, and learned routing (the project strategy (private), "If hybrid"). High-ceiling cost lever; takes weeks of use to materialize. This is the upgrade (§4.2).
+3. **The dashboard** — the analytics surface ([`analytics-api.md`](analytics-api.md)) that turns trace events into per-(user / team / model / inbound shape) cost rollups, cache-effectiveness panels, the savings counterfactual. The *artifact that closes the deal* per the project strategy (private). This is the *evidence* the gateway tier surfaces — the thing that makes the upgrade worth buying.
 
 These three are **one product** from the buyer's perspective ("Metis"), priced under one umbrella. The pricing model is what determines which of the three each tier actually charges for.
 
@@ -69,7 +69,7 @@ Metis does **not** meter or resell provider tokens. The buyer brings their own p
 
 ### 3.2 The cost lever Metis sells
 
-Per [`STRATEGY.md §1`](../STRATEGY.md), three levers compose the savings:
+Per the project strategy (private), three levers compose the savings:
 
 1. **Context engineering** (largest; cache discipline, history pruning) — reachable only from the agent.
 2. **Skills** (medium; lazy-loaded expert prompts) — reachable only from the agent.
@@ -94,7 +94,7 @@ The pricing model **must** accept "buyer evaluates Metis for some bounded period
 
 Any of these can be the conversion trigger; the model choice in §5 picks one or composes more than one.
 
-### 4.2 The buyer-is-not-the-user constraint (from STRATEGY.md §2)
+### 4.2 The buyer-is-not-the-user constraint (from the project strategy (private))
 
 The buyer (CTO, eng leader) does not invoice themselves for the dev tool the devs use. The buyer pays a vendor invoice and expects:
 
@@ -115,7 +115,7 @@ The identity layer ships with:
 
 Every candidate in §5 is measured against "does this compose with the primitives above without inventing new ones?" Models that require new metering surfaces lose the composability test.
 
-### 4.4 The "first paying buyer is a startup-CTO" constraint (from STRATEGY.md §6.2)
+### 4.4 The "first paying buyer is a startup-CTO" constraint (from the project strategy (private))
 
 The default buyer profile is a 10–50-dev startup CTO, not a 200-dev enterprise eng leader. This profile:
 
@@ -331,7 +331,7 @@ The proposed structure is:
 - **LLM-judge evaluator tier** — hybrid and LLM judges, `/analytics/quality` dashboard.
 - **Hosted SaaS option** — Metis-operated deployment; the buyer brings their provider keys, Metis operates the gateway / dashboard.
 - **Audit log export** — when shipped per [`multi-user.md §7.3`](multi-user.md); Pro-tier feature out of the gate.
-- **Replacement agent tier** — when shipped per [`STRATEGY.md §7`](../STRATEGY.md) "If hybrid"; the `metis chat`-and-beyond surface with skills, context-assembler, memory, learned routing.
+- **Replacement agent tier** — when shipped per the project strategy (private) "If hybrid"; the `metis chat`-and-beyond surface with skills, context-assembler, memory, learned routing.
 
 **Why per-seat for Pro:**
 
@@ -381,10 +381,10 @@ This tier is deliberately under-specified in v1. Its existence is more important
 
 This is an **owner-decision item**. The spec frames the choice with rationale; the owner closes it. The two paths forward:
 
-1. **Accept §7** — adopt open-core + per-seat-Pro + future enterprise-tier. Pricing.md becomes the contract; STRATEGY.md §6.8 closes with a pointer here.
-2. **Reject §7** in favor of §5.1 / §5.2 / §5.3 / §5.5.1 / §5.5.2 / §5.5.4 — owner indicates which row of the matrix in §6 they prefer; pricing.md is revised; STRATEGY.md §6.8 closes when revised.
+1. **Accept §7** — adopt open-core + per-seat-Pro + future enterprise-tier. Pricing.md becomes the contract; the project strategy (private) closes with a pointer here.
+2. **Reject §7** in favor of §5.1 / §5.2 / §5.3 / §5.5.1 / §5.5.2 / §5.5.4 — owner indicates which row of the matrix in §6 they prefer; pricing.md is revised; the project strategy (private) closes when revised.
 
-In either case, **STRATEGY.md §6.8 stays open until the owner closes it.** This spec adds a pointer ("specced; awaiting commercial decision") but does not retire the question. The act of choosing among §5/§7 is the commercial decision the project does not yet have evidence to automate.
+In either case, **the project strategy (private) stays open until the owner closes it.** This spec adds a pointer ("specced; awaiting commercial decision") but does not retire the question. The act of choosing among §5/§7 is the commercial decision the project does not yet have evidence to automate.
 
 ---
 
@@ -433,7 +433,7 @@ These are deliberately deferred. The list is what differentiates v1 from a compl
 2. **Discount / volume / partner pricing.** Standard B2B contract knobs; owner negotiates per-deal until a public list emerges.
 3. **Billing-infrastructure choice.** Stripe / Lago / Maxio / invoice-by-PDF.
 4. **Currency / tax handling.** USD-only v1 is the assumed default; expansion is downstream.
-5. ~~**OSS license selection.** Apache-2.0 / BUSL / AGPL / dual-license.~~ **Resolved 2026-05-17 — Apache-2.0 for the OSS substrate; all-rights-reserved for the private `metis-pro` repo.** See §12 decision log and [`docs/operations/repo-split-plan.md`](../operations/repo-split-plan.md).
+5. ~~**OSS license selection.** Apache-2.0 / BUSL / AGPL / dual-license.~~ **Resolved 2026-05-17 — Apache-2.0 for the OSS substrate; all-rights-reserved for the private `metis-pro` repo.** See §12 decision log and the repo-split plan (private).
 6. **Trial-to-paid conversion mechanics.** Self-serve credit card vs. sales-touch; how long trials last; downgrade behavior.
 7. **Refund / SLA / credit policy.** SaaS-standard terms — deferred behind the §6.3 SaaS-vs-VPC decision.
 8. **Marketplace listings.** AWS / GCP / Azure marketplace pricing surfaces.
@@ -469,7 +469,7 @@ Promises this spec makes that downstream specs and implementation must preserve.
 4. **Pricing surfaces compose with shipped multi-user primitives.** Any pricing change that would require new metering events, new keystore fields, or new HTTP endpoints needs to surface that cost in its rationale — composability isn't free, and the spec's recommendation is partly chosen because it requires zero new primitives.
 5. **No per-request licensing check.** Tier gating is deployment-level (§8.2); a Pro feature is enabled or disabled at boot. Per-request "is this user paid?" checks would add latency to every gateway call and turn pricing into an availability dimension; the spec rejects that shape.
 6. **Savings counterfactual is reproducible.** Whatever billing surface depends on `actual_repriced_usd` / `baseline_repriced_usd` must use the same `pricing_version`-stamped computation the analytics dashboard shows. Two different numbers for "did we save money" — one for the bill, one for the dashboard — is the failure mode the audit-export surface exists to prevent.
-7. **Pricing model choice is the owner's; pricing.md frames it.** This spec does not unilaterally close [`STRATEGY.md §6.8`](../STRATEGY.md). The spec is a recommendation; ratification is a separate act.
+7. **Pricing model choice is the owner's; pricing.md frames it.** This spec does not unilaterally close the project strategy (private). The spec is a recommendation; ratification is a separate act.
 
 ---
 
@@ -478,23 +478,23 @@ Promises this spec makes that downstream specs and implementation must preserve.
 | Date | Decision | Rationale |
 |------|----------|-----------|
 | 2026-05-14 | Open-core foundation (free OSS gateway + agent CLI/TUI; Pro for team-scale features) | Maximizes adoption per [`deployment-shape.md`](deployment-shape.md) hybrid; matches the "trial without payment" floor in §4.1. |
-| 2026-05-14 | Per-seat as the Pro tier's pricing unit (not per-call, not %-of-savings) | Per-seat is the buyer's expected SaaS shape ([§4.4](#44-the-first-paying-buyer-is-a-startup-cto-constraint-from-strategymd-62)); per-call has the optical problem of §5.2; %-of-savings requires the audit-export surface ([`multi-user.md §7.3`](multi-user.md)) which is not yet built. |
+| 2026-05-14 | Per-seat as the Pro tier's pricing unit (not per-call, not %-of-savings) | Per-seat is the buyer's expected SaaS shape (§4.4); per-call has the optical problem of §5.2; %-of-savings requires the audit-export surface ([`multi-user.md §7.3`](multi-user.md)) which is not yet built. |
 | 2026-05-14 | "Active user" as the seat metering unit, not "provisioned seat" | Protects the buyer from paying for stale accounts; composes directly with the shipped `/analytics/by_user` rollup. Trade-off: harder to forecast. |
 | 2026-05-14 | Enterprise tier reserves %-of-savings as an optional add-on, not the baseline | Reserves auditability burden for contracts where procurement velocity supports it. |
 | 2026-05-14 | Multi-user identity layer is the headline Pro feature | Maps the conversion trigger ("single-user works free; team use upgrades") directly to the most distinctive paid primitive. |
 | 2026-05-14 | Savings counterfactual visible on Free at deployment-aggregate; Pro unlocks slicing | Free buyers see the savings story (marketing); Pro buyers can attribute it (operational). Owner can revisit per §10.2. |
-| 2026-05-14 | Pricing.md does not close STRATEGY.md §6.8 | The spec frames the recommendation; the commercial decision is the owner's. §6.8 stays open with a pointer to this spec until the owner ratifies. |
-| 2026-05-17 | OSS license + repo strategy: Apache-2.0 single OSS repo (`metis`); private `metis-pro` repo for paid-tier code | Closes §9.5 (was "out of scope"). Two-repo "thin Pro repo" pattern: the OSS substrate is genuinely standalone-usable (gateway + canonical IR + adapters + routing + pattern store + bounded memory + tools + skills + heuristic evaluator + per-key analytics + agent CLI/TUI). `metis-pro` holds the operationally-sensitive surfaces (billing, signup, accounts store, hosted dashboard UI, curated LLM-judge rubric library, enterprise SAML/OIDC/SCIM glue). OSS defines extension Protocols (`BillingBackend`, `SignupBackend`, `AnalyticsExtension`, `JudgeRubricProvider`) with noop defaults; Pro overlays implement them at boot. Apache-2.0 chosen over BUSL/AGPL for the OSS substrate because (a) buyer trust signal is load-bearing pre-revenue, (b) the four-leg moat ([`STRATEGY.md §4`](../STRATEGY.md)) is operational/compounding, not source-level, (c) reversible — can switch to BUSL later if a real fork-and-SaaS threat materializes, (d) matches the playbook of comparable projects (LiteLLM Apache-2.0; Supabase Apache-2.0; PostHog Apache-2.0 + selective BUSL). Concrete migration plan in [`docs/operations/repo-split-plan.md`](../operations/repo-split-plan.md). |
+| 2026-05-14 | Pricing.md does not close the project strategy (private) | The spec frames the recommendation; the commercial decision is the owner's. §6.8 stays open with a pointer to this spec until the owner ratifies. |
+| 2026-05-17 | OSS license + repo strategy: Apache-2.0 single OSS repo (`metis`); private `metis-pro` repo for paid-tier code | Closes §9.5 (was "out of scope"). Two-repo "thin Pro repo" pattern: the OSS substrate is genuinely standalone-usable (gateway + canonical IR + adapters + routing + pattern store + bounded memory + tools + skills + heuristic evaluator + per-key analytics + agent CLI/TUI). `metis-pro` holds the operationally-sensitive surfaces (billing, signup, accounts store, hosted dashboard UI, curated LLM-judge rubric library, enterprise SAML/OIDC/SCIM glue). OSS defines extension Protocols (`BillingBackend`, `SignupBackend`, `AnalyticsExtension`, `JudgeRubricProvider`) with noop defaults; Pro overlays implement them at boot. Apache-2.0 chosen over BUSL/AGPL for the OSS substrate because (a) buyer trust signal is load-bearing pre-revenue, (b) the four-leg moat (strategic context, private) is operational/compounding, not source-level, (c) reversible — can switch to BUSL later if a real fork-and-SaaS threat materializes, (d) matches the playbook of comparable projects (LiteLLM Apache-2.0; Supabase Apache-2.0; PostHog Apache-2.0 + selective BUSL). Concrete migration plan in the repo-split plan (private). |
 
 ---
 
 ## 13. References
 
-- [`../STRATEGY.md §2`](../STRATEGY.md) — buyer ≠ user; B2B framing; the budget owner is the buyer.
-- [`../STRATEGY.md §6.2`](../STRATEGY.md) — startup-CTO default for the v1 buyer profile.
-- [`../STRATEGY.md §6.3`](../STRATEGY.md) — local-first vs. SaaS deployment posture (still open).
-- [`../STRATEGY.md §6.8`](../STRATEGY.md) — the open question this spec exists to surface for closure (kept open until owner ratifies).
-- [`../STRATEGY.md §7`](../STRATEGY.md) — what changes about the build if §3 lands one way or the other; the "If hybrid" branch is the deployment substrate pricing assumes.
+- `../the project strategy (private)` — buyer ≠ user; B2B framing; the budget owner is the buyer.
+- `../the project strategy (private)` — startup-CTO default for the v1 buyer profile.
+- `../the project strategy (private)` — local-first vs. SaaS deployment posture (still open).
+- `../the project strategy (private)` — the open question this spec exists to surface for closure (kept open until owner ratifies).
+- `../the project strategy (private)` — what changes about the build if §3 lands one way or the other; the "If hybrid" branch is the deployment substrate pricing assumes.
 - [`deployment-shape.md`](deployment-shape.md) — hybrid (gateway-first → agent-upgrade); the deployment posture pricing composes with.
 - [`gateway.md`](gateway.md) — the OSS gateway surface that is the free-tier foot-in-the-door.
 - [`multi-user.md`](multi-user.md) — the identity layer that enforces per-seat / per-team pricing.
@@ -515,7 +515,7 @@ Promises this spec makes that downstream specs and implementation must preserve.
 
 **Ratified 2026-05-16** — owner accepted the §5.5.4 recommendation: open-core gateway + per-seat Pro + reserved enterprise %-of-savings add-on. Price points (per-seat $/month, %-of-savings rate, Free-tier spend cap floor) remain commercial decisions deferred to first-buyer triangulation; this spec ratifies the *model shape*, not the *numbers*. Implementation lands as Wave 15.
 
-STRATEGY.md edits landed alongside ratification:
+the project strategy (private) edits landed alongside ratification:
 
 - **§5** — dated entry: *"2026-05-16 — Adopt pricing model (open-core gateway + per-seat Pro + reserved enterprise %-of-savings add-on, per [`pricing.md`](specs/pricing.md))."*
 - **§6.8** — retired: *"Resolved 2026-05-16: open-core gateway + per-seat Pro, with reserved enterprise %-of-savings add-on. See [`pricing.md`](specs/pricing.md)."*
