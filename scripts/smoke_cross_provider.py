@@ -23,18 +23,18 @@ import os
 import sys
 from pathlib import Path
 
-from metis_core.adapters.anthropic import AnthropicAdapter
-from metis_core.adapters.openai import OpenAIAdapter
-from metis_core.adapters.openrouter import OpenRouterAdapter
-from metis_core.canonical.content import ToolUseBlock
-from metis_core.canonical.messages import Role
-from metis_core.events.bus import EventBus
-from metis_core.pricing import DEFAULT_PRICE_TABLE
-from metis_core.routing import ModelRegistry, RoutingEngine
-from metis_core.sessions import InMemorySessionStore, SessionManager
-from metis_core.tools.builtins import register_builtins
-from metis_core.tools.dispatcher import ToolDispatcher
-from metis_core.trace.store import TraceStore
+from metis.core.adapters.anthropic import AnthropicAdapter
+from metis.core.adapters.openai import OpenAIAdapter
+from metis.core.adapters.openrouter import OpenRouterAdapter
+from metis.core.canonical.content import ToolUseBlock
+from metis.core.canonical.messages import Role
+from metis.core.events.bus import EventBus
+from metis.core.pricing import DEFAULT_PRICE_TABLE
+from metis.core.routing import ModelRegistry, RoutingEngine
+from metis.core.sessions import InMemorySessionStore, SessionManager
+from metis.core.tools.builtins import register_builtins
+from metis.core.tools.dispatcher import ToolDispatcher
+from metis.core.trace.store import TraceStore
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

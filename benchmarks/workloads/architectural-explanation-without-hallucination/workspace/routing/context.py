@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from metis_core.events.payloads import PolicyEvaluation
+from metis.core.events.payloads import PolicyEvaluation
 
 
 @dataclass

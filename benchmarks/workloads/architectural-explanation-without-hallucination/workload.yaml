@@ -1,7 +1,7 @@
 name: architectural-explanation-without-hallucination
 description: >-
   Explain how Metis's routing engine selects a model. The workspace
-  ships a snapshot of `packages/metis-core/src/metis_core/routing/`
+  ships a snapshot of `packages/metis/src/metis/core/routing/`
   under `routing/`; the agent must read those files and name real
   symbols. Models that don't ground in the source tend to fabricate
   plausible-sounding identifiers ("PATTERN_LOOKUP", "RouterChain",
@@ -27,7 +27,7 @@ turns:
   - prompt: >-
       The directory `routing/` in this workspace is a snapshot of
       Metis's routing engine source code (the real
-      `packages/metis-core/src/metis_core/routing/`). Read the source
+      `packages/metis/src/metis/core/routing/`). Read the source
       files and then explain how the 7-slot routing chain selects a
       model for a turn. Your explanation MUST reference at least
       four specific class names, function names, or enum values that

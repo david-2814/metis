@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from metis_core.adapters.protocol import ProviderAdapter
-from metis_core.canonical.capabilities import AdapterCapabilities
+from metis.core.adapters.protocol import ProviderAdapter
+from metis.core.canonical.capabilities import AdapterCapabilities
 
 
 class UnknownModelError(KeyError):

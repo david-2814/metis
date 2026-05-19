@@ -29,14 +29,14 @@ import os
 import sys
 from pathlib import Path
 
-from metis_core.adapters.anthropic import AnthropicAdapter
-from metis_core.events.bus import EventBus, EventFilter, Subscription
-from metis_core.events.envelope import Event
-from metis_core.pricing import DEFAULT_PRICE_TABLE
-from metis_core.routing import ModelRegistry, RoutingEngine
-from metis_core.sessions import InMemorySessionStore, SessionManager
-from metis_core.tools.builtins import register_builtins
-from metis_core.tools.dispatcher import ToolDispatcher
+from metis.core.adapters.anthropic import AnthropicAdapter
+from metis.core.events.bus import EventBus, EventFilter, Subscription
+from metis.core.events.envelope import Event
+from metis.core.pricing import DEFAULT_PRICE_TABLE
+from metis.core.routing import ModelRegistry, RoutingEngine
+from metis.core.sessions import InMemorySessionStore, SessionManager
+from metis.core.tools.builtins import register_builtins
+from metis.core.tools.dispatcher import ToolDispatcher
 
 ANTHROPIC_MODELS = {
     "anthropic:claude-opus-4-7": ["opus", "deep"],

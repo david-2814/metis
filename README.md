@@ -7,7 +7,7 @@ leave it. Apache-2.0.
 <p>
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
   <img alt="Python 3.13" src="https://img.shields.io/badge/Python-3.13-blue.svg">
-  <img alt="1841 tests passing" src="https://img.shields.io/badge/tests-1841_passing-brightgreen.svg">
+  <img alt="1771 tests passing" src="https://img.shields.io/badge/tests-1771_passing-brightgreen.svg">
   <img alt="Status: Phase 3 GA" src="https://img.shields.io/badge/status-Phase_3_GA-success.svg">
 </p>
 
@@ -74,9 +74,9 @@ Sanity-check the loop against the real API in under a minute (~$0.015 with haiku
 - **Explainable routing.** Per-message `@alias` → sticky `/model` → workspace yaml rules → learned patterns → workspace default → global default. Every turn emits one `route.decided` event with the full chain trace. No silent overrides.
 - **Cost in real time.** Decimal-USD per-turn accounting by model and role (planner vs delegated worker). Versioned pricing for retroactive re-pricing. `/cost` in the REPL; `/analytics/cost` over HTTP.
 - **Local-first.** Everything runs on your machine. SQLite trace store + session store under `~/.metis/`. Bounded memory under `<workspace>/.metis/`. The gateway is loopback-only by default; non-loopback binds require the documented hardening checklist.
-- **Specs before code.** Component contracts live in [`docs/specs/`](docs/specs/) and ship before the implementation. 1841 tests cover the contracts end-to-end.
+- **Specs before code.** Component contracts live in [`docs/specs/`](docs/specs/) and ship before the implementation. 1771 tests cover the contracts end-to-end.
 
-The full repo is a uv-workspace monorepo: [`packages/metis-core/`](packages/metis-core/) is the library (canonical types, events, adapters, routing, tools, memory, sessions, pricing, skills, trace); [`apps/server/`](apps/server/), [`apps/gateway/`](apps/gateway/), and [`apps/cli/`](apps/cli/) are the deployable surfaces. The `metis` console-script ships from `metis-cli`.
+The repo is a uv-workspace monorepo with one published package, `metis`, at [`packages/metis/`](packages/metis/). It's organized internally into four subpackages: `metis.core` is the library (canonical types, events, adapters, routing, tools, memory, sessions, pricing, skills, trace); `metis.server`, `metis.gateway`, and `metis.cli` are the deployable surfaces. The `metis` console-script ships from `metis.cli`.
 
 ## Try it — first savings number in &lt; 1 hour
 
@@ -175,13 +175,13 @@ flowchart LR
     SDK["Claude Code / Cursor / SDKs"]
   end
 
-  subgraph Apps["Application surfaces"]
-    CLIApp["apps/cli<br/>local runtime setup"]
-    Server["apps/server<br/>agent HTTP + WS"]
-    Gateway["apps/gateway<br/>transparent provider proxy"]
+  subgraph Apps["Application surfaces (metis.*)"]
+    CLIApp["metis.cli<br/>local runtime setup"]
+    Server["metis.server<br/>agent HTTP + WS"]
+    Gateway["metis.gateway<br/>transparent provider proxy"]
   end
 
-  subgraph Core["packages/metis-core"]
+  subgraph Core["metis.core"]
     Canonical["Canonical IR<br/>messages, blocks, tools, usage"]
     Sessions["SessionManager<br/>agent turn loop"]
     Routing["RoutingEngine<br/>7-slot decision chain"]
@@ -303,7 +303,7 @@ The deeper design walkthrough lives in [`docs/technical-design.md`](docs/technic
 Phase 1 + Phase 2 + Phase 2.5 + Phase 3 shipped. Wave 16 reached the GA launch
 milestone for the first paid cohort: transparent gateway, multi-user / per-team
 attribution, evaluator, compliance posture, billing, observability, and launch
-operations are all live. **1841 tests passing** across the four workspace
+operations are all live. **1771 tests passing** across the four workspace
 members.
 
 The validated cost-savings headline is **delegation at 8.3% – 26.1% better
@@ -327,7 +327,7 @@ reproducer.
 - **HTTP/WebSocket server.** Starlette + uvicorn ASGI app. REST for sessions/turns/messages/models/health; WebSocket `/sessions/{id}/stream` with single-use attach tokens, snapshot+live replay, filter presets, cancel-via-WS, ping/pong. Loopback-only bind in v1.
 - **Three client surfaces.** `metis chat` (line REPL), `metis tui` (Textual app), `metis serve` (HTTP/WS server for external clients). Slash commands `/model`, `/cost`, `/models`, `/help`. Per-message `@alias` syntax.
 - **Cost in real time.** Per-turn input/output/cached token costs computed by core (not parroted from provider), `Decimal` math, versioned for retroactive re-pricing. OpenRouter prices overlaid at session start.
-- **1841 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates + NETWORK-error escalation refinement, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations, pattern store v1 + v2 + concurrency hardening, evaluator heuristic + LLM + hybrid + budget + partial-credit primitive, gateway auth + per-key/user/team identity + rate limiting + TLS + bind hardening + self-serve signup + bare-model normalization + auth-failure event emission + `customer_tier` keystore extension, audit log + trace retention + redaction layer + GDPR export/forget, observability metric collector + Prometheus exposition + latency-percentile histograms + dedicated error counters + per-key cost attribution, billing module subscription lifecycle + self-service portal + plan changes + failed-payment grace, webhook idempotency + tier-axis quota composition + Stripe `FakeBillingClient`, `metis customer-report` HTML offline-contract + XSS escaping + JSON determinism + anonymization, `metis trial-status` conversion-readiness bands + threshold pinning.
+- **1771 tests** across canonical round-trips, JSON Schema enforcement, role-content invariants, event catalog, bus dispatch + filtering, workspace escape rejection, dispatcher + confirmation, adapter wire translation + streaming + error classification + retry + cancellation, cross-provider conformance, routing chain + rule loading + predicates + NETWORK-error escalation refinement, memory store + tools, session manager + persistence + streaming, HTTP REST + WebSocket + token registry + confirmations, pattern store v1 + v2 + concurrency hardening, evaluator heuristic + LLM + hybrid + budget + partial-credit primitive, gateway auth + per-key/user/team identity + rate limiting + TLS + bind hardening + self-serve signup + bare-model normalization + auth-failure event emission + `customer_tier` keystore extension, audit log + trace retention + redaction layer + GDPR export/forget, observability metric collector + Prometheus exposition + latency-percentile histograms + dedicated error counters + per-key cost attribution, billing module subscription lifecycle + self-service portal + plan changes + failed-payment grace, webhook idempotency + tier-axis quota composition + Stripe `FakeBillingClient`, `metis customer-report` HTML offline-contract + XSS escaping + JSON determinism + anonymization, `metis trial-status` conversion-readiness bands + threshold pinning.
 
 ## What's NOT built yet (next-up)
 
@@ -398,6 +398,6 @@ The design is specified before code lands. Start here:
 
 Apache License 2.0 — see [LICENSE](LICENSE) for the full text.
 
-The OSS substrate in this repo is permissively licensed so a CTO doesn't need legal review to install. The paid-tier overlay (`metis-pro`) lives in a separate private repo under a different license; the architectural boundary between the two is exposed through the extension Protocols in [`packages/metis-core/src/metis_core/extensions.py`](packages/metis-core/src/metis_core/extensions.py).
+The OSS substrate in this repo is permissively licensed so a CTO doesn't need legal review to install. The paid-tier overlay (`metis-pro`) lives in a separate private repo under a different license; the architectural boundary between the two is exposed through the extension Protocols in [`packages/metis/src/metis/core/extensions.py`](packages/metis/src/metis/core/extensions.py).
 
 Contributions to this repo are accepted under the same Apache-2.0 terms (see [CONTRIBUTING.md](CONTRIBUTING.md)).

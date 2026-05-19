@@ -46,9 +46,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from metis_core.analytics import AnalyticsStore
-from metis_core.analytics.windows import TimeWindow
-from metis_core.eval import (
+from metis.core.analytics import AnalyticsStore
+from metis.core.analytics.windows import TimeWindow
+from metis.core.eval import (
     DEFAULT_ESCALATION_THRESHOLD,
     HeuristicJudge,
     HybridJudge,
@@ -58,7 +58,7 @@ from metis_core.eval import (
     parse_workload_rubric,
     register_evaluator,
 )
-from metis_core.eval.judge import Judge
+from metis.core.eval.judge import Judge
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKLOADS_DIR = REPO_ROOT / "benchmarks" / "workloads"
@@ -461,7 +461,7 @@ async def run_workload(
     The runtime's `global_default_model` still owns slot 7. Combined with a
     pre-populated pattern store this lets slot 4 (`pattern`) actually win.
     """
-    from metis_cli.runtime import setup_runtime, shutdown_runtime
+    from metis.cli.runtime import setup_runtime, shutdown_runtime
 
     started_us = _now_us()
     workspace_src = workload.source_path.parent / "workspace"
@@ -640,7 +640,7 @@ def _make_judge_factory(
         return None
 
     def factory() -> Judge:
-        from metis_core.adapters.anthropic import AnthropicAdapter
+        from metis.core.adapters.anthropic import AnthropicAdapter
 
         if not anthropic_api_key:
             raise RuntimeError(f"--judge {judge_kind} requires ANTHROPIC_API_KEY")
@@ -677,9 +677,9 @@ async def evaluate_workload_quality(
     builds the workload SubjectContext, runs the heuristic judge, and
     emits the workload verdict on a fresh bus attached to the same DB.
     """
-    from metis_core.eval import register_evaluator
-    from metis_core.events.bus import EventBus
-    from metis_core.trace.store import TraceStore
+    from metis.core.eval import register_evaluator
+    from metis.core.events.bus import EventBus
+    from metis.core.trace.store import TraceStore
 
     trace = TraceStore(db_path)
     bus = EventBus()
@@ -1017,7 +1017,7 @@ async def amain() -> int:
     # PriceTable version. Build a lightweight runtime up-front using the
     # first workload's workspace just to inspect; we'll tear it down before
     # the real per-workload runs.
-    from metis_cli.runtime import setup_runtime, shutdown_runtime
+    from metis.cli.runtime import setup_runtime, shutdown_runtime
 
     first_workspace = workloads[0].source_path.parent / "workspace"
     probe_db = db_path  # ok to reuse; setup_runtime opens but doesn't write events
@@ -1161,7 +1161,7 @@ async def amain() -> int:
                         start=datetime.fromtimestamp(started_us / 1_000_000, tz=UTC),
                         end=datetime.fromtimestamp(ended_us / 1_000_000 + 1, tz=UTC),
                     )
-                    from metis_core.pricing import DEFAULT_PRICE_TABLE  # baseline lookup table
+                    from metis.core.pricing import DEFAULT_PRICE_TABLE  # baseline lookup table
 
                     pricing = DEFAULT_PRICE_TABLE
                     # Match provenance pricing — re-fetching the runtime overlay is
@@ -1176,7 +1176,7 @@ async def amain() -> int:
                 # session (delegation.md §9). Workers emit their own events
                 # under their own session id; the planner-scoped count is
                 # what the `min_delegate_calls` assertion cares about.
-                from metis_core.trace.store import TraceStore
+                from metis.core.trace.store import TraceStore
 
                 trace_ro = TraceStore(db_path)
                 try:
@@ -1235,7 +1235,7 @@ async def amain() -> int:
                 )
 
     # Aggregate savings over the full run window.
-    from metis_core.pricing import DEFAULT_PRICE_TABLE
+    from metis.core.pricing import DEFAULT_PRICE_TABLE
 
     store = AnalyticsStore(db_path)
     try:

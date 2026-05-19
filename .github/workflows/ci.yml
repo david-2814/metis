@@ -24,10 +24,10 @@ jobs:
         run: uv sync --frozen
 
       - name: Lint with ruff
-        run: uv run ruff check packages apps scripts
+        run: uv run ruff check packages scripts
 
       - name: Type check (optional, non-blocking)
-        run: uv run mypy packages/metis-core/src/metis_core || true
+        run: uv run mypy packages/metis/src/metis || true
         continue-on-error: true
 
       - name: Run tests

@@ -26,25 +26,25 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from metis_core.events.bus import EventBus
-from metis_core.events.envelope import Actor
-from metis_core.events.payloads import (
+from metis.core.events.bus import EventBus
+from metis.core.events.envelope import Actor
+from metis.core.events.payloads import (
     PatternAlternative,
     PatternMatched,
     PolicyEvaluation,
     RouteDecided,
     make_event,
 )
-from metis_core.patterns.fingerprint import (
+from metis.core.patterns.fingerprint import (
     FingerprintInputs,
     compute_fingerprint,
 )
-from metis_core.patterns.store import PatternRecommendation, PatternStore
-from metis_core.routing.availability import ProviderAvailability
-from metis_core.routing.context import RoutingDecision, TurnContext
-from metis_core.routing.policy import EMPTY_POLICY, PatternConfig, RoutingPolicy
-from metis_core.routing.predicates import evaluate as evaluate_predicate
-from metis_core.routing.registry import ModelRegistry
+from metis.core.patterns.store import PatternRecommendation, PatternStore
+from metis.core.routing.availability import ProviderAvailability
+from metis.core.routing.context import RoutingDecision, TurnContext
+from metis.core.routing.policy import EMPTY_POLICY, PatternConfig, RoutingPolicy
+from metis.core.routing.predicates import evaluate as evaluate_predicate
+from metis.core.routing.registry import ModelRegistry
 
 PatternStoreResolver = Callable[[str], PatternStore | None]
 """Maps an absolute `workspace_path` to its PatternStore (or None when no

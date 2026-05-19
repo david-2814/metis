@@ -14,8 +14,8 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from metis_core.routing.context import TurnContext
-from metis_core.routing.policy import (
+from metis.core.routing.context import TurnContext
+from metis.core.routing.policy import (
     AllOf,
     AnyOf,
     CostTodayExceedsUsd,

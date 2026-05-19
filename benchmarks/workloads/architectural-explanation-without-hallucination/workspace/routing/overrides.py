@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from metis_core.routing.registry import ModelRegistry
+from metis.core.routing.registry import ModelRegistry
 
 
 @dataclass(frozen=True)

@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from metis_core.adapters.errors import ErrorClass
+from metis.core.adapters.errors import ErrorClass
 
 _CONSECUTIVE_FAILURE_THRESHOLD = 5
 _FAILURE_WINDOW_SECONDS = 2 * 60.0
