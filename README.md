@@ -8,6 +8,15 @@ A local-first AI dev agent — provider-agnostic, self-improving, and cost-aware
 
 ---
 
+## New here? Pick a path
+
+- **Want a real savings number on your own workload?** [Buyer trial in &lt; 1 hour](docs/operations/quickstart.md) — kind cluster + helm install + pre-baked workload + per-key cost rollup, automated end-to-end.
+- **Already have a Claude Code / Cursor / SDK client?** [Gateway client quickstart](docs/gateway-client-quickstart.md) walks through pointing `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` at a running Metis gateway.
+- **Want the design rationale first?** [Project overview](docs/project-overview.md) — vision, principles, architecture, and the three cost levers.
+- **Just want to chat against an LLM locally?** Skip to [Quick start](#quick-start) below.
+
+---
+
 ## Why Metis
 
 Metis optimizes a buyer's LLM bill by composing three levers — context engineering (prompt-cache discipline, lean prompts), skills (focused expert instructions loaded on demand), and routing (delegation plus model selection). The order of typical impact is context > skills > routing. Prompt caching has the cleanest context proof (49/49 cache-fire, 22.8% same-workload cost reduction); delegation has the most reproduced routing proof (8.3% – 26.1% better cost-per-quality across three runs); slot-4 model selection has one end-to-end inversion on `regex-with-edge-cases` and remains a proof-of-mechanism, not a generalized savings regime. See [`docs/savings-demo.md`](docs/savings-demo.md) for the model-selection evidence and [`docs/customer-trial-recipe.md`](docs/customer-trial-recipe.md) for how to reproduce on your own workload.
