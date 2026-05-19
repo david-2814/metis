@@ -95,6 +95,31 @@ For the end-to-end buyer-trial path (kind cluster + helm + pre-baked
 workload + per-key cost rollup), see
 [`docs/operations/quickstart.md`](docs/operations/quickstart.md).
 
+## Local dashboard
+
+Every turn, every model, every dollar — measured against what it would
+have cost on a single-model baseline, with per-user, per-team, and
+per-key rollups. The counterfactual is the same one the gateway uses
+live; no spreadsheet math.
+
+**Cost** — total spend, savings vs a pinned baseline, spend over time,
+cost by model, cache effectiveness.
+
+![Metis cost dashboard showing total spend, vs claude-sonnet-4-6 baseline, spend over time, cost by model, and cache effectiveness.](docs/assets/dashboard-cost.png)
+
+**Activity** — routing distribution across the seven-slot chain,
+reliability (p50/p95) and call counts per model, recent failures, and
+recent sessions.
+
+![Metis activity dashboard showing routing distribution, reliability per model, failures, and recent sessions.](docs/assets/dashboard-activity.png)
+
+**Spend by identity** — per-team, per-user, and per-key rollups. The
+gateway stamps `user_id` / `team_id` / `gateway_key_id` on every
+`llm.call_completed`, so attribution joins straight from the trace
+store — no separate metering subsystem.
+
+![Metis spend-by-identity dashboard showing per-team, per-user, and per-key spend breakdowns.](docs/assets/dashboard-cost-attribution.png)
+
 ## Why we built it
 
 Today's AI dev tools have recurring frictions:
