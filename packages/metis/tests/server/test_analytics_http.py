@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -61,7 +61,10 @@ def _to_micros(dt: datetime) -> int:
 
 @pytest.fixture
 def now() -> datetime:
-    return datetime(2026, 5, 12, 12, 0, 0, tzinfo=UTC)
+    # Anchor to real time so seeded events always fall within the analytics
+    # endpoint's default 7-day window. A previous fixed date (2026-05-12) made
+    # these tests fail after enough real days had elapsed past it.
+    return datetime.now(UTC).replace(microsecond=0) - timedelta(hours=1)
 
 
 @pytest.fixture
@@ -127,7 +130,7 @@ async def test_cost_endpoint_default_group_by_model(seeded_client, now):
     body = r.json()
     assert "window" in body
     assert "current_pricing_version" in body
-    assert body["window"]["start"].startswith("2026-05-12")
+    assert body["window"]["start"].startswith(now.date().isoformat())
     assert isinstance(body["data"], list)
     row = body["data"][0]
     assert row["model"] == "anthropic:claude-sonnet-4-6"
@@ -535,7 +538,7 @@ async def test_by_key_endpoint_sql_injection_guard_special_chars(gateway_seeded_
     assert r.json()["error"]["code"] == "invalid_gateway_key"
 
 
-async def test_by_key_includes_last_call_at(gateway_seeded_client, now):
+async def test_by_key_includes_last_call_at(gateway_seeded_client, now: datetime):
     """`last_call_at` is the max `llm.call_completed` timestamp for that key.
 
     Additive vs analytics-api.md §4.8 example response — drives the
@@ -548,7 +551,7 @@ async def test_by_key_includes_last_call_at(gateway_seeded_client, now):
         assert "last_call_at" in row
         # The fixture seeds every row at the same `now`, so each key's
         # last_call_at is exactly that timestamp.
-        assert row["last_call_at"].startswith("2026-05-12T12:00")
+        assert row["last_call_at"].startswith(now.strftime("%Y-%m-%dT%H:%M"))
 
 
 async def test_cost_filter_by_gateway_key_returns_only_match(gateway_seeded_client):
