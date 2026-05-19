@@ -15,7 +15,7 @@ are eligible for breaking changes.
 Please **do not** open a public GitHub issue for security
 vulnerabilities.
 
-Use [GitHub Security Advisories](https://github.com/2sumAI/metis/security/advisories/new)
+Use [GitHub Security Advisories](https://github.com/david-2814/metis/security/advisories/new)
 to report privately. Alternatively, email
 `security@2sum.ai` (TODO(owner): confirm this address is monitored;
 set up forwarding or change to the real address if not).
