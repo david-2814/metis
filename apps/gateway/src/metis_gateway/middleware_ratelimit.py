@@ -43,6 +43,14 @@ DEFAULT_PER_IP_RPM = 1000
 # gateway-hardening.md §3.3 — bounded LRU per bucket type.
 DEFAULT_MAX_TRACKED_KEYS = 1000
 
+# Floating-point tolerance for token-refill drift. The lazy refill in
+# `_Bucket.take()` accumulates via `elapsed * (capacity / window)`, which
+# can land fractionally below 1.0 after an exact-period advance (CI run
+# 26067891870 hit `tokens=0.9999999999999716` after a 30-second refill at
+# capacity=60 / window=60). The epsilon lets `take()` succeed when the
+# shortfall is purely arithmetic noise.
+_TOKEN_EPSILON = 1e-9
+
 # Paths the limiter applies to. `/healthz` and future Metis-owned paths
 # are exempt (gateway-hardening.md §3.4).
 RATE_LIMITED_PREFIXES: tuple[str, ...] = (
@@ -98,8 +106,8 @@ class _Bucket:
             refill = elapsed * (self.capacity / self.window_seconds)
             self.tokens = min(self.capacity, self.tokens + refill)
             self.last_refill = now
-        if self.tokens >= cost:
-            self.tokens -= cost
+        if self.tokens + _TOKEN_EPSILON >= cost:
+            self.tokens = max(0.0, self.tokens - cost)
             return True
         return False
 

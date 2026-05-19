@@ -60,6 +60,30 @@ def test_bucket_refills_over_time() -> None:
     assert b.take(now=start + 30.0) is False
 
 
+def test_bucket_boundary_floating_point_drift() -> None:
+    """Regression: CI run 26067891870 hit tokens=0.9999999999999716
+    after a 30-second refill -- float accumulation drift, not a logic
+    bug. Tolerance check in take() makes the bucket robust to
+    sub-epsilon shortfalls at the 1.0 boundary."""
+    # Construct a bucket whose refill math produces a near-1.0
+    # token count after time advances -- verify take() succeeds.
+    b = _Bucket(capacity=60, window_seconds=60.0)  # 1 token / sec
+    start = time.monotonic()
+    # Drain completely.
+    for _ in range(60):
+        assert b.take(now=start) is True
+    assert b.take(now=start) is False
+    # Simulate the exact CI failure: manually set tokens to the
+    # value the CI run observed after a 30-second refill.
+    b.tokens = 0.9999999999999716
+    b.last_refill = start + 30.0
+    # Before the fix this would return False; with the epsilon
+    # tolerance it must succeed.
+    assert b.take(now=start + 30.0) is True
+    # tokens should be clamped to 0.0 (not go negative).
+    assert b.tokens >= 0.0
+
+
 def test_bucket_retry_after_rounds_up_and_min_one() -> None:
     b = _Bucket(capacity=60, window_seconds=60.0)
     now = time.monotonic()
