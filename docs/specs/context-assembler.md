@@ -10,7 +10,7 @@ the discovery index into context, the per-session activation budget, and
 the bridge between explicit `skill_load` activation and the
 body-as-padding pre-activation path introduced in v2 §5.1. History
 compression and behavior near the context window remain a later spec —
-see [`STRATEGY.md §6.5`](../STRATEGY.md).
+see the project strategy (private).
 
 > **v3 implementation status (2026-05-14).** Per-session
 > [`SkillActivationRegistry`](../../packages/metis-core/src/metis_core/skills/activation.py)
@@ -29,7 +29,7 @@ see [`STRATEGY.md §6.5`](../STRATEGY.md).
 > unchanged — activated bodies live as `tool_result` blocks in message
 > history, not in the system prompt (§5.2.3).
 
-> **v1 motivation.** Per [`STRATEGY.md §1`](../STRATEGY.md), context
+> **v1 motivation.** Per the project strategy (private), context
 > engineering is the single largest cost lever (the "5–10×" claim in
 > [`KNOWN_ISSUES.md`](../KNOWN_ISSUES.md)). The cheapest way to realize
 > that lever is honest cache-breakpoint placement so the prefix tokens
@@ -245,7 +245,7 @@ write and read. The break-even N (turns above which padding saves cost)
 depends on the *natural* prefix size:
 
 - When the natural prefix is *close to but below* the floor (the
-  ~1500–2000-token case in `STRATEGY.md`'s pre-skill design), padding
+  ~1500–2000-token case in the project strategy (private)'s pre-skill design), padding
   is a clear win after ~2 turns.
 - When the natural prefix is *far below* the floor (the bare-bones
   case, ~265 tokens with no skills), padding writes more tokens than
@@ -270,7 +270,7 @@ increase) depends on the trade-off above.
 
 ### 5.2. Skill activation (v3)
 
-Per [`STRATEGY.md §1`](../STRATEGY.md), every skill loaded that isn't
+Per the project strategy (private), every skill loaded that isn't
 used is wasted tokens. The discovery index (~100 tokens per skill) pays
 the always-on cost; activation moves a body (~1–5K tokens) into context
 on a deliberate decision. v3 specifies what counts as "deliberate," what
@@ -568,5 +568,5 @@ turn 2. Cost ≤ $0.05 per run.
 - [`analytics-api.md §4.2`](analytics-api.md) — `/analytics/cache_effectiveness` is the validation surface.
 - [`skill-format.md §7`](skill-format.md), [§8.2](skill-format.md), [§9.1](skill-format.md) — discovery-index format, `skill_load` semantics, `skill.loaded` payload schema. v3 §5.2.2 implies an additive change to the §7.1 index format (the `[preloaded]` annotation); v3 §5.2.3 implies an additive contract on §8.2 (`skill_load` returns a pointer for pre-activated skills).
 - [`event-bus-and-trace-catalog.md §6.6`](event-bus-and-trace-catalog.md) — `skill.loaded` payload; v3 reuses with no schema change but emits `load_reason="always"` from a new session-init path.
-- [`STRATEGY.md §1`](../STRATEGY.md) — context > skills > model selection thesis; v3 specifies the second-largest lever inside the largest one.
+- the project strategy (private) — context > skills > model selection thesis; v3 specifies the second-largest lever inside the largest one.
 - [`KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — the prompt-caching gap this spec closes.

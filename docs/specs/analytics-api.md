@@ -36,13 +36,13 @@ This spec depends on:
 1. **Read-only and derived.** Every endpoint is a `GET`. No bus events, no DB writes, no cache invalidation surface. Re-running the same request returns the same answer (modulo new events landing).
 2. **Sub-second at single-user scale.** Target: p95 < 500ms with ≤10K `llm.call_completed` rows in the table. Existing indexes on `(type, timestamp_us)` and `(session_id, id)` carry every query.
 3. **Two pricing modes, both honest.** Actuals honor the stamped `pricing_version` on each `llm.call_completed` event (matches the bill). The savings counterfactual re-prices both numerator and denominator under the current `PriceTable` (apples-to-apples).
-4. **Loopback-only inherits.** No new auth surface. Multi-user / remote dashboards are downstream of the unresolved fork in [`STRATEGY.md §3`](../STRATEGY.md).
+4. **Loopback-only inherits.** No new auth surface. Multi-user / remote dashboards are downstream of the unresolved fork in the project strategy (private).
 5. **Catalog-sourced.** If a metric requires data not in the catalog, the answer is to extend the catalog (deliberate spec change), not to add a side-table.
 
 ### 2.2 Non-goals
 
 1. **No rollup / materialized tables.** Adding one is a Phase 3 decision triggered by evidence of lag, not a Phase 2 default.
-2. **No multi-tenant or multi-user.** Per-user / per-team rollups deferred per [`STRATEGY.md §2`](../STRATEGY.md).
+2. **No multi-tenant or multi-user.** Per-user / per-team rollups deferred per the project strategy (private).
 3. **No custom date ranges in v1.** The SPA exposes today / 7d / 30d / all. The API accepts arbitrary `from`/`to` already — only the UI is constrained.
 4. **No pattern / skill / delegation views.** The underlying data isn't stable enough yet (Phase 2.5 / 4 work).
 5. **No live updates over WebSocket.** REST polling on view changes is sufficient; the existing `/sessions/{id}/stream` already carries the live signal for clients that want it.
@@ -785,7 +785,7 @@ regardless of entry point).
 Loopback-only inherits from the rest of `/analytics/*` (§2.1.4). The
 HTTP surface trusts the local operator. Multi-user authenticated
 dashboards (which would let a non-admin user request their own export)
-are downstream of the [`STRATEGY.md §3`](../STRATEGY.md) fork and out of
+are downstream of the the project strategy (private) fork and out of
 scope for v1.
 
 When per-key gateway auth lands on the dashboard surface (future
@@ -864,7 +864,7 @@ Naming follows the symmetric convention `invalid_<param>` for value-rejection er
 2. **Idempotent.** Re-running the same request with the same window returns the same data (modulo events that have landed between requests).
 3. **Window bounds are echoed.** Every response carries the resolved `window.start`/`window.end` (or `null/null` for non-time-windowed endpoints).
 4. **Pricing-version stamped on the response.** `current_pricing_version` always reflects the table active at request time; in-row stamped values are unaffected.
-5. **No `sensitivity` filtering.** v1 is single-user local; the local user is the data owner. A future remote-deployment shape may need to filter `private`-sensitivity payloads from responses, but that's downstream of the `STRATEGY.md §3` fork.
+5. **No `sensitivity` filtering.** v1 is single-user local; the local user is the data owner. A future remote-deployment shape may need to filter `private`-sensitivity payloads from responses, but that's downstream of the the project strategy (private) fork.
 6. **Turn drill-down is bounded in practice, not in spec.** No pagination in v1; one turn → one response. The existing turn-locked model + tool-cycle loop in [sessions/manager.py](../../packages/metis-core/src/metis_core/sessions/manager.py) means a single turn is bounded in event count in practice. If a future surface (e.g. long agent loops with many small tool calls) violates that assumption, add `?limit` and `?since_event_id` parameters — additive, non-breaking.
 
 ---
@@ -909,7 +909,7 @@ Deferred from this spec; revisit when the matching evidence shows up.
 
 1. **Rollup table.** When does direct `json_extract` slow enough that we need to populate a `usage_rollups` table from the bus? Tentative threshold: 100K `llm.call_completed` rows or sustained p95 > 1s on any endpoint.
 2. **Custom date ranges in the SPA.** The API already supports arbitrary `from`/`to`. When does the UI need a date picker? When users start asking "what did I spend in March."
-3. **Per-user cost attribution.** Requires a multi-user identity layer that doesn't exist yet. Downstream of the [`STRATEGY.md §3`](../STRATEGY.md) fork.
+3. **Per-user cost attribution.** Requires a multi-user identity layer that doesn't exist yet. Downstream of the the project strategy (private) fork.
 4. **Skill / pattern / delegation analytics.** Hold until those subsystems are stable enough to be worth measuring (Phase 2.5 / 4).
 5. **Streaming live updates to the dashboard.** Currently the SPA re-polls on view change; a WebSocket push could refresh tiles as new events land. Probably not worth it at single-user local scale, but the existing `/sessions/{id}/stream` is the obvious extension point.
 6. **Redacted / shareable views.** A "screenshot mode" that scrubs workspace paths, file names, and prompt fragments for sharing in sales contexts. Surface change, not data change.
@@ -924,7 +924,7 @@ Deferred from this spec; revisit when the matching evidence shows up.
 | 2026-05-12 | Read-only, projection over trace store; no rollup table               | At single-user scale `json_extract` is plenty fast; rollups add drift + fast-path-budget concerns.     |
 | 2026-05-12 | Hybrid pricing: stamped for actuals, re-priced for the counterfactual | "What I spent" must reconcile with the bill; counterfactual is meaningless unless num/denom share a table. |
 | 2026-05-12 | UTC at the API; SPA converts to local TZ                              | Keeps the server pure; flipping to custom date picker later is a frontend-only change.                 |
-| 2026-05-12 | Loopback-only inherits; no new auth                                   | Matches v1 server posture; multi-user/remote is downstream of the unresolved STRATEGY.md §3 fork.      |
+| 2026-05-12 | Loopback-only inherits; no new auth                                   | Matches v1 server posture; multi-user/remote is downstream of the unresolved the project strategy (private) fork.      |
 | 2026-05-12 | Routing chain aggregation in Python, not SQL                          | Clearer at this scale; SQLite `json_each()` is the escape hatch if it ever bottlenecks.                |
 | 2026-05-12 | Fold `/tokens` into `/cost`                                           | Same source rows; separate endpoints would duplicate the SQL and the response envelope.                |
 | 2026-05-12 | Audience toggle lives in the SPA, not the API                         | Same endpoints serve both Cost and Activity views; the toggle just reorders tiles.                     |
@@ -947,7 +947,7 @@ Deferred from this spec; revisit when the matching evidence shows up.
 - [`event-bus-and-trace-catalog.md`](event-bus-and-trace-catalog.md) — `llm.call_completed`, `llm.call_failed`, `route.decided`, `turn.completed` payloads.
 - [`server-api.md`](server-api.md) — base HTTP surface conventions this spec extends.
 - [`memory-store.md`](memory-store.md) — sibling spec drafted retrospectively from existing code; shape-reference for this doc.
-- [`../STRATEGY.md`](../STRATEGY.md) — buyer ≠ user framing, savings-as-the-headline thesis, unresolved replacement-agent-vs-gateway fork.
+- `../the project strategy (private)` — buyer ≠ user framing, savings-as-the-headline thesis, unresolved replacement-agent-vs-gateway fork.
 - [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — prompt-caching gap (5–10× left on the table); cache-effectiveness view doubles as forcing function.
 - [`packages/metis-core/src/metis_core/trace/store.py`](../../packages/metis-core/src/metis_core/trace/store.py) — the table this spec reads from.
 - [`packages/metis-core/src/metis_core/pricing/table.py`](../../packages/metis-core/src/metis_core/pricing/table.py) — `compute_cost`, used directly by `/analytics/savings`.

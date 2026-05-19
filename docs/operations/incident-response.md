@@ -2,8 +2,7 @@
 
 Operational playbook for a Metis gateway / agent-server deployment.
 Presumes the single-tenant single-region shape from
-[`docs/gateway-deployment.md`](../gateway-deployment.md) and the
-buyer-side framing in [`docs/STRATEGY.md §2`](../STRATEGY.md). Metis
+[`docs/gateway-deployment.md`](../gateway-deployment.md). Metis
 ships open-core; you run the gateway and own the incident loop.
 
 See also [`status-page.md`](status-page.md) (external comms) and

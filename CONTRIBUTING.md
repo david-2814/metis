@@ -12,18 +12,16 @@ We do **not** require a separate Contributor License Agreement (CLA). The Apache
 
 ## What's in this repo vs. the paid overlay
 
-The `metis` repo (this one) is the OSS substrate: gateway, canonical IR, adapters, routing, pattern store, memory, tools, skills, heuristic evaluator, per-key analytics, the CLI/TUI/serve agent surfaces, and all specs / operations / sales docs. It's standalone-usable — clone, `uv sync`, `metis trial`, see real savings.
+The `metis` repo (this one) is the OSS substrate: gateway, canonical IR, adapters, routing, pattern store, memory, tools, skills, heuristic evaluator, per-key analytics, the CLI/TUI/serve agent surfaces, and the technical specs + operational docs. It's standalone-usable — clone, `uv sync`, `metis trial`, see real savings.
 
-A separate private repo (`metis-pro`) holds the paid-tier overlay: billing (Stripe), signup, accounts, hosted dashboard UI, curated LLM-judge rubric library, and enterprise SAML/OIDC/SCIM glue. It plugs into this repo via extension Protocols defined in [`packages/metis-core/src/metis_core/extensions.py`](packages/metis-core/src/metis_core/extensions.py) and [`apps/gateway/src/metis_gateway/extensions.py`](apps/gateway/src/metis_gateway/extensions.py).
-
-The architectural boundary is documented in [docs/operations/repo-split-plan.md](docs/operations/repo-split-plan.md). Contributions to *this* repo touch only the OSS substrate.
+A separate private repo (`metis-pro`) holds the paid-tier overlay: billing (Stripe), signup, accounts, hosted dashboard UI, curated LLM-judge rubric library, and enterprise SAML/OIDC/SCIM glue. It plugs into this repo via extension Protocols defined in [`packages/metis-core/src/metis_core/extensions.py`](packages/metis-core/src/metis_core/extensions.py) and [`apps/gateway/src/metis_gateway/extensions.py`](apps/gateway/src/metis_gateway/extensions.py). Contributions to *this* repo touch only the OSS substrate.
 
 ## Before you start
 
 Please read in this order:
 
 1. [`AGENTS.md`](AGENTS.md) — current implementation state, conventions, gotchas. Same file is loaded by AI agents (Claude Code, Cursor, etc.); humans benefit from reading it too.
-2. [`docs/STRATEGY.md`](docs/STRATEGY.md) — the *why*: cost-optimization thesis, buyer ≠ user framing, open strategic questions.
+2. [`docs/project-overview.md`](docs/project-overview.md) — vision, principles, architecture, phasing.
 3. [`docs/specs/`](docs/specs/) — the relevant component spec for whatever you're touching.
 
 The project is **specs-first**: if your change touches a contract (event types, public API, wire format, Protocol), draft the spec change first or flag the spec impact in your PR.

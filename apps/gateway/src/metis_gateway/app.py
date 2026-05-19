@@ -153,15 +153,13 @@ class GatewayConfig:
     reuse_port: bool = False
     tls_cert: Path | None = None
     tls_key: Path | None = None
-    # Wave 17 — repo-split extension Protocols. metis-pro overlays substitute
-    # real implementations via the composition root; OSS-only deployments
-    # keep the noop defaults. See docs/operations/repo-split-plan.md §3 and
-    # packages/metis-core/src/metis_core/extensions.py.
+    # Extension Protocols. metis-pro overlays substitute real implementations
+    # via the composition root; OSS-only deployments keep the noop defaults.
+    # See packages/metis-core/src/metis_core/extensions.py.
     #
-    # §4.2b (2026-05-18) — billing moved to metis-pro. The OSS gateway only
-    # carries the Protocol field with the noop default; Pro deployments
-    # inject a `StripeBillingBackend` from `metis_pro.billing` and the
-    # `BillingConfig` lives there too.
+    # The OSS gateway only carries the Protocol field with the noop default;
+    # Pro deployments inject a `StripeBillingBackend` from `metis_pro.billing`
+    # and the `BillingConfig` lives there too.
     billing_backend: BillingBackend = field(default_factory=NoopBillingBackend)
     signup_backend: SignupBackend = field(default_factory=NoopSignupBackend)
     analytics_extension: AnalyticsExtension = field(default_factory=NoopAnalyticsExtension)

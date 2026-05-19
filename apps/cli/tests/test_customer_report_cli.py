@@ -2,7 +2,7 @@
 
 Covers: parser shape, end-to-end rendering against a seeded trace DB
 (both HTML and JSON), missing-DB error path, and the dataclass→render
-invariants the concierge-onboarding flow depends on.
+invariants the trial-conversion flow depends on.
 """
 
 from __future__ import annotations
@@ -534,5 +534,5 @@ def test_customer_report_unknown_baseline_returns_nonzero(tmp_path: Path, capsys
 
 
 def test_default_lookback_is_seven_days() -> None:
-    """The concierge-onboarding doc quotes a 7-day default; assert."""
+    """The trial-conversion flow assumes a 7-day default; pin it."""
     assert DEFAULT_LOOKBACK_DAYS == 7

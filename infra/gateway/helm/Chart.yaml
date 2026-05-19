@@ -21,6 +21,6 @@ sources:
   - https://github.com/david-2814/metis
 maintainers:
   - name: Metis maintainers
-    email: 2sum.ai.group@gmail.com
+    url: https://github.com/david-2814/metis
 annotations:
   category: AI

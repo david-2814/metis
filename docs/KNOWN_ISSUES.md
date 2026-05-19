@@ -22,4 +22,4 @@ When you fix one, **delete the entry**. This file is not a changelog; it's a wat
 
 Things that aren't promised by any spec but probably should be. AI agents proposing work in adjacent areas should know they're missing.
 
-- **No context-assembler spec for history compression or behavior near the context window.** [`docs/specs/context-assembler.md`](specs/context-assembler.md) v1+§5.1 covers cache-breakpoint placement and the minimum-cacheable-prefix rule; §5.2 (v3) covers skill activation. History compression and behavior near the context window remain in §7 "Out of scope (later iterations)." See `STRATEGY.md §6`.
+- **No context-assembler spec for history compression or behavior near the context window.** [`docs/specs/context-assembler.md`](specs/context-assembler.md) v1+§5.1 covers cache-breakpoint placement and the minimum-cacheable-prefix rule; §5.2 (v3) covers skill activation. History compression and behavior near the context window remain in §7 "Out of scope (later iterations)."

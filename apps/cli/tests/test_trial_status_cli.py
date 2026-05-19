@@ -2,7 +2,7 @@
 
 Covers: parser shape, the readiness-band scoring (warm vs ready vs
 not_yet vs no_signal), days-in / days-remaining math, and the
-expected-shape assertion the concierge-onboarding flow depends on at
+expected-shape assertion the trial-conversion flow depends on at
 day 3 / day 7.
 """
 
@@ -341,9 +341,9 @@ def test_trial_status_rejects_zero_trial_length(tmp_path: Path, capsys) -> None:
     assert rc == 2
 
 
-def test_readiness_thresholds_match_concierge_doc() -> None:
-    """The concierge-onboarding.md doc quotes these thresholds; if anyone
-    changes them, the doc must change too."""
+def test_readiness_thresholds_are_pinned() -> None:
+    """Trial-conversion playbooks quote these thresholds verbatim;
+    if anyone changes them, the playbooks must change too."""
     assert MIN_SPEND_FOR_SIGNAL_USD == 0.50
     assert MIN_LLM_CALLS_FOR_SIGNAL == 20
     assert MIN_QUALITY_VERDICTS == 5

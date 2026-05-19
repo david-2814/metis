@@ -1,10 +1,10 @@
 """Extension Protocols for metis-pro overlays.
 
-Per ``docs/operations/repo-split-plan.md`` §3, the paid-tier Metis features
-(billing, signup, hosted analytics endpoints, curated rubric library) live in
-a private ``metis-pro`` repo that injects implementations at boot. OSS
-deployments use the noop defaults defined below; Pro deployments swap them
-for real implementations via the gateway / server composition root.
+The paid-tier Metis features (billing, signup, hosted analytics endpoints,
+curated rubric library) live in a private ``metis-pro`` repo that injects
+implementations at boot. OSS deployments use the noop defaults defined below;
+Pro deployments swap them for real implementations via the gateway / server
+composition root.
 
 Two Protocols (``SignupBackend``, ``AnalyticsExtension``) reference
 ``starlette.applications.Starlette`` so the overlay can mount HTTP routes onto
@@ -15,9 +15,8 @@ already depend on Starlette) ever pass a real Starlette app into a Protocol
 method.
 
 Invariant: every Protocol here has a Noop default that lets the OSS substrate
-boot and serve traffic without metis-pro. The "OSS standalone-usable" rule
-from ``repo-split-plan.md §8.5`` is enforced via the contract tests in
-``tests/test_extensions.py``.
+boot and serve traffic without metis-pro. The "OSS standalone-usable" rule is
+enforced via the contract tests in ``tests/test_extensions.py``.
 """
 
 from __future__ import annotations

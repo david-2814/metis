@@ -96,8 +96,8 @@ class AnalyticsStore:
     **Concurrency note.** Holds a single SQLite connection. At single-user
     loopback scale, the Starlette handlers run on the asyncio loop and call
     these methods synchronously, so the GIL serializes access — no observable
-    concurrent use. For a multi-client deployment (post-§3 fork in STRATEGY.md),
-    swap to a per-request connection or wrap calls in `asyncio.to_thread`.
+    concurrent use. For a multi-client deployment, swap to a per-request
+    connection or wrap calls in `asyncio.to_thread`.
     """
 
     def __init__(self, db_path: str | Path) -> None:

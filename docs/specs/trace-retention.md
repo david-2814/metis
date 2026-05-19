@@ -400,5 +400,5 @@ Required tests (`packages/metis-core/tests/trace/test_retention.py`):
   retention placeholder this spec replaces.
 - `gateway.md §11` — key lifecycle audit events that motivate the
   audit-exemption mechanism.
-- `STRATEGY.md §2` — buyer ≠ user; retention is a buyer-facing
+- the project strategy (private) — buyer ≠ user; retention is a buyer-facing
   compliance concern, not a developer ergonomic.

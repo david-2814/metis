@@ -17,7 +17,7 @@
 > - [`event-bus-and-trace-catalog.md`](event-bus-and-trace-catalog.md) — the closed catalog. Audit-relevance is a derived flag on each event type, not a parallel event family.
 > - [`gateway.md`](gateway.md) — `gateway.key_*` event types are the load-bearing key-lifecycle records.
 > - [`multi-user.md §7`](multi-user.md) — names "audit + compliance posture" as a buyer requirement and sketches the export shape; this spec is the contract.
-> - [`STRATEGY.md §2`](../STRATEGY.md) — buyer ≠ user framing; SOC2 / GDPR is the buyer's ask, not the user's.
+> - the project strategy (private) — buyer ≠ user framing; SOC2 / GDPR is the buyer's ask, not the user's.
 >
 > This spec **does not** define:
 >
@@ -398,4 +398,4 @@ These are **live**. The owner closes them when evidence shows up; agents working
 - [`gateway.md §11`](gateway.md) — `gateway.key_*` event types, the load-bearing audit records.
 - [`analytics-api.md §2.1.5`](analytics-api.md) — "catalog-sourced data is the only source" rule.
 - [`canonical-message-format.md §6.4`](canonical-message-format.md) — `Decimal` serialization convention; reused by export.
-- [`STRATEGY.md §2`](../STRATEGY.md) — buyer ≠ user; SOC2 / GDPR is the buyer's ask.
+- the project strategy (private) — buyer ≠ user; SOC2 / GDPR is the buyer's ask.

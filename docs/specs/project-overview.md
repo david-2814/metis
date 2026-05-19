@@ -1,6 +1,6 @@
 # Project Overview
 
-> **Working context first.** Before reading this doc, AI agents working in the repo should read [`AGENTS.md`](../../AGENTS.md) for current implementation state and conventions, and [`docs/STRATEGY.md`](../STRATEGY.md) for the *why* — the cost-optimization thesis, B2B framing, and open strategic questions that aren't visible from the code. Spec/impl gaps are tracked in [`docs/KNOWN_ISSUES.md`](../KNOWN_ISSUES.md).
+> **Working context first.** Before reading this doc, AI agents working in the repo should read [`AGENTS.md`](../../AGENTS.md) for current implementation state and conventions, and the project strategy (private) for the *why* — the cost-optimization thesis, B2B framing, and open strategic questions that aren't visible from the code. Spec/impl gaps are tracked in [`docs/KNOWN_ISSUES.md`](../KNOWN_ISSUES.md).
 >
 > This doc describes the *shape* of the system (vision, principles, architecture, phasing). It is not the current build status — see AGENTS.md for that.
 
@@ -188,6 +188,6 @@ Both reach attached WebSocket clients through the streaming server, which wraps 
 
 **Strategy and ops:**
 
-- [`docs/STRATEGY.md`](../STRATEGY.md) — Cost-optimization thesis, buyer ≠ user, three cost levers, open strategic questions.
+- the project strategy (private) — Cost-optimization thesis, buyer ≠ user, three cost levers, open strategic questions.
 - [`docs/KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — Spec/impl carryover findings.
 - [`AGENTS.md`](../../AGENTS.md) — Current implementation state, conventions, gotchas.

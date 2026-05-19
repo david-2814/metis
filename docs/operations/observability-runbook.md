@@ -135,9 +135,8 @@ the time over a 10-minute window.
      failover if confirmed.
    - `network` — connection / TLS / DNS issue. Probe from inside the pod:
      `kubectl exec deploy/metis-gateway -- curl -v https://api.anthropic.com`.
-     If repeated `network` errors trip provider-wide unavailability, this
-     is the [GA-readiness-audit blocker](ga-readiness-audit.md) — restart
-     the pod to reset adapter availability state.
+     If repeated `network` errors trip provider-wide unavailability,
+     restart the pod to reset adapter availability state.
    - `context_overflow` — client sent a request larger than the model's
      window. The client's responsibility; surface to them.
 2. Check the provider-side metric tier (if you have one — Anthropic Console

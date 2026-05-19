@@ -69,7 +69,7 @@ binding is the buyer's HR system's job.
 
 | Criterion | Status | Evidence | Buyer additions |
 |-----------|--------|----------|-----------------|
-| CC2.1 Internal information for control | partial | [`AGENTS.md`](../../AGENTS.md), [`docs/specs/`](../specs/), [`docs/STRATEGY.md`](../STRATEGY.md). Specs-first discipline (`AGENTS.md` "Specs-first"). | Buyer-internal runbooks layered on these. |
+| CC2.1 Internal information for control | partial | [`AGENTS.md`](../../AGENTS.md), [`docs/specs/`](../specs/). Specs-first discipline (`AGENTS.md` "Specs-first"). | Buyer-internal runbooks layered on these. |
 | CC2.2 Internal communication of controls | partial | [`incident-response.md`](incident-response.md) post-mortem template; [`upgrade-guide.md`](upgrade-guide.md). | Internal training cadence; control-change-notification process. |
 | CC2.3 External communication | partial | [`status-page.md`](status-page.md) cadence + redaction rules; [`sla-template.md`](sla-template.md); [`docs/gateway-client-quickstart.md`](../gateway-client-quickstart.md). | Customer-facing terms of service, privacy notice, DPA. |
 
@@ -175,7 +175,7 @@ export`, not an SRE manually running SQL.
 |-----------|--------|----------|-----------------|
 | CC8.1 Authorize, design, develop, configure, document, test, approve, implement changes | **gap (honest)** | PR-based workflow + test suite (1678 tests passing); specs-first discipline ([`docs/specs/CHANGES.md`](../specs/CHANGES.md) cross-spec change log). No formal change-advisory board, no CAB approval workflow, no separated dev / test / prod environments at the *Metis project* level. | Buyer wraps deploys in their own change-management process; staging vs prod cluster split; CAB approvals if their compliance team requires. |
 
-**Honest framing.** Metis is one part-time engineer ([`STRATEGY.md "Solo, part-time owner"`](../STRATEGY.md)).
+**Honest framing.** Metis is maintained by a small part-time team.
 A formal change-management process at the project layer would be
 ceremony without substance. SOC2 auditors will accept "the deploying
 organization owns CC8" provided the buyer's deploy pipeline (`helm
@@ -452,5 +452,3 @@ timeline" more than "yes, we'll be SOC2-compliant by [date]."
   audit-exempt).
 - [`../specs/redaction.md`](../specs/redaction.md) — Wave 12 (12a-3)
   `EventRedactor` modes + `metis user forget` GDPR Article 17 path.
-- [`../STRATEGY.md §2`](../STRATEGY.md) — buyer ≠ user; the B2B framing
-  that makes this document load-bearing for sales conversations.

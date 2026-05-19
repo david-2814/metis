@@ -49,7 +49,7 @@ turn resumes on the planner's model with the worker's output integrated as
 the tool result.
 
 This is the third lever in the cost-optimisation thesis
-([`STRATEGY.md §4`](../STRATEGY.md)): bounded memory + lossless canonical
+(strategic context, private): bounded memory + lossless canonical
 IR + **planner→worker delegation**. Without delegation the cost shape is
 "one model handles the whole turn." With it, the planner is free to spend
 its tokens on judgement and farm out execution.
@@ -956,5 +956,5 @@ workers is a UX choice the spec doesn't pin; the API surface
 - [`context-assembler.md §5`](context-assembler.md) — worker's system prompt
   assembled by the same path as planner's, including MEMORY.md / USER.md / skill
   index.
-- [`STRATEGY.md §4`](../STRATEGY.md) — the third lever (planner→worker
+- the project strategy (private) — the third lever (planner→worker
   delegation) in the cost-optimisation thesis.

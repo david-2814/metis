@@ -33,7 +33,7 @@
   "links": [
     {
       "title": "Observability runbook",
-      "url": "https://github.com/2sumAI/metis/blob/main/docs/operations/observability-runbook.md",
+      "url": "https://github.com/david-2814/metis/blob/main/docs/operations/observability-runbook.md",
       "icon": "doc",
       "tags": [],
       "targetBlank": true,
@@ -41,7 +41,7 @@
     },
     {
       "title": "Incident response",
-      "url": "https://github.com/2sumAI/metis/blob/main/docs/operations/incident-response.md",
+      "url": "https://github.com/david-2814/metis/blob/main/docs/operations/incident-response.md",
       "icon": "doc",
       "tags": [],
       "targetBlank": true,

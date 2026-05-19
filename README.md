@@ -1,52 +1,82 @@
 # Metis
 
-A local-first AI dev agent — provider-agnostic, self-improving, and cost-aware.
+**A local-first AI dev agent for your terminal.** Provider-agnostic, cost-aware, and
+self-improving. Your codebase stays on your machine; your prompts and traces don't
+leave it. Apache-2.0.
 
-> **Status:** Phase 1 + Phase 2 + Phase 2.5 + Phase 3 shipped; Wave 16 reaches the GA launch milestone for the first paid cohort. The transparent gateway, multi-user / per-team attribution, evaluator, compliance posture, billing, observability, and launch operations are live enough for buyer trials. The validated routing-surface headline is delegation at **8.3% / 19.9% / 26.1% better cost-per-quality** across three A3 runs. Slot-4 model selection remains a proof-of-mechanism from §A3-rev3; §A3-rev7 completion did not generalize it (zero sonnet picks across 36 routing decisions), so the optional task-domain A3 wedge is deferred post-GA. 1841 tests passing.
+<p>
+  <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
+  <img alt="Python 3.13" src="https://img.shields.io/badge/Python-3.13-blue.svg">
+  <img alt="1841 tests passing" src="https://img.shields.io/badge/tests-1841_passing-brightgreen.svg">
+  <img alt="Status: Phase 3 GA" src="https://img.shields.io/badge/status-Phase_3_GA-success.svg">
+</p>
 
-> **Launch callout:** Metis is ready for buyer trials as an open-core LLM gateway: Community is free to self-host, Pro is per active user for team controls, and Enterprise reserves a capped savings add-on. The validated routing-surface headline is delegation at **8.3% – 26.1% better cost-per-quality across three runs** (19.9% midpoint in §A3-rev7 completion); model-selection remains an N=1 proof-of-mechanism from §A3-rev3.
+```text
+$ uv run metis chat .
+metis> help me debug src/parser.py        # uses your default model (sonnet)
+metis> @haiku summarize what you just did # route one turn to a cheaper model
+metis> /cost                              # per-turn USD breakdown
+metis> /model haiku                       # sticky switch for the rest of the session
+```
+
+Switch providers mid-session without losing context. Memory and skills live as
+plain Markdown in your workspace — `git diff`-able, portable across machines.
+Every turn is cost-stamped in Decimal USD and a full routing-decision trace.
 
 ---
 
 ## New here? Pick a path
 
-- **Want a real savings number on your own workload?** [Buyer trial in &lt; 1 hour](docs/operations/quickstart.md) — kind cluster + helm install + pre-baked workload + per-key cost rollup, automated end-to-end.
-- **Already have a Claude Code / Cursor / SDK client?** [Gateway client quickstart](docs/gateway-client-quickstart.md) walks through pointing `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` at a running Metis gateway.
-- **Want the design rationale first?** [Project overview](docs/project-overview.md) — vision, principles, architecture, and the three cost levers.
-- **Just want to chat against an LLM locally?** Skip to [Quick start](#quick-start) below.
-
----
-
-## Why Metis
-
-Metis optimizes a buyer's LLM bill by composing three levers — context engineering (prompt-cache discipline, lean prompts), skills (focused expert instructions loaded on demand), and routing (delegation plus model selection). The order of typical impact is context > skills > routing. Prompt caching has the cleanest context proof (49/49 cache-fire, 22.8% same-workload cost reduction); delegation has the most reproduced routing proof (8.3% – 26.1% better cost-per-quality across three runs); slot-4 model selection has one end-to-end inversion on `regex-with-edge-cases` and remains a proof-of-mechanism, not a generalized savings regime. See [`docs/savings-demo.md`](docs/savings-demo.md) for the model-selection evidence and [`docs/customer-trial-recipe.md`](docs/customer-trial-recipe.md) for how to reproduce on your own workload.
+- 🦾 **Just want to chat against an LLM locally?** [Quick start](#quick-start) below — `uv sync` + `uv run metis chat .`. Two minutes to first turn.
+- 🧭 **Want the design rationale first?** [Project overview](docs/project-overview.md) — vision, principles, architecture, and the three cost levers.
+- 🔌 **Already use Claude Code / Cursor / an SDK?** [Gateway client quickstart](docs/gateway-client-quickstart.md) — point `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` at a Metis gateway, no client changes.
+- 🏢 **Evaluating for a team?** [Buyer trial in &lt; 1 hour](docs/operations/quickstart.md) — kind cluster + helm + per-key cost rollup, end-to-end.
 
 ---
 
 ## Quick start
 
-```bash
-# Python 3.13 + uv required.
-uv sync   # resolves the workspace (metis-core, metis-server, metis-gateway, metis-cli)
-
-# Put your Anthropic API key in a gitignored .env file
-echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
-
-# Start a chat in any workspace directory
-uv run metis chat . --model sonnet
-```
-
-The repo is a uv-workspace monorepo: [`packages/metis-core/`](packages/metis-core/) is the library (canonical types, events, adapters, routing, tools, memory, sessions, pricing, skills, trace); [`apps/server/`](apps/server/), [`apps/gateway/`](apps/gateway/), and [`apps/cli/`](apps/cli/) are the deployable surfaces. The `metis` console-script is shipped by `metis-cli`.
-
-Inside the REPL: type your message and hit return. Slash commands: `/model <alias|id>`, `/model -` (clear sticky), `/cost`, `/models`, `/help`. Ctrl-D or `exit` to leave. Per-message override: start a message with `@haiku` (or any alias) to route that single message to a different model.
-
-Aliases configured out of the box: `opus` / `deep`, `sonnet` / `balanced`, `haiku` / `fast`.
-
-Sanity-check the full loop against the real API in under a minute (~$0.015 with haiku):
+Two-minute path from clone to first chat. Requires Python 3.13 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv run python scripts/smoke.py --model haiku
+git clone https://github.com/david-2814/metis && cd metis
+uv sync                                       # resolves the workspace
+
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env    # or OPENAI_API_KEY / OPENROUTER_API_KEY
+
+uv run metis chat .                           # start chatting in this workspace
 ```
+
+Inside the REPL: type your message and hit return. Useful commands:
+
+| Command | Effect |
+|---|---|
+| `@haiku <message>` | Route a single message to a different model (any alias works) |
+| `/model <alias\|id>` | Sticky-switch the active model for the rest of the session |
+| `/model -` | Clear the sticky model and return to workspace default |
+| `/cost` | Per-turn USD breakdown for this session |
+| `/models` | List configured models and their aliases |
+| `/help` | Full command list |
+
+Aliases out of the box: `opus` / `deep`, `sonnet` / `balanced`, `haiku` / `fast`.
+Ctrl-D or `exit` to leave.
+
+Want a TUI instead? `uv run metis tui .` opens the Textual app over the same loop.
+Sanity-check the loop against the real API in under a minute (~$0.015 with haiku):
+`uv run python scripts/smoke.py --model haiku`.
+
+---
+
+## What you get
+
+- **Provider-agnostic by design.** Anthropic (Opus/Sonnet/Haiku), OpenAI (GPT-5 / GPT-5-mini), OpenRouter — one canonical message format, three adapters. Switch models mid-session and tool-use round-trips just work. Cross-provider continuity is covered by a real-API smoke test.
+- **Bounded, portable memory.** `MEMORY.md` (~2 KB) and `USER.md` (~1.5 KB) per workspace, agent-curated as Markdown on disk. Soft cap emits an eviction signal; hard cap rejects the write so the agent has to consolidate. Edit, version, and sync via git.
+- **Explainable routing.** Per-message `@alias` → sticky `/model` → workspace yaml rules → learned patterns → workspace default → global default. Every turn emits one `route.decided` event with the full chain trace. No silent overrides.
+- **Cost in real time.** Decimal-USD per-turn accounting by model and role (planner vs delegated worker). Versioned pricing for retroactive re-pricing. `/cost` in the REPL; `/analytics/cost` over HTTP.
+- **Local-first.** Everything runs on your machine. SQLite trace store + session store under `~/.metis/`. Bounded memory under `<workspace>/.metis/`. The gateway is loopback-only by default; non-loopback binds require the documented hardening checklist.
+- **Specs before code.** Component contracts live in [`docs/specs/`](docs/specs/) and ship before the implementation. 1841 tests cover the contracts end-to-end.
+
+The full repo is a uv-workspace monorepo: [`packages/metis-core/`](packages/metis-core/) is the library (canonical types, events, adapters, routing, tools, memory, sessions, pricing, skills, trace); [`apps/server/`](apps/server/), [`apps/gateway/`](apps/gateway/), and [`apps/cli/`](apps/cli/) are the deployable surfaces. The `metis` console-script ships from `metis-cli`.
 
 ## Try it — first savings number in &lt; 1 hour
 
@@ -105,43 +135,18 @@ The commercial model is ratified at [`docs/specs/pricing.md §5.5.4`](docs/specs
 
 Metis does not resell tokens; provider usage is still billed by Anthropic / OpenAI / OpenRouter. The Wave 15 billing module is Stripe-backed and opt-in via gateway config.
 
-Full synthesis (thesis, validated savings claims, unit-economics intuition, risks) at [`docs/business-model.md`](docs/business-model.md).
-
-## Sales toolkit
-
-The docs a salesperson reads before a buyer conversation. All sit
-under [`docs/sales/`](docs/sales/):
-
-- [`one-pager.md`](docs/sales/one-pager.md) — single-page pitch with the headline numbers, honest caveats, and a deployment-shape grid.
-- [`competitive-comparison.md`](docs/sales/competitive-comparison.md) — Metis vs LiteLLM / Portkey / Helicone: canonical-IR fidelity, learned routing, per-user / per-team attribution, where each competitor wins.
-- [`objection-handling.md`](docs/sales/objection-handling.md) — common buyer objections (Vercel AI SDK, Cursor / Claude Code, LiteLLM-is-good-enough, unproven-savings, operational-load, SOC2, "are you going to be around") with honest responses.
-- [`faq.md`](docs/sales/faq.md) — buyer FAQ: how it works, how it compares, how to evaluate, billing/pricing, what's the savings number, what's the SOC2 story, where data goes, what's next.
-- [`case-study-template.md`](docs/sales/case-study-template.md) plus the industry templates (`startup-saas`, `dev-tools-company`, `content-platform`) — slots to be filled by the first GA customer flow; honest framing with reproducible anonymized numbers.
-
 ## Operations
 
 The operational docs a buyer's SRE will read before signing. All sit
 under [`docs/operations/`](docs/operations/):
 
 - [`quickstart.md`](docs/operations/quickstart.md) — &lt; 1-hour buyer-trial path: kind + helm + `metis trial` end-to-end, with per-key cost rollup and a pitfalls table from validation.
-- [`first-customer-runbook.md`](docs/operations/first-customer-runbook.md) — day-0 to day-30 operator cadence for the first paid cohort, including setup call, mid-trial check-in, conversion conversation, and post-conversion onboarding scripts.
-- [`billing-operator-guide.md`](docs/operations/billing-operator-guide.md) — Stripe test-mode billing operations: disputes, refunds, failed-payment grace, manual plan changes, and audit-event checks.
-- [`launch-day-playbook.md`](docs/operations/launch-day-playbook.md), [`pre-launch-dry-run-checklist.md`](docs/operations/pre-launch-dry-run-checklist.md), and [`support-channels.md`](docs/operations/support-channels.md) — GA day-1 operating rhythm, synthetic-customer dry run, support templates, and SLA expectations.
 - [`incident-response.md`](docs/operations/incident-response.md) — SEV1-SEV4 criteria, on-call alert paths (PagerDuty / Opsgenie / email), first-hour playbook, post-mortem template, and per-failure-mode playbooks for upstream LLM outage, trace-DB corruption, gateway-key compromise, and quota runaway.
 - [`status-page.md`](docs/operations/status-page.md) + [`status-page-config.yaml`](docs/operations/status-page-config.yaml) — two-tier recipe (external UptimeRobot / Statuspage.io / Better Stack against `/healthz`, plus self-hosted Uptime Kuma in-cluster), paste-ready probe config, publish/redact guidelines, and incident comm templates.
 - [`sla-template.md`](docs/operations/sla-template.md) — 99.5% single-region template the buyer can customize for their own downstream-user SLA: service-credit math, exclusions, force-majeure stub (legal-counsel-deferred).
 - [`compliance-overview.md`](docs/operations/compliance-overview.md) + [`soc2-readiness.md`](docs/operations/soc2-readiness.md) — one-page buyer-conversation index and the full SOC2 Trust Service Criteria gap audit (Security CC1-CC9, Availability A1, Confidentiality C1, Processing Integrity PI1, Privacy P1-P8) mapped against shipped + buyer-responsibility evidence. Honest about gaps (CC8 change management, third-party pentest, vendor review, SOC2 auditor); Type 1 readiness target Q3 2026 contingent on buyer underwriting the audit cost.
 
-## What it is
-
-Metis is a developer-oriented AI assistant that runs as a small Python server on your localhost, with thin clients (terminal first; desktop and web later). It sits between Claude Desktop (chat) and Cursor (editor-coupled) in scope — a workspace-aware agent that:
-
-- accumulates **skills, memory, and learned task patterns** so it gets more useful over time,
-- treats LLM providers as **swappable adapters** so you can change models mid-session without losing state,
-- routes each turn through an **explainable, user-overridable** policy chain,
-- tracks **cost and behavior** down to the turn so you can see what your agent is actually doing.
-
-## Why
+## Why we built it
 
 Today's AI dev tools have recurring frictions:
 
@@ -293,6 +298,23 @@ drop-in adoption path; the full agent is the richer optimization path.
 
 The deeper design walkthrough lives in [`docs/technical-design.md`](docs/technical-design.md).
 
+## Project status
+
+Phase 1 + Phase 2 + Phase 2.5 + Phase 3 shipped. Wave 16 reached the GA launch
+milestone for the first paid cohort: transparent gateway, multi-user / per-team
+attribution, evaluator, compliance posture, billing, observability, and launch
+operations are all live. **1841 tests passing** across the four workspace
+members.
+
+The validated cost-savings headline is **delegation at 8.3% – 26.1% better
+cost-per-quality** (19.9% midpoint) across three independent A3 runs on the
+fan-out workload. Slot-4 model selection remains a proof-of-mechanism from
+§A3-rev3 — §A3-rev7 didn't generalize it (zero sonnet picks across 36 routing
+decisions), so the task-domain wedge is deferred post-GA. See
+[`docs/savings-demo.md`](docs/savings-demo.md) for the full evidence and
+[`docs/customer-trial-recipe.md`](docs/customer-trial-recipe.md) for the
+reproducer.
+
 ## What's working today
 
 - **Three provider adapters.** Anthropic (Opus 4.7, Sonnet 4.6, Haiku 4.5), OpenAI (GPT-5, GPT-5-mini), and OpenRouter (catalog fetched at startup, pricing overlaid). Each implements wire translation, 8-class error classification, bounded retry with `retry_after` honoring, cancellation, per-model `AdapterCapabilities`, and `stream()` returning canonical streaming events. Cross-provider continuity is verified by a real-API smoke test that mid-session switches Anthropic→OpenAI→OpenRouter with tool-use round-trip.
@@ -354,7 +376,6 @@ The design is specified before code lands. Start here:
 **Project context** (read these first if you're new):
 
 - [AGENTS.md](AGENTS.md) — current state of the codebase, conventions, gotchas. Load-bearing for AI agents.
-- [docs/STRATEGY.md](docs/STRATEGY.md) — the *why*: cost-optimization thesis, buyer ≠ user, three cost levers, open strategic questions.
 - [docs/project-overview.md](docs/project-overview.md) — vision, principles, architecture, phasing.
 - [docs/technical-design.md](docs/technical-design.md) — current architecture, runtime paths, storage model, and design verdict.
 - [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) — spec/impl gaps tracked from prior reviews; the watchlist of "looks fine but is subtly wrong."
@@ -377,6 +398,6 @@ The design is specified before code lands. Start here:
 
 Apache License 2.0 — see [LICENSE](LICENSE) for the full text.
 
-The OSS substrate in this repo is permissively licensed so a CTO doesn't need legal review to install. The paid-tier overlay (`metis-pro`) lives in a separate private repo under a different license; the architectural boundary between the two is documented in [docs/operations/repo-split-plan.md](docs/operations/repo-split-plan.md).
+The OSS substrate in this repo is permissively licensed so a CTO doesn't need legal review to install. The paid-tier overlay (`metis-pro`) lives in a separate private repo under a different license; the architectural boundary between the two is exposed through the extension Protocols in [`packages/metis-core/src/metis_core/extensions.py`](packages/metis-core/src/metis_core/extensions.py).
 
 Contributions to this repo are accepted under the same Apache-2.0 terms (see [CONTRIBUTING.md](CONTRIBUTING.md)).
