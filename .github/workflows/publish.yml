@@ -27,7 +27,10 @@ jobs:
 
       - name: Build distribution
         working-directory: packages/metis
-        run: uv build
+        # uv build in a workspace member defaults to writing artifacts to the
+        # workspace-root `dist/`, not the member's `dist/`. Pin explicitly so
+        # the Publish step's packages-dir below finds them.
+        run: uv build --out-dir dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
