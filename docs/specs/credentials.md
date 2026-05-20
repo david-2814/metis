@@ -1,6 +1,6 @@
 # Credentials Specification
 
-**Status:** Draft v1 — proposal, awaiting owner sign-off
+**Status:** Shipped v1
 **Last updated:** 2026-05-20
 
 > Defines how Metis resolves LLM-provider API keys at runtime. Today the CLI
@@ -345,21 +345,43 @@ v1.0 never emits it.
 1. **First-run wizard.** Should `metis chat` on a fresh install detect zero
    configured providers and offer to run `metis auth add` interactively? Or
    should the error message be sufficient? Default lean: error message
-   only; wizards have a reputation for being annoying. Surface for owner.
+   only; wizards have a reputation for being annoying. **Resolved v1
+   (2026-05-20):** error message only. `setup_runtime` raises `SetupError`
+   with the canonical "Run `metis auth add anthropic` (or set
+   ANTHROPIC_API_KEY in env / .env)." string. Revisit if the buyer-trial
+   funnel shows the message is missed.
 2. **Validation endpoint costs.** Anthropic's `messages` is a paid endpoint;
    1-token validation costs ~$0.000001 per `metis auth test` call. OpenAI's
    `/v1/models` is free. Worth noting in the user-facing message? "Validating
-   Anthropic key costs ~$0.000001" feels pedantic but transparent.
+   Anthropic key costs ~$0.000001" feels pedantic but transparent. **Resolved
+   v1:** no pre-call disclosure. `--no-validate` is the explicit opt-out.
 3. **Per-team credentials in metis-pro.** The Pro tier may eventually want
    per-team or per-customer upstream credentials (so each customer's
    gateway requests use their own Anthropic key, not the operator's). Out
    of scope for OSS v1.0 — but the Protocol should not preclude it. The
    metis-pro overlay could implement a `TeamScopedCredentialResolver`
-   that wraps the OSS resolver.
+   that wraps the OSS resolver. **v1 surface:** `CredentialResolver`
+   Protocol is structural; Pro overlay can decorate it without touching
+   OSS code.
 4. **Schema_version migrations.** v1.0 ships at schema_version 1. When v1.1
    adds multi-key support (named keys), the schema bumps to 2 with a
    forward-only migration (v1 files load cleanly under v2 code; v2 files
-   refuse to load under v1 code). Confirm policy.
+   refuse to load under v1 code). Confirm policy. **v1 enforcement:**
+   `CredentialsFileSchemaUnknown` rejects any `schema_version` outside
+   `SUPPORTED_SCHEMA_VERSIONS = (1,)`.
+
+### v1 implementation deviations from earlier drafts
+
+- `ProviderSpec` carries `auth_header_name`, `auth_header_value_template`,
+  and `extra_headers` in addition to the spec §6.2 sketch's `env_var` +
+  `validate_endpoint` fields. Anthropic's `x-api-key` + `anthropic-version`
+  header pair doesn't fit the implicit "everyone uses `Authorization:
+  Bearer`" assumption; the spec §6.2 sketch elided the difference.
+- The CLI surface omits `--api-key provider=<value>` (spec §3 step 1). The
+  resolver's `cli_overrides` constructor argument supports it for programmatic
+  use; a top-level CLI flag is deferred until the rare-use bar is met. The
+  resolution chain still honors it via `DefaultCredentialResolver(cli_overrides=…)`,
+  so the spec §3 ordering is intact end-to-end.
 
 ## 10. References
 

@@ -10,7 +10,6 @@ store — the gateway is a transparent proxy, not an agent (gateway.md §2).
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +18,7 @@ from metis.core.adapters.anthropic import AnthropicAdapter
 from metis.core.adapters.openai import OpenAIAdapter
 from metis.core.adapters.openrouter import OpenRouterAdapter
 from metis.core.adapters.protocol import ProviderAdapter
+from metis.core.credentials import CredentialResolver, DefaultCredentialResolver
 from metis.core.events.bus import EventBus
 from metis.core.pricing import DEFAULT_PRICE_TABLE, PriceTable
 from metis.core.routing import EMPTY_POLICY, ModelRegistry, RoutingEngine
@@ -65,6 +65,7 @@ async def setup_gateway_runtime(
     keystore_path: Path,
     db_path: Path | None,
     global_default_model: str,
+    credentials_resolver: CredentialResolver | None = None,
 ) -> GatewayRuntime:
     """Build a fully-wired GatewayRuntime ready for the HTTP app.
 
@@ -78,11 +79,25 @@ async def setup_gateway_runtime(
     except Exception as exc:
         raise GatewaySetupError(f"failed to load keystore {keystore_path}: {exc}") from exc
 
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    resolver = credentials_resolver or DefaultCredentialResolver()
+    # Loud failure on a present-but-unreadable credentials file (mode /
+    # schema mismatch); silent skip when the file is simply absent — env
+    # vars remain the back-compat path. See cli/runtime.py for the parallel
+    # check.
+    if hasattr(resolver, "file_status"):
+        loadable, detail = resolver.file_status()  # type: ignore[attr-defined]
+        if not loadable and detail != "(not present)":
+            raise GatewaySetupError(
+                f"credentials file at {resolver.file_path} is unusable: {detail}"  # type: ignore[attr-defined]
+            )
+    anthropic_key = resolver.get("anthropic")
+    openai_key = resolver.get("openai")
+    openrouter_key = resolver.get("openrouter")
     if not any((anthropic_key, openai_key, openrouter_key)):
-        raise GatewaySetupError("set ANTHROPIC_API_KEY, OPENAI_API_KEY, and/or OPENROUTER_API_KEY")
+        raise GatewaySetupError(
+            "no credentials configured. Run `metis auth add anthropic` "
+            "(or set ANTHROPIC_API_KEY in env / .env)."
+        )
 
     bus = EventBus()
     bus.start()

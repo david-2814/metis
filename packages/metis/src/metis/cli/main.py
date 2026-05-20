@@ -355,6 +355,68 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
 
+    auth = sub.add_parser(
+        "auth",
+        help="Credentials operations (add / list / remove / test / doctor). See docs/specs/credentials.md.",
+    )
+    auth_sub = auth.add_subparsers(dest="auth_command", required=True)
+
+    auth_add = auth_sub.add_parser(
+        "add",
+        help="Interactively add an API key for a provider (writes ~/.metis/credentials.yaml).",
+    )
+    auth_add.add_argument(
+        "provider", help="Canonical provider name (anthropic / openai / openrouter)."
+    )
+    auth_add.add_argument(
+        "--no-validate",
+        action="store_true",
+        default=False,
+        help="Skip the validation ping (offline mode); persist whatever key is entered.",
+    )
+    auth_add.add_argument(
+        "--credentials-file",
+        default=None,
+        help="Override the credentials file path. Default: ~/.metis/credentials.yaml.",
+    )
+
+    auth_sub.add_parser(
+        "list",
+        help="List configured providers with resolution source and truncated key.",
+    )
+
+    auth_remove = auth_sub.add_parser(
+        "remove",
+        help="Remove a provider's entry from the credentials file. Idempotent.",
+    )
+    auth_remove.add_argument("provider", help="Canonical provider name.")
+    auth_remove.add_argument(
+        "--credentials-file",
+        default=None,
+        help="Override the credentials file path. Default: ~/.metis/credentials.yaml.",
+    )
+
+    auth_test = auth_sub.add_parser(
+        "test",
+        help="Ping each configured provider's free endpoint to verify the key works.",
+    )
+    auth_test.add_argument(
+        "provider",
+        nargs="?",
+        default=None,
+        help="Optional provider name; defaults to every configured provider.",
+    )
+
+    auth_doctor = auth_sub.add_parser(
+        "doctor",
+        help="Full diagnostic: file readability, per-provider configuration, recent AUTH errors from trace.",
+    )
+    auth_doctor.add_argument(
+        "--db-path",
+        default=None,
+        help="Trace DB path for the per-provider history block. Default: ~/.metis/metis.db.",
+    )
+
     audit = sub.add_parser(
         "audit",
         help="Audit-log operations (export the audit subset for SIEM ingest).",
@@ -770,6 +832,41 @@ def main(argv: list[str] | None = None) -> int:
                     confirm=args.confirm,
                     db_path=args.db_path,
                 )
+        if args.command == "auth":
+            from pathlib import Path
+
+            from metis.cli.auth import (
+                run_auth_add,
+                run_auth_doctor,
+                run_auth_list,
+                run_auth_remove,
+                run_auth_test,
+            )
+
+            if args.auth_command == "add":
+                credentials_file = (
+                    Path(args.credentials_file).expanduser() if args.credentials_file else None
+                )
+                return run_auth_add(
+                    provider=args.provider,
+                    validate=not args.no_validate,
+                    file_path=credentials_file,
+                )
+            if args.auth_command == "list":
+                return run_auth_list()
+            if args.auth_command == "remove":
+                credentials_file = (
+                    Path(args.credentials_file).expanduser() if args.credentials_file else None
+                )
+                return run_auth_remove(
+                    provider=args.provider,
+                    file_path=credentials_file,
+                )
+            if args.auth_command == "test":
+                return run_auth_test(provider=args.provider)
+            if args.auth_command == "doctor":
+                db_path = Path(args.db_path).expanduser() if args.db_path else None
+                return run_auth_doctor(db_path=db_path)
         if args.command == "audit":
             from metis.cli.audit import run_audit_export_command
 
