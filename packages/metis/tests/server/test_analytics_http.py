@@ -119,11 +119,16 @@ async def seeded_client(runtime, now):
 
 
 async def test_cost_endpoint_default_group_by_model(seeded_client, now):
+    # Window [start-of-today, start-of-tomorrow) so the event at `now` is
+    # always strictly inside, regardless of which UTC hour the test runs in.
+    # An earlier formulation used (hour=0, hour=23) which collapsed the upper
+    # bound onto `now` itself in the UTC 23:xx hour and excluded the event.
+    start_of_today = now.replace(hour=0, minute=0, second=0)
     r = await seeded_client.get(
         "/analytics/cost",
         params={
-            "from": (now.replace(hour=0)).isoformat(),
-            "to": now.replace(hour=23).isoformat(),
+            "from": start_of_today.isoformat(),
+            "to": (start_of_today + timedelta(days=1)).isoformat(),
         },
     )
     assert r.status_code == 200, r.text
@@ -284,11 +289,14 @@ async def quality_seeded_client(runtime, now):
 
 
 async def test_quality_endpoint_round_trip(quality_seeded_client, now):
+    # See test_cost_endpoint_default_group_by_model for the UTC-23h boundary
+    # reasoning behind the [start-of-today, start-of-tomorrow) window.
+    start_of_today = now.replace(hour=0, minute=0, second=0)
     r = await quality_seeded_client.get(
         "/analytics/quality",
         params={
-            "from": now.replace(hour=0).isoformat(),
-            "to": now.replace(hour=23).isoformat(),
+            "from": start_of_today.isoformat(),
+            "to": (start_of_today + timedelta(days=1)).isoformat(),
         },
     )
     assert r.status_code == 200, r.text

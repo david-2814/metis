@@ -6,7 +6,17 @@ authors = [
     { name = "David Ji", email = "david.ji.2814@gmail.com" }
 ]
 license = "Apache-2.0"
+readme = "README.md"
 requires-python = ">=3.13"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "msgspec>=0.19.0",
     "python-ulid>=3.0.0",
@@ -21,6 +31,11 @@ dependencies = [
     "textual>=0.86.0",
     "python-dotenv>=1.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/david-2814/metis"
+Repository = "https://github.com/david-2814/metis"
+Issues = "https://github.com/david-2814/metis/issues"
 
 [project.scripts]
 metis = "metis.cli.main:main"
