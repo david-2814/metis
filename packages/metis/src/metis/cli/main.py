@@ -359,7 +359,9 @@ def build_parser() -> argparse.ArgumentParser:
         "auth",
         help="Credentials operations (add / list / remove / test / doctor). See docs/specs/credentials.md.",
     )
-    auth_sub = auth.add_subparsers(dest="auth_command", required=True)
+    # `required=False` so bare `metis auth` prints its own help block instead
+    # of an argparse usage error. Handled below in the command router.
+    auth_sub = auth.add_subparsers(dest="auth_command", required=False)
 
     auth_add = auth_sub.add_parser(
         "add",
@@ -843,6 +845,12 @@ def main(argv: list[str] | None = None) -> int:
                 run_auth_test,
             )
 
+            if args.auth_command is None:
+                # Re-enter argparse with `--help` so the user sees the same
+                # block they would have gotten from `metis auth --help` —
+                # SystemExits(0) before returning.
+                parser.parse_args(["auth", "--help"])
+                return 0
             if args.auth_command == "add":
                 credentials_file = (
                     Path(args.credentials_file).expanduser() if args.credentials_file else None

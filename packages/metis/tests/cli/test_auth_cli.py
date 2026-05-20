@@ -40,6 +40,18 @@ def test_auth_subcommands_parse() -> None:
         assert args.auth_command == argv[1]
 
 
+def test_bare_auth_prints_help_instead_of_erroring() -> None:
+    """Spec §5: `metis auth` without a subcommand is a discoverability
+    affordance, not an error. argparse's `--help` action raises SystemExit(0)
+    after printing — main() never returns, so we assert on that exit code."""
+    import pytest
+    from metis.cli.main import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["auth"])
+    assert exc.value.code == 0
+
+
 # ---------------------------------------------------------------------------
 # `metis auth add`
 # ---------------------------------------------------------------------------
