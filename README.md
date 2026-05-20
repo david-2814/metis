@@ -260,6 +260,158 @@ The gateway deliberately does **not** compose memory, load skills, run tools,
 or persist conversations. That boundary is the point: the gateway is the
 drop-in adoption path; the full agent is the richer optimization path.
 
+### Routing in depth
+
+Every turn picks a model by walking a **seven-slot priority chain**. The first
+slot that names a model AND passes capability validation wins; the rest of the
+chain is recorded but not consulted. The same chain runs in both the agent
+path and the gateway path — what changes is which slots have inputs.
+
+| Slot | Policy                | Reads from                              | Typical winner when                       |
+| ---- | --------------------- | --------------------------------------- | ----------------------------------------- |
+| 1    | `per_message_override`| `@model` prefix in current user message | User types `@haiku do X`                  |
+| 2    | `manual_sticky`       | Session active model (set via `/model`) | Session was pinned earlier                |
+| 3    | `rule`                | `.metis/routing.yaml` predicates        | First rule predicate matches the turn     |
+| 4    | `pattern`             | `.metis/patterns.db` K-NN match         | Recommendation confidence ≥ gate          |
+| 5    | `delegate_request`    | Worker tier (inside a `delegate()` call)| Planner spawned a worker for this sub-task|
+| 6    | `workspace_default`   | `routing.yaml workspaces[].default`     | Workspace default is set                  |
+| 7    | `global_default`      | `routing.yaml global_default`           | Fallback for everything else              |
+
+Each slot produces one of three verdicts in the recorded chain:
+
+- `not_applicable` — slot has no model (e.g. no `@` prefix); chain continues.
+- `chose` — model passes validation; chain stops, this is the winner.
+- `rejected` — slot named a model but validation failed; chain continues.
+
+**Validation gate.** When a slot names a model, Metis checks `(provider, model)`
+availability and the model's `AdapterCapabilities` against the turn's needs:
+
+```
+not_configured              # model id unknown in the registry
+provider_unavailable        # availability state machine is in cooldown
+no_vision_support           # turn has images, model doesn't
+exceeds_context_window      # estimated tokens > model's max
+no_tool_support             # turn has tools, model can't use them
+no_system_prompt_support    # turn has a system prompt, model can't accept one
+no_structured_output_support
+```
+
+This is what makes the chain **substitutability-safe**: a rule that says "use
+sonnet for refactors" can be overridden by validation when the turn has images
+and sonnet on this provider doesn't support vision. The chain falls through to
+slot 4 / 5 / 6 / 7 automatically; the buyer-visible result is "the next slot
+that *can* handle this turn wins."
+
+**Availability tracking.** The validation gate's `provider_unavailable` check
+reads a small state machine in [`routing/availability.py`](packages/metis/src/metis/core/routing/availability.py).
+Models go Unavailable on 5 consecutive failures within 2 minutes; entire
+providers go Unavailable on any `AUTH` error or on ≥2 `NETWORK` errors within
+30 seconds (a single SSL hiccup no longer blacks out the whole provider).
+States auto-recover after 5 minutes of no attempts, or on the first successful
+call.
+
+**The interesting slot is 4.** When a workspace has `.metis/patterns.db` and
+the pattern store resolver is wired, slot 4 does this:
+
+1. Build a `FingerprintInputs` from the turn (workload id + user text + tool /
+   image signals + token bucket).
+2. Compute a structural fingerprint (or hybrid embedding fingerprint in v2 mode).
+3. Call `PatternStore.recommend(fp)`, which does K-NN against historical
+   outcomes and scores candidates as `(1 − cost_weight) × success_mean +
+   cost_weight × cost_efficiency`.
+4. If the resulting confidence clears `PatternConfig.min_confidence` (default
+   `0.05`), the slot wins and emits `pattern.matched` alongside `route.decided`.
+
+This is how Metis "learns" routing: every turn's outcome (cost, latency, eval
+score) feeds the pattern store, and similar future turns can pick a model that
+historically did well on that fingerprint shape. The pattern slot defers to
+user intent (slots 1-2) and explicit policy (slot 3) so learned behavior never
+silently overrides what the user or operator asked for.
+
+**Per-turn artifact.** Every decision emits exactly one `route.decided` event,
+including on hard failure. The event carries the full chain (all seven slots'
+verdicts), the winner index, elapsed milliseconds, and the chosen model — the
+dashboard's routing breakdown reads from this stream.
+
+The full mechanics live in [`docs/specs/routing-engine.md`](docs/specs/routing-engine.md);
+the policy file shape and predicate set are in §5 there.
+
+### Memory in depth
+
+Two small markdown files per workspace, both bounded:
+
+```
+<workspace>/.metis/MEMORY.md    soft cap 2 KB,  hard cap 4 KB
+<workspace>/.metis/USER.md      soft cap 1.5 KB, hard cap 3 KB
+```
+
+Both are plain text on disk: editable, diffable, git-syncable. `MEMORY.md`
+holds durable workspace facts ("tests live in `tests/`; auth uses bcrypt");
+`USER.md` holds facts about the human ("user prefers Go; on a Mac"). The byte
+budget is intentional — *eviction is a feature*, not a bug. Bounded memory
+forces the agent to decide what's worth keeping; unbounded vector stores tend
+to drift toward retrieval-of-irrelevant fragments.
+
+**Read path.** Every turn, the session manager composes the final system
+prompt as `base + USER.md + MEMORY.md` via [`MemoryStore.assemble_system_prompt`](packages/metis/src/metis/core/memory/store.py).
+Empty files are omitted. The composed memory sits in the *volatile* segment
+of the two-segment system prompt — **after the prompt-cache breakpoint** on
+Anthropic — so writes to MEMORY.md mid-session don't invalidate the cached
+prefix (tools + base persona). That's how the memory persistence stays
+cache-compatible: the agent gets persistent context for ~free per turn.
+
+**Write path — three tools.**
+
+| Tool                  | Purpose                                       |
+| --------------------- | --------------------------------------------- |
+| `memory_add`          | Append a single entry to `MEMORY.md` or `USER.md` |
+| `memory_replace`      | Edit a specific entry (`old_text` → `new_text`)   |
+| `memory_consolidate`  | Replace the entire file with a rewritten compact version |
+
+The decision of *what to remember* is the LLM's, not the framework's. Metis
+provides primitives, surfaces the current contents in the system prompt every
+turn, and includes soft-cap pressure signals in tool results — the agent
+applies its own judgment about durable preferences vs one-off conversation
+context. The base system prompt is intentionally short; the tool descriptions
+themselves carry the only semantic anchoring ("workspace facts" vs "user
+facts", "use sparingly").
+
+**Soft cap vs hard cap.**
+
+- `size < soft_cap` — write succeeds silently.
+- `soft_cap ≤ size < hard_cap` — write succeeds AND the tool result appends
+  `"over soft cap; consider memory_consolidate"`. The `memory.eviction` event
+  fires on the bus as a signal to analytics or future curators. The agent
+  typically calls `memory_consolidate` on its next turn.
+- `size ≥ hard_cap` — write *rejected* with `MemoryHardCapExceeded`. The
+  agent must consolidate before any further adds.
+
+Bytes never leave the file without the agent explicitly rewriting them. No
+silent garbage collection.
+
+**Sharing model — workspace-scoped, not session-scoped, not user-scoped.**
+The `MemoryStore` is keyed only on workspace path:
+
+| Boundary                                                    | Shared? |
+| ----------------------------------------------------------- | ------- |
+| Two sessions in the same workspace                          | Yes — same files |
+| Different workspaces                                        | No — completely separate |
+| Planner session and its delegated worker                    | No — workers have memory tools removed |
+| Multi-user identity (Wave 8 user_id stamping)               | Same files (limitation, not per-user) |
+
+The mental model: **memory is a property of the workspace directory**, not of
+the agent or the user. When you `cd` into a directory and start `metis chat`,
+you inherit the agent's accumulated memory about that codebase.
+
+**Worker isolation.** When a planner spawns a worker via `delegate()`, the
+session manager filters memory tools out of the worker's dispatch and sets
+the worker's `MemoryStore` to `None`. Workers are stateless contractors —
+they finish their sub-task and exit, and they can't pollute the planner's
+persistent memory with sub-task noise.
+
+The full mechanics live in [`docs/specs/memory-store.md`](docs/specs/memory-store.md);
+the cache-breakpoint placement is in [`docs/specs/context-assembler.md §3`](docs/specs/context-assembler.md).
+
 ### Core design choices
 
 - **Canonical message format.** One internal representation for messages, content blocks, and tool calls. Provider adapters serialize to and from each provider's wire format. Adding a provider is writing an adapter, not refactoring the system.
