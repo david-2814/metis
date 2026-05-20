@@ -44,6 +44,7 @@ When working on a spec PR, scan this file for `pending review` entries against s
 - `audit-log.md` — filtered projection of the trace store flagged as security/compliance-relevant: 9-type subset (key lifecycle + quota + policy + eviction + confirmation), JSONL / CSV deterministic export, `metis audit export` CLI. Drafted 2026-05-15; v1 shipped. Retention sweep (12a-2) reads `AUDIT_EVENT_TYPES` to exempt audit rows.
 - `trace-retention.md` — sliding-window retention for the trace DB: `TraceStore.purge_older_than(cutoff, dry_run=True)` with `AUDIT_EVENT_TYPES` exemption, `trace.swept` audit-flagged eviction event, `metis trace prune` CLI (`--days 90` default, `--dry-run` opt-in), optional Helm CronJob template. Drafted 2026-05-15; v1 shipped (Wave 12a-2).
 - `redaction.md` — canonical redaction policy + four-mode `EventRedactor` (`passthrough` / `pseudonymize` / `redact_private` / `aggregate_only`) for trace exports; per-event-type identity-pseudonymization + PRIVATE-tier text-strip rules; layered on top of 12a-2's existing `Redactor` Protocol + `PseudonymizingRedactor` default. Wires `--redact <mode>` into `metis audit export` (12a-1) and adds a dry-run "would affect N events" preflight to `metis user forget`. Drafted 2026-05-15; v1 shipped (Wave 12a-3).
+- `credentials.md` — `CredentialResolver` Protocol + 5-step resolution chain (CLI flag → env var → `~/.metis/credentials.yaml` → `~/.metis/.env` legacy dotenv → OS keychain (deferred)); structured YAML file with mode-0o600 enforcement + atomic write; `metis auth {add,list,remove,test,doctor}` CLI surface; runtime hookup in both `cli/runtime.py` and `gateway/runtime.py`. Drafted + shipped 2026-05-20 (v1).
 
 ## Cross-reference map
 
@@ -82,6 +83,17 @@ When changing a spec, the dependent specs (right column whose left column is the
 ---
 
 ## Change log
+
+### 2026-05-20 — credentials.md v1 shipped: `CredentialResolver` + `metis auth` CLI + runtime hookup
+
+- **Specs:** [`credentials.md`](credentials.md) bumps from Draft v1 to Shipped v1; §9 open questions 1 and 2 resolved (error-message only, no pre-call cost disclosure); §6.2 `ProviderSpec` sketch extended with `auth_header_name` / `auth_header_value_template` / `extra_headers` to accommodate Anthropic's `x-api-key` header shape; deviations recorded in a new "v1 implementation deviations" subsection.
+- **Change:** New module `metis.core.credentials` (`protocol.py`, `providers.py`, `resolver.py`, `file.py`, `errors.py`) implements the 5-step resolution chain (CLI flag → env var → `~/.metis/credentials.yaml` → `~/.metis/.env` legacy dotenv → keychain (deferred)). New CLI surface `metis auth {add,list,remove,test,doctor}` ([`packages/metis/src/metis/cli/auth.py`](../../packages/metis/src/metis/cli/auth.py)) handles setup + diagnostics; `add` uses stdlib `getpass` so keys are not echoed; `list` / `doctor` render only the `<first 8>...<last 4>` truncation per spec §5.2; `test` pings the per-provider validate endpoint. Both [`cli/runtime.py`](../../packages/metis/src/metis/cli/runtime.py) and [`gateway/runtime.py`](../../packages/metis/src/metis/gateway/runtime.py) drop their direct `os.environ.get` calls and instantiate a `DefaultCredentialResolver` instead; resolver injection is accepted via a new `credentials_resolver=` keyword for tests / Pro overlays. File operations enforce mode 0o600 (`CredentialsFileInsecure` raised on load if wider) and use the same write-temp-then-rename pattern as `gateway.keystore_admin.atomic_write_keystore`. Schema_version=1 enforced (`CredentialsFileSchemaUnknown` for unknown versions; forward-only migration). 37 new tests (16 unit + 21 CLI) across `packages/metis/tests/core/credentials/` and `packages/metis/tests/cli/test_auth_cli.py`.
+- **Type:** additive. Existing env-var workflows are unchanged — the resolver finds env vars on step 2 of the chain. A pre-existing `ANTHROPIC_API_KEY` setup with no `~/.metis/credentials.yaml` produces byte-identical behavior. The error message when zero credentials are configured changes from "set ANTHROPIC_API_KEY, OPENAI_API_KEY, and/or OPENROUTER_API_KEY (in env or .env)" to "no credentials configured. Run `metis auth add anthropic` (or set ANTHROPIC_API_KEY in env / .env)." — narrow surface, not a contract change.
+- **References to verify:**
+  - `AGENTS.md` "What works" — new entry pointing at the `metis auth` surface. ✓
+  - `README.md` Quick-start — `metis auth add anthropic` listed first; env-var path preserved as the "12-factor / CI" alternative. ✓
+  - `docs/specs/credentials.md` — status header reads "Shipped v1"; §9 records the v1 resolutions; new "v1 implementation deviations" subsection records the `ProviderSpec` extension. ✓
+- **Status:** verified. Full suite green: `uv run pytest -q` → `1808 passed, 1 skipped` (37 new + 1771 prior).
 
 ### 2026-05-16 — Wave 16 GA launch sync: Phase 3 shipped sign-off, billing self-service, first-customer concierge artifacts, launch collateral, and operational readiness
 

@@ -42,10 +42,19 @@ Two-minute path from clone to first chat. Requires Python 3.13 and [uv](https://
 git clone https://github.com/david-2814/metis && cd metis
 uv sync                                       # resolves the workspace
 
-echo "ANTHROPIC_API_KEY=sk-ant-..." > .env    # or OPENAI_API_KEY / OPENROUTER_API_KEY
+uv run metis auth add anthropic               # interactive; key is never echoed
+                                              # writes ~/.metis/credentials.yaml (mode 0o600)
+                                              # ↓ alternative (12-factor / CI):
+                                              # echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 
 uv run metis chat .                           # start chatting in this workspace
 ```
+
+`metis auth add` is the discoverable default. It validates the key with a
+free / sub-cent ping before persisting. If you prefer the env-var path,
+keep using it — the resolver finds env vars on step 2 of its chain. See
+[`docs/specs/credentials.md`](docs/specs/credentials.md) for the full
+resolution order, file format, and `metis auth list / test / doctor`.
 
 Inside the REPL: type your message and hit return. Useful commands:
 

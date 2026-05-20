@@ -17,6 +17,10 @@ from metis.core.adapters.anthropic import AnthropicAdapter
 from metis.core.adapters.openai import OpenAIAdapter
 from metis.core.adapters.openrouter import OpenRouterAdapter
 from metis.core.adapters.protocol import ProviderAdapter
+from metis.core.credentials import (
+    CredentialResolver,
+    DefaultCredentialResolver,
+)
 from metis.core.eval import Evaluator, register_evaluator
 from metis.core.events.bus import EventBus
 from metis.core.events.envelope import Actor
@@ -91,6 +95,7 @@ async def setup_runtime(
     db_path: str | None,
     global_default_model: str,
     routing_policy_path: str | None = None,
+    credentials_resolver: CredentialResolver | None = None,
 ) -> ChatRuntime:
     """Build a fully-wired ChatRuntime ready for either the REPL or the TUI.
 
@@ -109,12 +114,19 @@ async def setup_runtime(
     if not workspace.is_dir():
         raise SetupError(f"workspace {workspace} is not a directory")
 
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    resolver = credentials_resolver or DefaultCredentialResolver()
+    # Surface a credentials-file mode / schema problem up-front; the
+    # resolver itself silently skips a bad file (resolution chain continues
+    # to legacy .env), which would be confusing if the user just ran
+    # `chmod 644` and is wondering why their key isn't picked up.
+    _check_credentials_file_health(resolver)
+    anthropic_key = resolver.get("anthropic")
+    openai_key = resolver.get("openai")
+    openrouter_key = resolver.get("openrouter")
     if not any((anthropic_key, openai_key, openrouter_key)):
         raise SetupError(
-            "set ANTHROPIC_API_KEY, OPENAI_API_KEY, and/or OPENROUTER_API_KEY (in env or .env)"
+            "no credentials configured. Run `metis auth add anthropic` "
+            "(or set ANTHROPIC_API_KEY in env / .env)."
         )
 
     bus = EventBus()
@@ -400,6 +412,26 @@ async def shutdown_runtime(runtime: ChatRuntime) -> None:
             runtime.session_store.close()
         except Exception:
             pass
+
+
+def _check_credentials_file_health(resolver: CredentialResolver) -> None:
+    """Raise SetupError if the credentials file exists but cannot be loaded.
+
+    A missing file is fine (env-var-only setups). A present-but-mode-wrong
+    or present-but-schema-mismatch file would silently get skipped by the
+    resolver chain, leaving the user wondering why their newly-added key
+    isn't in effect; surface it loudly instead.
+    """
+    if not hasattr(resolver, "file_status"):
+        return
+    loadable, detail = resolver.file_status()  # type: ignore[attr-defined]
+    if loadable:
+        return
+    if detail == "(not present)":
+        return
+    raise SetupError(
+        f"credentials file at {resolver.file_path} is unusable: {detail}"  # type: ignore[attr-defined]
+    )
 
 
 def default_db_path() -> Path:
