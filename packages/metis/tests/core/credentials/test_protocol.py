@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from metis.core.credentials import (
     KNOWN_PROVIDERS,
     CredentialSource,
@@ -41,7 +43,9 @@ def test_provider_spec_carries_env_var_and_validate_endpoint() -> None:
     assert spec.env_var == "ANTHROPIC_API_KEY"
     method, url, body = spec.validate_endpoint
     assert method == "POST"
-    assert url.startswith("https://api.anthropic.com")
+    parsed = urlparse(url)
+    assert parsed.scheme == "https"
+    assert parsed.hostname == "api.anthropic.com"
     assert body is not None
     assert body["max_tokens"] == 1
 
