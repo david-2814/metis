@@ -12,6 +12,7 @@ import ...` resolves from anywhere.
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 from dataclasses import dataclass
 
@@ -40,6 +41,11 @@ class _ScriptedResponse:
     stop_reason: StopReason
     input_tokens: int = 10
     output_tokens: int = 5
+    # Wall-clock delay (seconds) the adapter sleeps before yielding the
+    # MessageComplete. Used by the delegation async tests to make workers
+    # observably overlap (concurrency) and to open a cancellation window.
+    # The sleep is a real `asyncio.sleep`, so it is cancellation-aware.
+    delay_seconds: float = 0.0
 
 
 class _ScriptedAnthropicAdapter:
@@ -80,6 +86,8 @@ class _ScriptedAnthropicAdapter:
         if not self._responses:
             raise AssertionError("scripted adapter ran out of responses")
         scripted = self._responses.pop(0)
+        if scripted.delay_seconds > 0:
+            await asyncio.sleep(scripted.delay_seconds)
         return CanonicalResponse(
             request_id=request.request_id,
             model=request.model,
@@ -101,6 +109,11 @@ class _ScriptedAnthropicAdapter:
         message_id = new_message_id()
 
         yield MessageStart(message_id=message_id, model=request.model)
+        if scripted.delay_seconds > 0:
+            # Cancellation-aware: a turn cancelled mid-delay surfaces here as
+            # asyncio.CancelledError, exactly as a real adapter's in-flight
+            # HTTP request would when its task is cancelled.
+            await asyncio.sleep(scripted.delay_seconds)
         for idx, block in enumerate(scripted.content):
             if isinstance(block, TextBlock):
                 yield TextDelta(message_id=message_id, content_block_index=idx, text=block.text)

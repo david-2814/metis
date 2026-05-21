@@ -208,9 +208,23 @@ def _load_dir(root: Path | str, *, source: SkillSource) -> dict[str, Skill]:
 
 
 def _load_skill(skill_dir: Path, *, source: SkillSource) -> Skill:
-    """Parse + validate the SKILL.md in `skill_dir`."""
+    """Parse + validate the SKILL.md in `skill_dir` (reads from disk)."""
     body_path = skill_dir / SKILL_BODY_FILENAME
     raw = body_path.read_text(encoding="utf-8")
+    return parse_skill(raw, skill_dir=skill_dir, source=source)
+
+
+def parse_skill(raw: str, *, skill_dir: Path, source: SkillSource) -> Skill:
+    """Parse + validate a SKILL.md document string into a `Skill`.
+
+    Shared by the on-disk loader (`_load_skill`) and the `skill_save`
+    builtin, which validates an agent-composed SKILL.md *before* writing it
+    to disk. `skill_dir` supplies the parent-directory name the frontmatter
+    `name` must equal (§4.1) and the `skill_dir` field on the returned
+    `Skill`; `raw` is the full SKILL.md text. Raises `SkillValidationError`
+    on any frontmatter / schema violation.
+    """
+    body_path = skill_dir / SKILL_BODY_FILENAME
     frontmatter, body = _split_frontmatter(raw, body_path)
     errors: list[str] = []
 

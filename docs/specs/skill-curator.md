@@ -1,7 +1,7 @@
 # Skill Curator Specification
 
-**Status:** Draft v1 (not yet implemented; gated on agent-authored skills landing)
-**Last updated:** 2026-05-14
+**Status:** Draft v1 (not yet implemented). The gate — agent-authored skills — **landed 2026-05-20** (`skill_save` tool + `skill.created` event, [`skill-format.md §8.3`](skill-format.md)); the curator is now unblocked as its own implementation task (Phase 2.5b).
+**Last updated:** 2026-05-20
 
 > Periodic auxiliary-model maintenance of **agent-authored** skills. The
 > curator pins what is being used, archives what has gone stale, consolidates
@@ -135,10 +135,12 @@ This spec depends on:
 
 ## 3. Prerequisites
 
-The curator is **gated on agent-authored skills landing first** (Phase 2.5;
-see [`skill-format.md §2.2`](skill-format.md) item 1). The curator
-distinguishes "skills it may touch" from "skills it must not touch" by
-reading `skill.created` events from the trace store:
+The curator is **gated on agent-authored skills landing first** (Phase 2.5).
+That gate is now satisfied: the `skill_save` tool and the `skill.created`
+event landed 2026-05-20 ([`skill-format.md §8.3`](skill-format.md) /
+[`§9.2`](skill-format.md)). The curator distinguishes "skills it may touch"
+from "skills it must not touch" by reading `skill.created` events from the
+trace store:
 
 | `skill.created.source` | Curator may touch? |
 |------------------------|--------------------|
@@ -154,9 +156,12 @@ hand-rolled before this spec landed) is treated as `"manual"` — read-only.
 authoring lands would give it nothing to act on. The implementation order
 is:
 
-1. `skill_save` tool + `skill.created` event with `source="auto_generated"`
-   (Phase 2.5; out of scope for this spec).
-2. Curator (this spec). Lands as Phase 2.5b once step 1 is in.
+1. ✅ **Landed 2026-05-20.** `skill_save` tool + `skill.created` event with
+   `source="auto_generated"` ([`skill-format.md §8.3`](skill-format.md);
+   out of scope for this spec). The `skill.created.source` enum already
+   carries `"curator_generated"` (§8.5), so the curator needs no follow-up
+   catalog change.
+2. Curator (this spec). Lands as Phase 2.5b — now unblocked.
 
 ---
 

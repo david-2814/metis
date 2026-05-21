@@ -77,6 +77,7 @@ from metis.core.sessions.store import Session, SessionStore
 from metis.core.skills.activation import SkillActivationRegistry
 from metis.core.tools.dispatcher import ToolDispatcher
 from metis.core.workers.protocol import (
+    DelegateFailureMode,
     DelegateOutcome,
     DelegateRequest,
     DelegateUsageSummary,
@@ -666,11 +667,12 @@ class UserExplicitModelRejectedError(Exception):
 StreamHandler = Callable[[StreamingEvent], Awaitable[None] | None]
 
 
-# Tool names forbidden inside worker sessions (delegation.md §5.6). Workers
-# never see these in their effective tool list, regardless of what the
-# planner asked for via `allowed_tools`.
+# Tool names forbidden inside worker sessions (delegation.md §5.6;
+# skill-format.md §8.3). Workers never see these in their effective tool
+# list, regardless of what the planner asked for via `allowed_tools`: they
+# cannot delegate, mutate bounded memory, or author skills.
 _WORKER_FORBIDDEN_TOOLS: frozenset[str] = frozenset(
-    {"delegate", "memory_add", "memory_replace", "memory_consolidate"}
+    {"delegate", "memory_add", "memory_replace", "memory_consolidate", "skill_save"}
 )
 
 
@@ -720,6 +722,22 @@ def _stop_reason_to_failure_mode(stop_reason: StopReason):
     return "worker_error"
 
 
+async def _cancel_and_drain(task: asyncio.Task) -> None:
+    """Cancel a worker turn-loop task and wait for it to fully unwind.
+
+    Swallows whatever the task raises on the way out — `asyncio.CancelledError`
+    (scripted adapter) or the adapter-layer `CancelledError` (real adapters
+    convert the in-flight HTTP cancellation). The task still emits its own
+    `turn.cancelled` before unwinding; this just waits for that to land.
+    """
+    if not task.done():
+        task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 class SessionManager:
     """Coordinates routing, adapter calls, and tool dispatch for a session."""
 
@@ -739,7 +757,13 @@ class SessionManager:
         memory_factory: Callable[[str], MemoryStore] | None = None,
         skill_store_factory: Callable[[str], Any] | None = None,
         fingerprint_inputs_hook: Callable[[str, TurnContext], Awaitable[None] | None] | None = None,
+        max_concurrent_workers: int = 4,
+        worker_timeout_seconds: float = 300.0,
     ) -> None:
+        if max_concurrent_workers < 1:
+            raise ValueError("max_concurrent_workers must be >= 1")
+        if worker_timeout_seconds <= 0:
+            raise ValueError("worker_timeout_seconds must be > 0")
         self._registry = registry
         self._routing = routing
         self._dispatcher = dispatcher
@@ -779,6 +803,22 @@ class SessionManager:
         # before submit_turn so the engine's slot 5 reads it from TurnContext
         # (delegation.md §7). Cleared after the worker's session ends.
         self._worker_tier_models: dict[str, str] = {}
+        # Async delegation (delegation.md §6.4 / §6.5). A planner that fans
+        # out N delegate() calls runs them concurrently via the tool
+        # dispatcher; this bound caps how many worker turn-loops execute at
+        # once so wall-clock is max(workers) without unbounded fan-out.
+        self._max_concurrent_workers = max_concurrent_workers
+        self._worker_timeout_seconds = worker_timeout_seconds
+        # Lazily created so the Semaphore binds to the running loop.
+        self._worker_semaphore: asyncio.Semaphore | None = None
+        # parent_session_id -> {worker_session_id: worker turn-loop Task}.
+        # The cancellation cascade walks this to cancel in-flight workers
+        # when the planner turn is cancelled.
+        self._worker_tasks: dict[str, dict[str, asyncio.Task]] = {}
+        # worker_session_id -> the reason its turn was cancelled, so the
+        # worker's own `turn.cancelled` records `timeout` vs `user_cancel`
+        # accurately. Set just before spawn_worker cancels the worker.
+        self._worker_cancel_reasons: dict[str, str] = {}
 
     # ---- Session lifecycle --------------------------------------------
 
@@ -1022,16 +1062,62 @@ class SessionManager:
 
     # ---- Worker spawn (delegation.md §6.1) ----------------------------
 
+    def _worker_sem(self) -> asyncio.Semaphore:
+        """The worker fan-out cap (delegation.md §6.5).
+
+        Created lazily so the `asyncio.Semaphore` binds to the running loop
+        the first time a worker is actually spawned — mirrors the dispatcher's
+        per-session semaphore pattern.
+        """
+        if self._worker_semaphore is None:
+            self._worker_semaphore = asyncio.Semaphore(self._max_concurrent_workers)
+        return self._worker_semaphore
+
+    async def _cancel_child_workers(self, parent_session_id: str) -> None:
+        """Cascade a planner-turn cancel into every in-flight worker session
+        (delegation.md §6.4).
+
+        Cancels each registered worker turn-loop task and awaits it so the
+        worker's own `turn.cancelled` has been emitted before the planner's
+        `turn.cancelled` follows — the cascade is atomic from the trace's
+        point of view. Idempotent: a worker that already finished is awaited,
+        not re-cancelled.
+        """
+        children = self._worker_tasks.get(parent_session_id)
+        if not children:
+            return
+        for task in list(children.values()):
+            await _cancel_and_drain(task)
+
     async def spawn_worker(self, request: DelegateRequest) -> DelegateOutcome:
         """Resolve the tier, spawn a worker session, run it to completion.
 
-        Synchronous-blocking per v1 MVP (delegation.md §2.2.2). Concurrency,
-        cancellation cascade, and worker streaming are deferred.
+        Async/concurrent as of Wave 17 (delegation.md §6.4 / §6.5). The
+        worker's turn loop runs as a tracked `asyncio.Task`; a planner that
+        fans out N `delegate()` calls runs them concurrently (bounded by the
+        `max_concurrent_workers` fan-out cap) so it pays wall-clock for
+        `max(workers)`, not `sum(workers)`.
 
-        Emits `delegate.started` once the worker session exists (so the
-        worker_session_id can be attached). Failure to resolve a model for
-        the tier short-circuits with `no_model_available_for_tier` and emits
-        nothing here — the `delegate()` tool body emits `delegate.failed`.
+        Terminal outcomes beyond normal completion:
+
+          - **timeout** — the worker exceeds `worker_timeout_seconds`. The
+            worker task is cancelled and a `timeout` `DelegateOutcome` is
+            returned; the planner is *not* torn down (it sees a failed
+            delegation and decides what to do).
+          - **cancelled** — the planner turn was cancelled and the cascade
+            (`_cancel_child_workers`), or this dispatch task's own
+            cancellation, reached `spawn_worker`. A `cancelled_by_user`
+            outcome is returned so the `delegate()` tool body still emits
+            `delegate.failed`; the planner's turn loop handles its own
+            `CancelledError` and emits the planner-level `turn.cancelled`.
+
+        Recursive (worker-spawns-worker) delegation and streaming worker
+        output back to the planner remain deferred (delegation.md §3.6).
+
+        Emits `delegate.started` once the worker session exists. Failure to
+        resolve a model for the tier short-circuits with
+        `no_model_available_for_tier` — the `delegate()` tool body emits
+        `delegate.failed`.
         """
         resolved_model = self._registry.model_for_tier(request.tier)
         empty_usage = DelegateUsageSummary(
@@ -1066,31 +1152,54 @@ class SessionManager:
             parent_tool_use_id=request.parent_tool_use_id,
             is_worker=True,
         )
-        self._tool_id_maps[worker_session.id] = ToolIdMap()
-        self._memory_stores[worker_session.id] = None
-        self._skill_stores[worker_session.id] = self._skill_stores.get(request.parent_session_id)
-        self._skill_activations[worker_session.id] = SkillActivationRegistry()
-        self._stable_prompt_cache[worker_session.id] = _worker_system_prompt(
+        wid = worker_session.id
+        parent_id = request.parent_session_id
+        self._tool_id_maps[wid] = ToolIdMap()
+        self._memory_stores[wid] = None
+        self._skill_stores[wid] = self._skill_stores.get(parent_id)
+        self._skill_activations[wid] = SkillActivationRegistry()
+        self._stable_prompt_cache[wid] = _worker_system_prompt(
             base=self._system_prompt,
             task=request.task,
             context=request.context,
         )
-        self._worker_tier_models[worker_session.id] = resolved_model
+        self._worker_tier_models[wid] = resolved_model
 
         allowed_count = len(request.allowed_tools) if request.allowed_tools is not None else 0
         requested_tools = set(request.allowed_tools or ())
         dropped = tuple(sorted(_WORKER_FORBIDDEN_TOOLS & requested_tools))
-
         task_size_tokens = _estimate_task_tokens(request)
+
+        def _outcome(
+            *,
+            success: bool,
+            output: str | dict,
+            error: str | None,
+            failure_mode: DelegateFailureMode | None,
+            usage_summary: DelegateUsageSummary,
+        ) -> DelegateOutcome:
+            """Build a DelegateOutcome with this call's fixed identity fields."""
+            return DelegateOutcome(
+                worker_session_id=wid,
+                success=success,
+                output=output,
+                error=error,
+                failure_mode=failure_mode,
+                usage_summary=usage_summary,
+                dropped_tools=dropped,
+                allowed_tool_count=allowed_count,
+                task_size_tokens=task_size_tokens,
+            )
+
         self._bus.emit(
             make_event(
                 type="delegate.started",
-                session_id=request.parent_session_id,
+                session_id=parent_id,
                 turn_id=None,
                 actor=Actor.SYSTEM,
                 payload=DelegateStarted(
                     tool_use_id=request.parent_tool_use_id,
-                    worker_session_id=worker_session.id,
+                    worker_session_id=wid,
                     tier=request.tier,
                     resolved_model=resolved_model,
                     context_mode=request.context.mode,
@@ -1103,33 +1212,86 @@ class SessionManager:
             )
         )
 
+        worker_task: asyncio.Task | None = None
         try:
-            result = await self.submit_turn(worker_session.id, request.task)
+            # The fan-out cap is acquired BEFORE the worker task is created,
+            # so a queued worker does not start its turn loop until a slot
+            # frees — concurrency stays bounded at `max_concurrent_workers`.
+            async with self._worker_sem():
+                worker_task = asyncio.create_task(
+                    self.submit_turn(wid, request.task),
+                    name=f"metis-worker-{wid}",
+                )
+                self._worker_tasks.setdefault(parent_id, {})[wid] = worker_task
+                done, _pending = await asyncio.wait(
+                    {worker_task}, timeout=self._worker_timeout_seconds
+                )
+                if not done:
+                    # Wall-clock budget exhausted (delegation.md §6.5). Record
+                    # the reason before cancelling so the worker's own
+                    # `turn.cancelled` is stamped `timeout`, not `user_cancel`.
+                    self._worker_cancel_reasons[wid] = "timeout"
+                    await _cancel_and_drain(worker_task)
+                    return _outcome(
+                        success=False,
+                        output="",
+                        error=f"timeout: worker exceeded {self._worker_timeout_seconds:g}s",
+                        failure_mode="timeout",
+                        usage_summary=empty_usage,
+                    )
+        except asyncio.CancelledError:
+            # The planner turn was cancelled — the cascade, or this dispatch
+            # task's own cancellation, reached spawn_worker. Cancel the worker
+            # and return a structured outcome so the `delegate()` tool still
+            # emits `delegate.failed`; the planner's turn loop emits the
+            # planner-level `turn.cancelled` (delegation.md §6.4).
+            if worker_task is not None:
+                await _cancel_and_drain(worker_task)
+            return _outcome(
+                success=False,
+                output="",
+                error="cancelled_by_user",
+                failure_mode="cancelled_by_user",
+                usage_summary=empty_usage,
+            )
+        finally:
+            self._worker_cancel_reasons.pop(wid, None)
+            children = self._worker_tasks.get(parent_id)
+            if children is not None:
+                children.pop(wid, None)
+                if not children:
+                    self._worker_tasks.pop(parent_id, None)
+            self._cleanup_worker(wid)
+
+        # The worker task finished within its budget — interpret its result.
+        try:
+            result = worker_task.result()
         except RoutingError as exc:
-            self._cleanup_worker(worker_session.id)
-            return DelegateOutcome(
-                worker_session_id=worker_session.id,
+            return _outcome(
                 success=False,
                 output="",
                 error=f"worker routing failed: {exc}",
                 failure_mode="worker_error",
                 usage_summary=empty_usage,
-                dropped_tools=dropped,
-                allowed_tool_count=allowed_count,
-                task_size_tokens=task_size_tokens,
+            )
+        except asyncio.CancelledError:
+            # The worker was cancelled directly (not via this spawn_worker's
+            # own cancellation) — e.g. a client attached only to the worker.
+            # The planner is not torn down (delegation.md §6.4 second bullet).
+            return _outcome(
+                success=False,
+                output="",
+                error="cancelled_by_user",
+                failure_mode="cancelled_by_user",
+                usage_summary=empty_usage,
             )
         except Exception as exc:
-            self._cleanup_worker(worker_session.id)
-            return DelegateOutcome(
-                worker_session_id=worker_session.id,
+            return _outcome(
                 success=False,
                 output="",
                 error=f"worker_error: {exc}",
                 failure_mode="worker_error",
                 usage_summary=empty_usage,
-                dropped_tools=dropped,
-                allowed_tool_count=allowed_count,
-                task_size_tokens=task_size_tokens,
             )
 
         usage = DelegateUsageSummary(
@@ -1150,18 +1312,12 @@ class SessionManager:
         else:
             error = None
 
-        self._cleanup_worker(worker_session.id)
-
-        return DelegateOutcome(
-            worker_session_id=worker_session.id,
+        return _outcome(
             success=success,
             output=result.assistant_text,
             error=error,
             failure_mode=failure_mode,
             usage_summary=usage,
-            dropped_tools=dropped,
-            allowed_tool_count=allowed_count,
-            task_size_tokens=task_size_tokens,
         )
 
     def _cleanup_worker(self, worker_session_id: str) -> None:
@@ -1355,7 +1511,7 @@ class SessionManager:
                         self._emit_turn_cancelled(
                             session_id,
                             turn_id,
-                            reason="user_cancel",
+                            reason=self._worker_cancel_reasons.get(session_id, "user_cancel"),
                             partial_llm_calls=llm_calls,
                             partial_tool_calls=tool_calls,
                         )
@@ -1473,6 +1629,25 @@ class SessionManager:
                     )
                     self._store.add_message(session_id, tool_msg)
                 parent_event_id = llm_started_event
+        except asyncio.CancelledError:
+            # The turn was cancelled mid-flight — typically during tool
+            # dispatch (e.g. a planner cancelled while a `delegate()` call's
+            # workers are in flight, or a worker cancelled by the cascade /
+            # its wall-clock timeout). For a planner this cascades into every
+            # in-flight worker session (delegation.md §6.4); for a worker it
+            # just terminates the worker. The adapter-layer `CancelledError`
+            # path (cancel during the LLM stream) is handled above in
+            # `except AdapterError`, which re-raises a plain Exception and so
+            # never reaches here.
+            await self._cancel_child_workers(session_id)
+            self._emit_turn_cancelled(
+                session_id,
+                turn_id,
+                reason=self._worker_cancel_reasons.get(session_id, "user_cancel"),
+                partial_llm_calls=llm_calls,
+                partial_tool_calls=tool_calls,
+            )
+            raise
         finally:
             wall_time = asyncio.get_event_loop().time() - loop_start
 

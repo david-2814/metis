@@ -1,10 +1,11 @@
 # Delegation Specification
 
-**Status:** v1 MVP shipped (Wave 10). Streaming worker output to the planner,
-cancellation cascade across parent + workers, recursive (worker-spawns-worker)
-delegation, structured-output schema validation, and per-tier worker timeout
-are deferred to later waves.
-**Last updated:** 2026-05-15
+**Status:** v1 MVP shipped (Wave 10); async/concurrent workers, the
+cancellation cascade across parent + workers, and the per-worker wall-clock
+timeout shipped Wave 17 (§3.7). Streaming worker output to the planner,
+recursive (worker-spawns-worker) delegation, and structured-output schema
+validation remain deferred to later waves.
+**Last updated:** 2026-05-20
 
 > **What landed (Wave 10):** The `delegate()` built-in tool is registered for
 > planner sessions whose active model has `can_delegate: true` in the registry.
@@ -172,17 +173,10 @@ delegation isn't in use — no separate "delegation-enabled" UI mode.
 
 The Wave-10 implementation lands the spec end-to-end with these features
 **not** wired (intentionally; named here so reviewers don't search for them
-in the code):
+in the code). Async/concurrent workers, the cancellation cascade, and the
+per-worker wall-clock timeout were the v1 MVP deferrals **resolved in
+Wave 17** — see §3.7; the list below is the remaining deferred surface.
 
-- **Async / concurrent workers.** v1 is synchronous: the planner's tool
-  dispatcher blocks on each `delegate()` call until the worker session ends.
-  Fan-out via parallel tool calls in a single assistant message is permitted
-  by the tool dispatcher's existing contract but not exercised in the v1
-  test surface; a per-turn concurrent-workers cap is deferred (§14.3).
-- **Cancellation cascade.** A planner cancel does not propagate into an
-  in-flight worker in v1. The worker runs to completion and the planner's
-  next assistant turn integrates the result. Top-down atomic cancel
-  (§6.4 / streaming-protocol.md §6.4) is a later wave.
 - **Streaming worker output back to the planner.** v1 blocks until the
   worker emits `stop_reason: end_turn`. Streaming partial worker output
   through the planner's WebSocket subscription (the
@@ -199,8 +193,6 @@ in the code):
   worker's terminal text is returned to the planner unchanged. The
   `output_schema_validation_failed` failure mode is reserved in the
   catalog for the follow-up implementation.
-- **Worker wall-clock timeout.** No `timeout_seconds` parameter is exposed;
-  `max_tokens` caps spend but not wall time (§14.5).
 - **Router-decided delegation.** Slot 5 still only fires inside a worker
   re-entry. The router does **not** wrap a top-level turn in a worker on
   its own (§14.6).
@@ -214,6 +206,38 @@ surface — `delegate()` tool, worker `Session` record, routing slot 5
 re-entry, full cost attribution, `delegate.*` events, isolation (memory /
 skills / `delegate` tool / trust-persistence-suppression for worker
 prompts).
+
+### 3.7 Wave 17: async/concurrent workers
+
+Three of the §3.6 v1 deferrals are resolved. The motivation is the
+delegation cost shape (§1): a planner that fans out N mechanical sub-tasks
+should pay wall-clock for `max(workers)`, not `sum(workers)`.
+
+- **Async / concurrent workers.** Each worker's turn loop runs as a tracked
+  `asyncio.Task`. A planner that emits multiple `delegate()` tool_use blocks
+  in one assistant message has them dispatched concurrently by the tool
+  dispatcher's existing `asyncio.gather` contract, so the worker turn loops
+  overlap. A per-manager **fan-out cap** (`SessionManager.max_concurrent_workers`,
+  default 4) bounds how many worker turn loops execute at once via an
+  `asyncio.Semaphore` acquired before each worker task is created — queued
+  workers do not start until a slot frees. Resolves §14.3.
+- **Cancellation cascade.** `SessionManager` registers every in-flight
+  worker task under its parent session id. When a planner turn is cancelled
+  the turn loop's `except asyncio.CancelledError` handler cancels each child
+  worker task and awaits it, so every worker's `turn.cancelled` is emitted
+  *before* the planner's `turn.cancelled` follows — the cascade is atomic
+  from the trace's point of view (§6.4). A worker cancelled this way returns
+  a `cancelled_by_user` `DelegateOutcome`, so the `delegate()` tool body
+  still emits `delegate.failed`.
+- **Per-worker wall-clock timeout.** `SessionManager.worker_timeout_seconds`
+  (default 300s) bounds each worker's wall-clock. On expiry the worker task
+  is cancelled and the `delegate()` call returns `failure_mode="timeout"`
+  (a new `DelegateFailureMode` value); the planner is **not** torn down — it
+  integrates the failed delegation and continues. Resolves §14.5.
+
+Still deferred: streaming worker output to the planner, recursive delegation,
+`output_schema` validation, router-decided delegation, worker pattern-store
+integration (the remaining §3.6 list).
 
 ---
 
@@ -303,8 +327,10 @@ here for completeness:
 | Worker output didn't match `output_schema`  | false   | `"output_schema_validation_failed"`  | raw output              |
 | No model available for `tier`               | false   | `"no_model_available_for_tier"`      | empty                   |
 | User cancelled the planner mid-delegation   | false   | `"cancelled_by_user"`                | partial if any          |
+| Worker exceeded its wall-clock timeout      | false   | `"timeout"`                          | empty                   |
 
-The `insufficient_context` shape lives in
+The `timeout` failure mode (Wave 17, §3.7 / §6.5) is additive to the v1
+catalog. The `insufficient_context` shape lives in
 [`routing-engine.md §6.6.1`](routing-engine.md) and is referenced by the
 typed `delegate.failed.insufficient_context_request` field on the bus
 event.
@@ -501,13 +527,16 @@ the failure modes in §4.4):
 Cross-references [`streaming-protocol.md §6.4`](streaming-protocol.md);
 not redefined here. Summary:
 
-- Cancel originating on the planner → planner's delegate-tool body
-  signals the worker's session manager → worker's in-flight LLM call /
-  tool dispatch cancels per the standard three-case model
-  ([`streaming-protocol.md §6.2`](streaming-protocol.md)) → worker
-  emits `session.ended` with `disposition: cancelled` → delegate-tool
-  body emits `delegate.failed` with `failure_mode: cancelled_by_user`
-  → planner's `turn.cancelled` follows.
+- Cancel originating on the planner → the planner's turn loop catches the
+  `CancelledError`, walks its registry of in-flight worker tasks, cancels
+  each one, and **awaits it** → each worker's in-flight LLM call / tool
+  dispatch cancels per the standard model
+  ([`streaming-protocol.md §6.2`](streaming-protocol.md)) → each worker
+  emits `turn.cancelled` → the `delegate()` tool body emits
+  `delegate.failed` with `failure_mode: cancelled_by_user` → the planner's
+  `turn.cancelled` follows. The planner awaits the workers before emitting
+  its own `turn.cancelled`, so the cascade is **atomic from the trace's
+  point of view**: every worker terminator precedes the planner terminator.
 - Cancel originating *directly on a worker* (a client attached only to
   the worker session via §11): same worker-side cancellation, but the
   planner is **not** notified. The planner's delegate-tool call sees a
@@ -520,11 +549,30 @@ The atomic cascade only fires for top-down cancellation. Worker-only
 cancel is treated as the worker failing — a normal failure mode the
 planner already needs to handle.
 
+**Implementation (Wave 17, §3.7).** `SessionManager` keeps a
+`{parent_session_id: {worker_session_id: asyncio.Task}}` registry; the
+turn loop's `except asyncio.CancelledError` handler calls
+`_cancel_child_workers(session_id)`. This catches the cancellation whether
+it arrives during the planner's LLM stream or during tool dispatch (the
+`asyncio.gather` over `delegate()` calls). `delegate.failed` is still
+emitted for each worker because `spawn_worker` converts the worker
+cancellation into a `cancelled_by_user` `DelegateOutcome` rather than
+letting the raw `CancelledError` escape the tool body.
+
 ### 6.5 Worker timeout
 
-v1 does not impose a wall-clock timeout on workers beyond `max_tokens`
-(per `delegate()` arg) and the planner's user being able to Ctrl-C.
-Adding a per-tier worker timeout is an open question (§14.5).
+Each worker runs under a configurable wall-clock budget,
+`SessionManager.worker_timeout_seconds` (default 300s — generous; the
+intent is to catch a genuinely hung worker, not to bound normal work).
+`max_tokens` (per `delegate()` arg) still caps spend independently.
+
+On expiry the worker task is cancelled, the worker emits `turn.cancelled`
+with `reason: timeout`, and `spawn_worker` returns a `DelegateOutcome`
+with `failure_mode: timeout` — a `DelegateFailureMode` value added in
+Wave 17. The `delegate()` tool body emits `delegate.failed` with that
+mode. A timeout does **not** cascade to the planner: the planner sees one
+failed delegation, integrates it, and continues its own turn. Per-tier
+timeout overrides remain a future refinement (§14.5).
 
 ---
 
@@ -835,16 +883,13 @@ planner's further LLM calls. This may surprise a user who expects "cancel
 
 ### 14.3 Concurrent delegation (one planner, many workers)
 
-The tool dispatcher's existing concurrency contract
-([`tool-dispatcher.md`](tool-dispatcher.md)) allows multiple tool calls
-to run in parallel within a single turn. A planner emitting four
-`delegate()` calls in one assistant message could spawn four worker
-sessions concurrently.
-
-v1: allowed, no explicit cap. The cap that exists in practice is the
-tool dispatcher's per-turn concurrent-tool limit. Worker sessions
-contribute to that limit equally with other tools. Whether to add a
-per-turn `max_concurrent_workers` knob is a Phase-4 polish question.
+**Resolved in Wave 17 (§3.7).** Concurrent worker turn loops now run under
+an explicit `SessionManager.max_concurrent_workers` fan-out cap (default 4),
+independent of the tool dispatcher's per-session concurrent-tool limit. A
+planner emitting four `delegate()` calls runs the workers concurrently and
+pays wall-clock for `max(workers)`. The cap is a single manager-wide
+`asyncio.Semaphore`; per-tier or per-turn cap granularity remains a possible
+future refinement.
 
 ### 14.4 Streaming worker output to the planner
 
@@ -857,10 +902,12 @@ and is mirrored here. v1: blocking.
 
 ### 14.5 Worker wall-clock timeout
 
-Should `delegate()` accept a `timeout_seconds` argument that cancels the
-worker if exceeded? The cost cap (`max_tokens`) bounds spend but not
-wall time. v1: no, deferred. Add only if real workloads hit
-wall-time-runaway scenarios.
+**Partially resolved in Wave 17 (§3.7 / §6.5).** A manager-wide
+`worker_timeout_seconds` (default 300s) bounds every worker; expiry yields
+`delegate.failed` with `failure_mode: timeout`. Still open: a per-tier
+override (a `fast` worker plausibly warrants a tighter budget than a `deep`
+one) and a per-call `timeout_seconds` argument on `delegate()` itself. Add
+those only if real workloads show one global budget is too coarse.
 
 ### 14.6 Router-decided delegation
 
@@ -928,6 +975,9 @@ workers is a UX choice the spec doesn't pin; the API surface
 | 2026-05-14 | Worker streaming back to planner deferred (blocking only in v1)           | Partial tool-result state isn't modeled in the canonical IR; deferred per `streaming-protocol.md §12.2`.   |
 | 2026-05-14 | Router-decided delegation (slot 5 firing outside `delegate()` call) deferred | Predicate-based routing can't distinguish "delegate-worthy" sub-tasks from non-delegatable ones; the LLM has the context. |
 | 2026-05-14 | `delegate.started` gains additive `allowed_tool_count` and `dropped_tools` fields | Lets the dashboard explain why a worker behaved as if it had fewer tools than the planner asked for.       |
+| 2026-05-20 | Wave 17: worker turn loops run as tracked `asyncio.Task`s; concurrent fan-out under a `max_concurrent_workers` cap (default 4) | The delegation cost shape only pays off if a planner fanning out N sub-tasks pays wall-clock for `max(workers)`, not `sum(workers)`. |
+| 2026-05-20 | Wave 17: planner cancel cascades into in-flight workers; planner awaits worker `turn.cancelled` before its own | Top-down atomic cancel (§6.4); the worker terminators precede the planner terminator in the trace. |
+| 2026-05-20 | Wave 17: per-worker wall-clock timeout (`worker_timeout_seconds`, default 300s) → `failure_mode: timeout` | A hung worker must not block the planner indefinitely; a timeout fails one delegation without tearing down the planner. |
 
 ---
 

@@ -32,6 +32,7 @@ DelegateFailureMode = Literal[
     "output_schema_validation_failed",
     "no_model_available_for_tier",
     "cancelled_by_user",
+    "timeout",
 ]
 
 
