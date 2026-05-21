@@ -2,9 +2,10 @@
 
 See docs/specs/routing-engine.md.
 
-Surface: per-message override, manual sticky, configured rules, workspace
-default, global default. PATTERN_RECOMMENDATION and DELEGATE_REQUEST slots
-exist in the chain but always return NOT_APPLICABLE — filled in in later phases.
+Surface: the 7-slot policy chain — per-message override, manual sticky,
+configured rules, pattern recommendation (slot 4, wired to the per-workspace
+PatternStore), delegate-request re-entry (slot 5, wired for worker sessions),
+workspace default, global default.
 """
 
 from metis.core.routing.availability import (

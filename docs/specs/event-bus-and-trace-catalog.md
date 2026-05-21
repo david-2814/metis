@@ -238,7 +238,7 @@ Events without a parent (e.g., `session.created`, `turn.started` from user input
 | Class            | Meaning                                                           | Examples                                |
 |------------------|-------------------------------------------------------------------|-----------------------------------------|
 | `private`        | Contains user prompts, file content, command outputs.             | `turn.started`, `tool.completed` body   |
-| `user_controlled`| User explicitly chose to share/sync this.                         | `skill.created` (skill body)            |
+| `user_controlled`| User explicitly chose to share/sync this.                         | `eval.completed` (judge rationale)      |
 | `pseudonymous`   | Structural metadata, no raw user content.                         | `routing.policy_invalid`, fingerprint tags |
 | `aggregatable`   | Safe to include in cross-user aggregations with k-anonymity.      | Pattern outcome rollups, `feedback.explicit` |
 
@@ -901,21 +901,36 @@ exhaustion surfaces via `tool.failed` (§6.5) per §5.2.6.
 
 #### `skill.created`
 
-> **Sensitivity:** `user_controlled`
+> **Sensitivity:** `pseudonymous`
 > **Phase:** 2.5
-> **Actor:** SYSTEM | USER
-> **Parent:** `session.ended` (auto-generation) or none (manual)
+> **Actor:** SYSTEM
+> **Parent:** none — emitted from the `skill_save` tool, outside the
+>   `tool.called` → `tool.completed` chain
 
 ```python
 {
-    "skill_id": str,
-    "source": Literal["manual", "auto_generated", "imported"],
-    "source_session_id": str | None,
-    "size_tokens": int,
-    "security_scan_result": Literal["clean", "warning", "blocked"] | None,
-    "security_scan_findings": list[str],
+    "skill_id": str,            # = Skill.name (= the skill directory name)
+    "skill_version": str,       # SHA-256(body)[:16] — matches skill.loaded
+    "source": Literal["manual", "auto_generated", "imported", "curator_generated"],
+    "size_tokens": int,         # estimated body tokens (chars // 4)
 }
 ```
+
+Emitted when a skill is authored into a skills root. The agent authors
+skills via the `skill_save` tool (`source="auto_generated"`,
+[`skill-format.md §8.3`](skill-format.md)). `"curator_generated"` is
+reserved for the skill curator ([`skill-curator.md §8.5`](skill-curator.md)),
+`"imported"` for a future third-party import path, and `"manual"` for an
+operator-authored SKILL.md — no event fires for a manually-placed file in
+v1, so the *absence* of a `skill.created` event is itself the "manual"
+signal the curator keys on.
+
+The payload carries structural metadata only — never the body text — so
+the floor sensitivity is `pseudonymous`, matching `skill.loaded`. The
+earlier draft of this event carried `source_session_id` /
+`security_scan_result` / `security_scan_findings`; the shipped v1 drops
+them — the import / security-scan path they served is deferred
+([`skill-format.md §2.2`](skill-format.md)).
 
 #### `skill.modified`
 
@@ -989,11 +1004,15 @@ exhaustion surfaces via `tool.failed` (§6.5) per §5.2.6.
 
 ### 6.8 Delegate domain
 
-> *Status: v1 MVP shipped (Wave 10). The `delegate()` built-in tool, the
-> worker-session lifecycle, and the three event types below are wired and
-> tested. Streaming, cancellation cascade, recursive delegation, and
-> structured-output schema validation remain deferred per
-> [`delegation.md §2.2`](delegation.md). The routing chain's
+> *Status: v1 MVP shipped (Wave 10); async/concurrent workers, the
+> cancellation cascade, and the per-worker wall-clock timeout shipped
+> Wave 17 ([`delegation.md §3.7`](delegation.md)) — the latter adds the
+> `timeout` value to `delegate.failed.failure_mode` (additive). The
+> `delegate()` built-in tool, the worker-session lifecycle, and the three
+> event types below are wired and tested. Streaming worker output to the
+> planner, recursive delegation, and structured-output schema validation
+> remain deferred per [`delegation.md §3.6`](delegation.md). The routing
+> chain's
 > `delegate_request` policy slot has existed since Phase 1 and continues to
 > report `not_applicable` for top-level sessions; it now reports
 > `chose: <tier model>` inside worker re-entry per
@@ -1061,7 +1080,7 @@ The cost summary is **derived** — analytics joins worker spend back via
     "worker_session_id": str | None,   # None when failure precedes session creation
     "failure_mode": Literal["worker_error", "max_tokens_exceeded", "insufficient_context",
                             "output_schema_validation_failed", "no_model_available_for_tier",
-                            "cancelled_by_user"],
+                            "cancelled_by_user", "timeout"],
     "error_message": str,
     "worker_total_cost_usd": Decimal,  # partial spend before failure; serialized as string
     "pricing_version": str,

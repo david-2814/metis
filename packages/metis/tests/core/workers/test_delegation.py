@@ -123,7 +123,9 @@ async def test_delegate_tool_hidden_when_planner_cannot_delegate(bus, event_log,
     assert "delegate" not in {d.name for d in tools}
 
 
-async def test_worker_session_does_not_see_delegate_or_memory_tools(bus, event_log, workspace):
+async def test_worker_session_does_not_see_delegate_memory_or_skill_tools(
+    bus, event_log, workspace
+):
     adapter = _ScriptedAnthropicAdapter(
         [_ScriptedResponse(content=[TextBlock(text="ok")], stop_reason=StopReason.END_TURN)]
     )
@@ -136,14 +138,18 @@ async def test_worker_session_does_not_see_delegate_or_memory_tools(bus, event_l
         parent_tool_use_id="tu_1",
         is_worker=True,
     )
-    tools = manager._effective_tool_definitions(worker_session)
-    names = {d.name for d in tools}
+    worker_names = {d.name for d in manager._effective_tool_definitions(worker_session)}
+    planner_names = {d.name for d in manager._effective_tool_definitions(session)}
     await bus.drain()
     await bus.stop()
-    assert "delegate" not in names
-    assert "memory_add" not in names
-    assert "memory_replace" not in names
-    assert "memory_consolidate" not in names
+    assert "delegate" not in worker_names
+    assert "memory_add" not in worker_names
+    assert "memory_replace" not in worker_names
+    assert "memory_consolidate" not in worker_names
+    # skill_save is planner-only (skill-format.md §8.3): filtered for the
+    # worker, but registered and visible to the top-level planner.
+    assert "skill_save" not in worker_names
+    assert "skill_save" in planner_names
 
 
 async def test_planner_delegates_and_worker_completes(bus, event_log, workspace):

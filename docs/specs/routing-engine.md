@@ -1,9 +1,24 @@
 # Routing Engine Specification
 
-**Status:** Draft v3.2
-**Last updated:** 2026-05-08
+**Status:** v3.3 — shipped; this revision re-syncs the spec to the Wave-16 implementation
+**Last updated:** 2026-05-20
 **Owner:** _your name_
 
+> **v3.3 changes (2026-05-20 — implementation sync):** Spec re-synced to the
+> shipped routing engine. Slots 4 (`PATTERN_RECOMMENDATION`) and 5
+> (`DELEGATE_REQUEST`) are wired, not stubs — §4.1/§4.2 corrected (slot 5 is
+> always present in the chain, reporting `not_applicable` outside a delegation
+> re-entry; it is not "skipped"). `team_budget_remaining_lt` predicate added
+> to the closed set (§5.3). The v1-stub status of `cost_today_exceeds_usd`,
+> `skills_matching_message_includes`, and `file_extensions_in_context` is now
+> stated explicitly (§5.3–§5.4) — these are accepted at load but never match
+> until their backing infra lands. §6 trimmed to the routing-owned surface:
+> the `delegate()` tool contract is now canonical in
+> [`delegation.md`](delegation.md), and §6.1–§6.8 are cross-reference stubs
+> (section numbers preserved so existing references resolve). Auxiliary-event
+> implementation status annotated (§7.3). Stale `metis-core` source path and
+> the `~/.yourtool/` config-dir placeholder corrected.
+>
 > **v3.2 changes:** Cancellation event sequence cross-reference updated to
 > point at streaming-protocol's three-case model (§3.4).
 >
@@ -22,7 +37,10 @@
 > require all three slots (§5.7). Mid-turn multiple swaps last-write-wins (§3.3).
 > Various nits.
 >
-> *Throughout: paths shown use `~/.yourtool/` as a placeholder for the final config directory.*
+> *Throughout: the per-workspace routing config lives at
+> `<workspace>/.metis/routing.yaml`. Older drafts of this spec used a
+> `~/.yourtool/` placeholder; remaining `~/.metis/`-style paths denote the
+> user-global config directory.*
 
 ---
 
@@ -122,12 +140,20 @@ For each turn, at turn start, the engine runs policies in fixed order. The first
 2. MANUAL_STICKY          — session.active_model set explicitly via /model
 3. CONFIGURED_RULES       — first-match-wins over the rules list
 4. PATTERN_RECOMMENDATION — pattern store result with confidence ≥ threshold
-5. DELEGATE_REQUEST       — only present in the chain during a delegation re-entry; see §6
+5. DELEGATE_REQUEST       — resolved tier model on a delegation re-entry; see §6
 6. WORKSPACE_DEFAULT      — workspace-scoped default
 7. GLOBAL_DEFAULT         — hardcoded fallback
 ```
 
-(5) is conditional — it's in the chain only during a delegation. During normal turns it's skipped.
+All seven slots are evaluated in this fixed order on every turn — the chain
+shape does not change between turn types. Slot 5 (`DELEGATE_REQUEST`) only
+*proposes a candidate* inside a worker session's re-entry into the chain
+(§6.9); on a normal top-level turn it reports `not_applicable` (it is not
+skipped). Likewise slots 3 and 4 propose a candidate only when a rule
+matches / the pattern store returns a confident recommendation, and report
+`not_applicable` otherwise. The `route.decided.chain` trace (§7) is the
+prefix of slots evaluated up to and including the winner, so a turn won by
+slot 3 records three entries and a turn won by slot 7 records all seven.
 
 ### 4.2 Why this order
 
@@ -178,7 +204,7 @@ The capability gates follow the "only require what we'll use" principle: a turn 
 
 `supports_thinking` is *not* validated. Models that don't support thinking simply have thinking blocks dropped at adapter serialization time (per §7.3 of the canonical format spec).
 
-> *This requires `AdapterCapabilities` (defined in `canonical-message-format.md` §7.2) to declare `supports_tools`, `supports_system_prompt`, and `supports_structured_output`. The canonical format spec must be updated to add these fields. Existing entries that don't yet declare them default to `true` for `supports_tools` and `supports_system_prompt` (the common case for both Anthropic and OpenAI) and `false` for `supports_structured_output`.*
+> *This relies on `AdapterCapabilities` (defined in `canonical-message-format.md` §7.2) declaring `supports_tools`, `supports_system_prompt`, and `supports_structured_output`. Those fields have shipped on the canonical type. Entries that don't declare them default to `true` for `supports_tools` and `supports_system_prompt` (the common case for both Anthropic and OpenAI) and `false` for `supports_structured_output`. The engine's `_validate()` ([`routing/engine.py`](../../packages/metis/src/metis/core/routing/engine.py)) reads them via `ModelRegistry.capabilities_for()`.*
 
 ### 4.5 Availability state machine
 
@@ -208,7 +234,7 @@ A successful call against a `(provider, model)` clears that scope's Unavailable 
 
 **Why NETWORK is not immediate (refined 2026-05-16):** an earlier revision blacked the whole provider out on a single NETWORK error, on the theory that DNS / connectivity issues affect every model identically. In practice transient SSL handshake errors (`ssl.SSLError: SSLV3_ALERT_BAD_RECORD_MAC`, `httpx.ConnectError` mid-TLS-renegotiation, one-off TCP RST) reach the adapter as `ErrorClass.NETWORK` but represent a single failed connection rather than a sustained provider-side outage. The 5-minute auto-clear made one transient hiccup look like a 5-minute provider blackout. The 2-within-30-seconds threshold filters the one-off from the real outage: a genuine DNS / regional-network failure will produce a second NETWORK error well inside 30 seconds, while a one-off TLS glitch resolves on the next call.
 
-The thresholds (`_NETWORK_PROVIDER_ESCALATION_THRESHOLD`, `_NETWORK_PROVIDER_ESCALATION_WINDOW_SECONDS`) live in [`availability.py`](../../packages/metis-core/src/metis_core/routing/availability.py) as module constants; AUTH still escalates immediately because a misconfigured key cannot be a one-off.
+The thresholds (`_NETWORK_PROVIDER_ESCALATION_THRESHOLD`, `_NETWORK_PROVIDER_ESCALATION_WINDOW_SECONDS`) live in [`availability.py`](../../packages/metis/src/metis/core/routing/availability.py) as module constants; AUTH still escalates immediately because a misconfigured key cannot be a one-off.
 
 #### 4.5.2 Auto-clear
 
@@ -282,8 +308,13 @@ If the file is invalid (yaml syntax error, unknown predicate, unknown model), th
 
 ### 5.1 File location and shape
 
+The per-workspace routing config lives at `<workspace>/.metis/routing.yaml`.
+It is read fresh at the start of every turn (§4.8); a missing file is
+equivalent to an empty policy (the chain falls straight through to the
+defaults).
+
 ```yaml
-# ~/.yourtool/routing.yaml
+# <workspace>/.metis/routing.yaml
 schema_version: 1
 
 global_default: anthropic:claude-sonnet-4-6
@@ -294,11 +325,14 @@ tiers:
   balanced: anthropic:claude-sonnet-4-6
   deep: anthropic:claude-opus-4-7
 
-# Pattern store weighting (§5.5)
+# Pattern store weighting (§5.5) + optional v2 hybrid-fingerprint opt-in
 pattern:
   cost_weight: 0.05       # 0.0 = pure quality, 1.0 = pure cost (default 0.05)
   min_confidence: 0.05    # default 0.05 — scaled to match cost_weight=0.05 (see §5.5)
   min_sample_size: 5
+  # fingerprint_version: v2                            # opt in to the hybrid embedding fingerprint
+  # embedding_provider: openai:text-embedding-3-small  # required when v2
+  # embedding_alpha: 0.6                               # cosine/jaccard blend (pattern-store.md §16)
 
 rules:
   - name: "fast for commits"
@@ -345,7 +379,7 @@ Within `rules`, top-to-bottom, first match wins. Each rule has a unique `name` (
 
 Within `workspaces.{path}.rules`, same semantics, but workspace rules run *before* global rules. Workspace `default` and `pattern` config replace the corresponding global section for that workspace (full replacement, not merge — v1 simplification).
 
-**Workspace `tiers` must define all three slots (`fast`, `balanced`, `deep`) or be omitted entirely.** A partial workspace tier map is rejected at validation time. Rationale: silent gaps in the tier map cause `delegate(tier="balanced")` calls inside the workspace to fail with `no_model_available_for_tier` for non-obvious reasons. Forcing all-or-nothing makes the failure mode at config time, not at runtime. If a workspace truly only wants to override one tier, it must restate the others (typically by copying the global mapping).
+**Workspace `tiers` must define all three slots (`fast`, `balanced`, `deep`) or be omitted entirely.** A partial workspace tier map is rejected at validation time. Rationale: an all-or-nothing tier map makes a misconfiguration a config-time error rather than a non-obvious runtime `no_model_available_for_tier`. If a workspace truly only wants to override one tier, it must restate the others (typically by copying the global mapping). **Note:** as of v1 the `routing.yaml` `tiers:` block is parsed and validated but not consumed by delegation — tier resolution reads the model registry instead. See §6.10.
 
 ### 5.3 Predicate set
 
@@ -366,6 +400,7 @@ Predicates evaluate against state captured at routing time, which is the start o
 | `workspace_path_matches`           | The session's workspace path, set at session creation.                    |
 | `time_of_day_between`              | Wall clock at routing time, in the user's local timezone.                 |
 | `cost_today_exceeds_usd`           | The accumulated cost across the user's sessions since UTC midnight.       |
+| `team_budget_remaining_lt`         | The team's remaining monthly budget (cap minus month-to-date spend) at turn start, in USD. Set by the gateway harness on team-bound requests; `None` — and the predicate `False` — on the agent path or when no team-level cap is configured (multi-user.md §6.1). |
 
 #### 5.3.2 Predicate reference
 
@@ -382,11 +417,23 @@ Predicates evaluate against state captured at routing time, which is the start o
 | `workspace_path_matches`           | regex         | Workspace's absolute path matches.                                |
 | `time_of_day_between`              | [HH:MM,HH:MM] | Local time falls in window. Wraps midnight: `[22:00, 06:00]`.     |
 | `cost_today_exceeds_usd`           | float         | Sum of today's session costs (UTC midnight).                      |
+| `team_budget_remaining_lt`         | float         | Team's remaining monthly budget is below the threshold, in USD (multi-user.md §6.1). |
 | `any_of`                           | [predicate]   | Logical OR.                                                       |
 | `all_of`                           | [predicate]   | Logical AND.                                                      |
 | `not`                              | predicate     | Logical NOT.                                                      |
 
 A `when` block with multiple top-level keys is implicitly `all_of`.
+
+> **v1 implementation status.** Three predicates are accepted at load time so
+> policy can be written forward-compatibly, but their backing infrastructure
+> is not yet wired — they evaluate to `False` on every turn, so a rule whose
+> `when` block depends on one of them never matches:
+> `skills_matching_message_includes` (no skill-description index is built at
+> routing time), `file_extensions_in_context` (no tool-touched-file tracker),
+> and `cost_today_exceeds_usd` (no daily-cost accumulator — see §5.4).
+> `team_budget_remaining_lt` is *not* in this category: it matches whenever
+> the gateway supplies the team-budget headroom, and is `False` only when
+> there is genuinely no team binding (the agent path, pre-multi-user keys).
 
 > *Note on `skills_matching_message_includes`: prior drafts of this spec called this predicate `skills_loaded_includes`. That name was misleading because skills are loaded by the context assembler, which runs **after** routing — at routing time no skills are "loaded" yet. The current name reflects what's actually checked: a fast match against the skill description index.*
 
@@ -400,7 +447,22 @@ Daily budget $5.00 exceeded ($5.42 today). Routing per "budget circuit breaker" 
 
 Banner clears at UTC midnight reset.
 
+> **v1 status.** The predicate is part of the closed set and is accepted by
+> the policy loader, but the daily-cost accumulator that would feed it is not
+> wired yet (§5.3.2 "v1 implementation status"). Until it lands the predicate
+> evaluates to `False`, so a `cost_today_exceeds_usd` rule never fires and the
+> banner above never appears. The behavior described here is the intended
+> contract for when the accumulator ships.
+
 ### 5.5 Pattern recommendations and the cost/quality knob
+
+> **Status.** Slot 4 (`PATTERN_RECOMMENDATION`) is wired end-to-end: the
+> engine consults the per-workspace `PatternStore` when a `pattern_store_resolver`
+> and `fingerprint_inputs_builder` are injected, and emits `pattern.matched`
+> on a win. The store mechanics — fingerprinting, K-NN retrieval, the v2
+> hybrid embedding path — are specified in
+> [`pattern-store.md`](pattern-store.md); this section covers only how the
+> routing chain *consumes* a recommendation.
 
 The pattern policy queries the pattern store for the K nearest fingerprints (default K=10) to the current turn's fingerprint. Among the K neighbors, it groups by `outcome.primary_model`. For each model M in the cluster, it computes:
 
@@ -447,7 +509,14 @@ The `min_confidence` default was lowered from 0.3 → 0.05 in the 2026-05-14 wav
 
 When both a rule and a pattern recommendation are available, the rule wins (per §4.1). The pattern recommendation is *not* discarded — it's recorded in the `route.decided` event as a deferred policy with its own evaluation.
 
-In Phase 3, an opt-in feature surfaces high-confidence pattern disagreement to the user:
+**Pattern-disagreement surfacing — not yet implemented.** The opt-in feature
+described in the rest of this section is specified but unbuilt as of Wave 16:
+the `pattern_disagreement` config block is not parsed by the policy loader,
+the `/route override` and `/route ignore` commands do not exist, and the
+`route.overridden` / `pattern.override_dismissed` events are not in the
+catalog. The design is retained here as the intended contract.
+
+An opt-in feature surfaces high-confidence pattern disagreement to the user:
 
 ```yaml
 pattern_disagreement:
@@ -480,6 +549,7 @@ At load time, the router validates:
 7. Every regex compiles.
 8. No `name` is duplicated (synthetic names excepted).
 9. `pattern.cost_weight` is in `[0.0, 1.0]`; `min_confidence` in `[0.0, 1.0]`; `min_sample_size ≥ 1`.
+10. `pattern.fingerprint_version` is `v1` or `v2`; `pattern.embedding_alpha` is in `[0.0, 1.0]`; `fingerprint_version: v2` requires `pattern.embedding_provider` to be set (the v2 hybrid fingerprint — pattern-store.md §16).
 
 A failure in any of these causes the file to be rejected as a whole — last-known-good is used. `/rules check` prints validation errors.
 
@@ -498,220 +568,135 @@ These constraints are how the engine stays predictable. Users wanting richer log
 
 ## 6. The `delegate()` contract
 
-> **Phase note.** The `delegate()` tool ships in **Phase 4**. The routing chain's `DELEGATE_REQUEST` policy slot (§4.1, position 5), however, exists from **Phase 1** as a stub that always returns `not_applicable`. This asymmetry is deliberate: the routing pipeline's shape is fixed across phases, and adding the slot's behavior later is filling in a stub rather than refactoring the chain. The catalog's `delegate.*` events likewise ship in Phase 4 (per `event-bus-and-trace-catalog.md` §6.8). Phase 1 implementations should:
+> **Status (Wave 16).** The `delegate()` tool shipped in Wave 10 (delegation
+> v1 MVP). [`delegation.md`](delegation.md) is the **canonical contract** for
+> the tool signature, the worker session lifecycle, context handoff
+> (`ContextSpec`), the worker system prompt, return values, failure modes,
+> and cost attribution. This section is trimmed to the surface the **routing
+> engine** owns: the `DELEGATE_REQUEST` chain slot, worker re-entry into the
+> policy chain (§6.9), capability validation of the resolved tier model, and
+> tier definitions (§6.10).
 >
-> - Include `DELEGATE_REQUEST` in the policy chain enumeration so trace events have a consistent shape.
-> - Not register the `delegate` tool with any model, regardless of `can_delegate` configuration.
-> - Skip §6.1 through §6.10 of this document for implementation purposes; they describe the Phase 4 contract.
+> §6.1–§6.8 are retained as cross-reference stubs. Their section numbers are
+> cited from `delegation.md`, `tool-dispatcher.md`, and
+> `event-bus-and-trace-catalog.md`, so the numbering is kept stable even
+> though the canonical text now lives in `delegation.md`.
+>
+> The routing chain's `DELEGATE_REQUEST` slot (§4.1, position 5) existed from
+> Phase 1 as a stub returning `not_applicable`; delegation v1 filled in the
+> stub. The slot still reports `not_applicable` on every non-worker turn.
 
 ### 6.1 Tool signature
 
-The `delegate` tool is registered automatically when a session's active model is on a tier marked as `can_delegate: true` (typically only `balanced` and `deep`). Its schema:
-
-```python
-delegate(
-    tier: Literal["fast", "balanced", "deep"],
-    task: str,                            # focused instruction for the worker
-    context: ContextSpec,                 # see §6.3
-    output_schema: dict | None = None,    # optional JSON schema for return
-    allowed_tools: list[str] | None = None,  # default: same as planner's
-    max_tokens: int | None = None,        # cap on worker output
-) -> DelegateResult
-```
-
-Workers cannot delegate. The tool is not registered for sessions invoked as workers. This prevents fan-out and recursion in v1.
+→ Canonical: [`delegation.md §4.1`](delegation.md). The
+`delegate(tier, task, context, output_schema?, allowed_tools?, max_tokens?)`
+tool is registered for a planner session whose active model has
+`can_delegate: true` in the model registry (§6.8). It is never registered for
+worker sessions — no recursive delegation in v1.
 
 ### 6.2 What the worker is
 
-A worker is a fresh session — same architecture, same context assembler, same tool dispatcher — instantiated with curated context and run to completion. It has:
-
-- Its own session id (tagged `parent_session_id` and `parent_tool_use_id`).
-- The workspace's MEMORY.md and USER.md loaded.
-- Skills loaded per the same logic as the planner's session (descriptions always; bodies on demand).
-- Tools per `allowed_tools` (default: same set as the planner).
-- A worker-specific system prompt instructing it to be terse, focused, and to return rather than ask for clarification.
+→ Canonical: [`delegation.md §5`](delegation.md). A worker is a fresh
+`Session` (`is_worker=true`, with `parent_session_id` / `parent_tool_use_id`
+set, workspace inherited) running the same turn-locked loop (§3.2) as any
+other session.
 
 ### 6.2.1 Worker side-effects: what's read-only
 
-To prevent workers from mutating state the planner is reasoning about, workers operate read-only against the following:
-
-- **Memory.** Workers can read MEMORY.md and USER.md (these are loaded into the worker's system prompt) but cannot modify them. Memory-mutating tools (`memory_add`, `memory_replace`, `memory_consolidate`) are not registered for worker sessions, regardless of `allowed_tools`. Rationale: the planner has the broader context to judge what's worth remembering. A worker shouldn't change the planner's durable view of the world from inside a sub-task.
-- **Skills.** Workers can read and load skills (`load_skill` is available). Workers cannot create, modify, or delete skill files. Skill auto-generation (Phase 2.5) does not run from worker sessions.
-- **Routing config.** Workers cannot edit `routing.yaml` (no rule-management tool exists in v1, but if such a tool exists in a future phase, it is not registered for workers).
-
-What workers *can* do (via their normal tool access): read files, write files, run shell commands, call any other tool the planner had — these are task-shaped operations, not durable system state.
+→ Canonical: [`delegation.md §5.4–§5.6`](delegation.md) and the isolation
+summary in delegation.md §10. Workers are read-only against memory (the
+`memory_*` tools are not registered for worker sessions), skills (load only,
+no authoring), and `routing.yaml`.
 
 ### 6.2.2 Worker visibility in the UI
 
-By default, worker sessions are not listed in `/history` or the dashboard's session list. They are visible:
-
-- As cost rollups under the parent session (per §6.7).
-- By drilling into a parent session's `delegate.completed` event, which carries `worker_session_id` and links to a full worker session view.
-- Via `/history --include-workers`, which surfaces them as nested entries under their parents.
-
-Rationale: at scale a single planner session can spawn many workers; flattening them into history clutters the user's view of their own work. They remain reachable for analytics and debugging.
-
-Worker sessions are persisted with the same retention as parent sessions and follow the same trace-event rules (with `is_worker: true` flagged on `llm.call_started` events per the event catalog).
+→ Canonical: [`delegation.md §5`](delegation.md) and delegation.md §14.9.
+Worker sessions are hidden from `/history` by default and surface as cost
+rollups under the parent session.
 
 ### 6.3 Context handoff: two modes only
 
-`ContextSpec` is one of:
-
-```python
-# Mode 1: minimal — task brief only.
-{"mode": "minimal"}
-
-# Mode 2: explicit — references the planner specifies.
-{"mode": "explicit", "include": [...]}
-```
-
-There is no "auto" mode in v1. The planner must decide what context the worker needs. This forces the planner to think about handoff, which produces more reliable results than letting the system guess.
-
-`include` items in mode 2 can be:
-
-```python
-{"type": "file",         "path": "src/auth.ts"}                   # worker re-reads via file tool
-{"type": "file_range",   "path": "src/auth.ts", "lines": [40,80]} # only those lines
-{"type": "tool_result",  "tool_use_id": "tu_01HZ100"}             # past tool call result
-{"type": "message",      "message_id": "01HZ_..."}                # specific past turn
-{"type": "inline",       "label": "decision", "text": "..."}      # planner-authored note
-```
-
-Files referenced by path are *not* inlined at delegation time — they appear as references the worker re-reads through the file tool. This keeps planner→worker handoff cheap and ensures the worker reads current file content.
-
-Tool results, message content, and inline notes *are* inlined (the planner has already curated them).
+→ Canonical: [`delegation.md §4`](delegation.md). `ContextSpec` is `minimal`
+(task brief only) or `explicit` (planner-specified `include` references).
+There is no `auto` mode in v1 — the planner decides what the worker needs.
 
 ### 6.4 When to use which mode
 
-The planner's system prompt teaches:
-
-- **`minimal`** — for self-contained mechanical tasks. "Format this JSON." "Generate a UUID." "Convert these dates from ISO to RFC 2822." The worker doesn't need session context.
-- **`explicit`** — for tasks needing prior context. "Refactor the function defined in `src/auth.ts:authenticate`. Use the JWT approach we decided on (see message `01HZ_...`)."
-
-If the planner is unsure which to use, default to `explicit` with the relevant references. A worker can fail and report `insufficient_context` (§6.6) — the planner can then retry with more references or take over.
+→ Canonical: [`delegation.md §4`](delegation.md). `minimal` for
+self-contained mechanical sub-tasks; `explicit` when the worker needs curated
+prior context. When unsure, default to `explicit`.
 
 ### 6.5 The system prompt the worker sees
 
-```
-You are a sub-agent invoked by another agent (the "planner") to handle
-a specific sub-task. You are running on model {worker_model}.
-
-Your task:
-{task}
-
-{context_summary}
-
-Guidelines:
-- Focus only on this task. Do not pursue tangents.
-- If you need information not provided, use the available tools to fetch it.
-- Do not ask the user for clarification. If clarification is needed, return
-  a structured response indicating what's missing.
-- Be terse. The planner will see your final output and integrate it.
-- {if output_schema:} Your final response must conform to this schema:
-  {output_schema}
-- Return when complete. Do not produce a summary unless asked.
-
-Available tools: {allowed_tools}
-```
-
-`{context_summary}` lists included files and references with brief descriptions.
+→ Canonical: [`delegation.md §5.7`](delegation.md). The worker runs under a
+sub-agent system prompt instructing it to stay focused, be terse, fetch
+missing information via tools, and return rather than ask the user for
+clarification.
 
 ### 6.6 Return value and failure modes
 
-```python
-class DelegateResult:
-    success: bool
-    output: str | dict           # text by default; dict if output_schema specified
-    error: str | None
-    usage_summary: dict          # tokens, cost, turn count, tool calls made
-    worker_session_id: str       # for trace lookup
-```
-
-Failure modes:
-
-| Failure                                     | success | error                                | output                  |
-|---------------------------------------------|---------|--------------------------------------|-------------------------|
-| Worker raised an unhandled error            | false   | `"worker_error: {message}"`          | partial output if any   |
-| Worker hit `max_tokens`                     | false   | `"max_tokens_exceeded"`              | truncated output        |
-| Worker requested missing context            | false   | `"insufficient_context"`             | InsufficientContextRequest (see below) |
-| Worker output didn't match `output_schema`  | false   | `"output_schema_validation_failed"`  | raw output              |
-| No model available for `tier`               | false   | `"no_model_available_for_tier"`      | empty                   |
-| User cancelled the planner mid-delegation   | false   | `"cancelled_by_user"`                | partial if any          |
-
-The planner decides what to do: retry with `tier: "deep"`, take over directly, or surface to the user.
+→ Canonical: [`delegation.md §4.3–§4.4`](delegation.md). `DelegateResult`
+carries `success` / `output` / `error` / a usage rollup / `worker_session_id`.
+The one failure mode the **routing** path itself produces is
+`no_model_available_for_tier` (§6.9); the rest (`worker_error`,
+`max_tokens_exceeded`, `insufficient_context`, `output_schema_validation_failed`,
+`cancelled_by_user`, `timeout`) originate inside the worker session or its
+spawn wrapper.
 
 #### 6.6.1 The `insufficient_context` schema
 
-When a worker determines it cannot complete the task without more information, it returns a structured request rather than free text. This lets the planner programmatically retry with additional context rather than re-prompting itself.
-
-```python
-class InsufficientContextRequest:
-    missing: list[MissingItem]
-    summary: str                  # one-sentence human-readable description
-
-class MissingItem:
-    type: Literal["file", "file_range", "message", "tool_result", "decision", "other"]
-    ref: str                      # path, message_id, tool_use_id, or human-readable label
-    hint: str                     # what the worker would do with this; helps planner judge
-
-# Example:
-{
-    "missing": [
-        {"type": "file", "ref": "src/auth/jwt.ts",
-         "hint": "need to see the current JWT signing logic to refactor it"},
-        {"type": "decision", "ref": "token expiration policy",
-         "hint": "need to know the agreed-upon expiration window"}
-    ],
-    "summary": "Need the current JWT implementation and the team's expiration policy."
-}
-```
-
-The worker's system prompt teaches it to return this shape via a special `_request_context` tool that it calls to terminate the worker session with this payload. The planner sees the structured request as the `output` field of the `DelegateResult` when `error == "insufficient_context"`.
-
-Planner behavior on `insufficient_context`:
-
-1. Inspect `missing`. If references can be resolved (files exist, decisions are recorded in MEMORY.md, etc.), retry `delegate()` with those references added to `context.include`.
-2. If references cannot be resolved (the worker needs information neither side has), the planner either takes over the task directly or surfaces to the user.
+→ Canonical: [`delegation.md §4.4`](delegation.md). A worker that cannot
+proceed without more information returns a structured
+`InsufficientContextRequest` rather than free text, so the planner can
+programmatically retry with targeted references.
 
 ### 6.7 Cost accounting
 
-Worker token usage is attributed to the worker session, but rolled up into the parent session's totals for user-facing displays. Trace events include both `session_id` (the worker's own) and `parent_session_id`. The dashboard shows planner cost vs. worker cost broken out:
-
-```
-Session sess_42 — total $0.34
-├─ planner (anthropic:claude-opus-4-7): $0.21, 12 turns
-└─ workers: $0.13, 4 delegations
-   ├─ tu_01HZ_a → anthropic:claude-haiku-4-5: $0.02, 1 turn
-   ├─ tu_01HZ_b → anthropic:claude-haiku-4-5: $0.04, 2 turns
-   ├─ tu_01HZ_c → openai:gpt-5-mini: $0.03, 1 turn
-   └─ tu_01HZ_d → anthropic:claude-haiku-4-5: $0.04, 2 turns
-```
+→ Canonical: [`delegation.md §8`](delegation.md). Worker token usage is
+attributed to the worker session and rolls up under the planner via the
+analytics projection (`/analytics/cost?group_by=parent_session` /
+`group_by=is_worker`). The planner's own `turn.completed.usage.cost_usd`
+measures planner tokens only; worker cost lives on `delegate.completed`.
 
 ### 6.8 The model registry's `can_delegate` flag
 
-```yaml
-# part of the model registry config
-models:
-  anthropic:claude-opus-4-7:
-    tier: deep
-    can_delegate: true
-  anthropic:claude-sonnet-4-6:
-    tier: balanced
-    can_delegate: true
-  anthropic:claude-haiku-4-5:
-    tier: fast
-    can_delegate: false
-```
-
-`can_delegate: false` means the `delegate` tool is not registered when this model is the active session model. Enforced at session start; updated when the active model changes.
+→ Canonical: [`delegation.md §4.2`](delegation.md). `ModelEntry.can_delegate`
+([`routing/registry.py`](../../packages/metis/src/metis/core/routing/registry.py))
+gates whether the `delegate` tool is registered when that model is the active
+planner model. Default `false`; a worker session never sees the tool
+regardless of the flag.
 
 ### 6.9 Re-entry into the routing pipeline
 
-When `delegate(tier=...)` is called, the routing engine resolves `tier` to a concrete model by consulting the `tiers` config. That resolved model is the worker's candidate. It enters the policy chain at the `DELEGATE_REQUEST` slot.
+This is the canonical definition of the `DELEGATE_REQUEST` slot, cross-referenced
+by [`delegation.md §7`](delegation.md).
 
-Capability validation still applies. If the resolved tier model fails validation (e.g., the task involves images and the fast model is text-only), the engine upgrades along `fast → balanced → deep` and re-validates at each step. If the requested tier was already `deep` and `deep` fails, or if `deep` itself fails after upgrades, `delegate` returns `no_model_available_for_tier` — there is no tier above `deep` to escalate to.
+When a planner emits a `delegate(tier=...)` call,
+`SessionManager.spawn_worker`
+([`sessions/manager.py`](../../packages/metis/src/metis/core/sessions/manager.py))
+resolves `tier` to a concrete model via the model registry's `delegation_tier`
+field (`ModelRegistry.model_for_tier`, §6.10). If no registered model carries
+that tier, `spawn_worker` short-circuits with `no_model_available_for_tier`
+and no worker session is created — this case never reaches the routing engine.
 
-The worker's turn itself is still turn-locked (§3.2). The worker session can have multiple internal LLM calls and tool cycles, all on the same model.
+Otherwise a worker `Session` is created, and its first turn enters the policy
+chain with the resolved model carried on `TurnContext.worker_tier_model`. The
+chain runs end-to-end (§6.9.1); slots 1–4 typically report `not_applicable`,
+and slot 5 (`DELEGATE_REQUEST`) proposes the resolved tier model as its
+candidate.
+
+The resolved tier model is **validated like any other candidate** (§4.4 —
+capability and availability). If it passes, slot 5 wins. If it fails — e.g.
+the worker's task carries images and the resolved `fast` model is text-only,
+or the model's provider is Unavailable — slot 5 is `rejected` and the chain
+**falls through** to `WORKSPACE_DEFAULT` / `GLOBAL_DEFAULT`, exactly as for
+any other rejected candidate. There is **no** automatic `fast → balanced →
+deep` upgrade inside the engine in v1 (earlier drafts of this spec described
+one; it was never implemented). A user wanting capability-driven escalation
+encodes it as a configured rule (§4.6) or relies on the workspace default.
+
+The worker's turn is itself turn-locked (§3.2): the model chosen at the
+worker's turn start owns all of the worker's LLM calls and tool cycles.
 
 #### 6.9.1 Why the full chain runs for workers
 
@@ -721,7 +706,8 @@ The alternative — skipping inapplicable policies in worker mode — produces a
 
 ### 6.10 Tier definitions
 
-`tier` is an abstraction over concrete models, mapped per-workspace via `tiers` config (§5.1).
+`tier` is a coarse abstraction over concrete models — `fast` / `balanced` /
+`deep`:
 
 | Tier      | Intent                                                                   |
 |-----------|--------------------------------------------------------------------------|
@@ -729,7 +715,22 @@ The alternative — skipping inapplicable policies in worker mode — produces a
 | `balanced`| Capable enough for most coding work. Default for medium tasks.           |
 | `deep`    | The most capable available. Used for planning and reasoning.             |
 
-Tier resolution falls back through workspace → global → registry default. A misconfigured tier (no model assigned) causes `delegate(tier=X)` to return `no_model_available_for_tier`.
+In the shipped implementation, tier resolution is a **model-registry**
+lookup. Each `ModelEntry` may declare a `delegation_tier`
+([`routing/registry.py`](../../packages/metis/src/metis/core/routing/registry.py)),
+and `ModelRegistry.model_for_tier(tier)` returns the first registered model
+whose `delegation_tier` matches. A tier with no registered model causes
+`delegate(tier=X)` to return `no_model_available_for_tier` (§6.9).
+
+> **Spec/impl note.** The `tiers:` block in `routing.yaml` (§5.1, §5.2) is
+> parsed and validated into `RoutingPolicy.tiers` / `WorkspaceScope.tiers`
+> (a `TierMap`) but is **not yet consumed** by delegation — `spawn_worker`
+> reads the model registry, not the routing policy. Per-workspace tier
+> overrides written in `routing.yaml` therefore do not take effect in v1;
+> the block is retained as forward-compatible config. Reconciling the two
+> tier sources — having `spawn_worker` consult the workspace-scoped
+> `TierMap`, or dropping the `routing.yaml` block in favor of registry
+> config — is tracked as an open question (§11).
 
 ---
 
@@ -754,17 +755,19 @@ class RouteDecidedEvent:
     elapsed_ms: float
 
 class PolicyEvaluation:
-    policy: str                       # PER_MESSAGE_OVERRIDE | MANUAL_STICKY | RULE
-                                      # | PATTERN | DELEGATE_REQUEST
-                                      # | WORKSPACE_DEFAULT | GLOBAL_DEFAULT
-    verdict: Verdict                  # NOT_APPLICABLE | DEFERRED | REJECTED | CHOSE
-    candidate_model: str | None       # what this policy proposed (None if NOT_APPLICABLE)
+    policy: str                       # per_message_override | manual_sticky | rule
+                                      # | pattern | delegate_request
+                                      # | workspace_default | global_default
+                                      # (lowercase snake_case wire literals —
+                                      #  RoutingPolicyName in events/payloads.py)
+    verdict: Verdict                  # not_applicable | deferred | rejected | chose
+    candidate_model: str | None       # what this policy proposed (None if not_applicable)
     reason: str                       # human-readable
 
     # Mode-specific extras
-    rule_name: str | None             # for RULE
-    confidence: float | None          # for PATTERN
-    pattern_alternatives: list[ModelOption] | None  # for PATTERN
+    rule_name: str | None             # for the rule slot
+    confidence: float | None          # for the pattern slot
+    pattern_alternatives: list[PatternAlternative] | None  # for the pattern slot
 
     # Validation outcome (if candidate_model was set)
     validation_failure: str | None    # "no_vision_support" | "exceeds_context_window"
@@ -773,7 +776,7 @@ class PolicyEvaluation:
                                       # | "provider_unavailable" | "not_configured"
                                       # | None if validation passed
 
-class ModelOption:
+class PatternAlternative:
     model: str
     score: float                      # the aggregate score from §5.5
     sample_size: int                  # how many neighbors used this model
@@ -784,6 +787,15 @@ class Verdict(StrEnum):
     REJECTED       = "rejected"         # candidate failed validation, chain continued
     CHOSE          = "chose"            # this policy won
 ```
+
+> **`deferred` is currently never emitted.** The engine evaluates policies in
+> order and **stops at the first winner** — lower-priority policies are not
+> evaluated and do not appear in `chain`. So `chain` is always the prefix of
+> slots up to and including the `chose` entry, and a policy outranked by an
+> earlier winner simply never runs. The `deferred` verdict is reserved for
+> the opt-in pattern-disagreement feature (§5.6), which would deliberately
+> evaluate and record the pattern slot even when a rule wins; until that
+> ships, every chain entry is `not_applicable`, `rejected`, or `chose`.
 
 ### 7.2 Why one event, not many
 
@@ -797,18 +809,18 @@ Earlier drafts had separate events for `routing.constraint_failure`, `routing.ru
 
 ### 7.3 Auxiliary events
 
-These remain separate events because they describe distinct user actions or worker lifecycle:
+These remain separate events because they describe distinct user actions or worker lifecycle. The **Status** column reflects the Wave-16 implementation:
 
-| Event type                       | When                                                          |
-|----------------------------------|---------------------------------------------------------------|
-| `route.overridden`               | User chose `/route override` (turn re-dispatched on pattern's choice). |
-| `pattern.override_dismissed`     | User chose `/route ignore` (turn proceeds with original choice). |
-| `delegate.started`               | A `delegate` tool call began. Includes worker_session_id.     |
-| `delegate.completed`             | The worker session ended.                                     |
-| `delegate.failed`                | The worker session failed; includes failure mode (§6.6).      |
-| `routing.policy_invalid`         | The rule file failed to load; last-known-good in use.         |
-| `routing.provider_unavailable`   | Provider state transitioned to Unavailable.                   |
-| `routing.provider_recovered`     | Provider state transitioned back to Healthy.                  |
+| Event type                       | When                                                          | Status |
+|----------------------------------|---------------------------------------------------------------|--------|
+| `route.overridden`               | User chose `/route override` (turn re-dispatched on pattern's choice). | **Not implemented** — depends on the §5.6 pattern-disagreement feature; no payload in the catalog. |
+| `pattern.override_dismissed`     | User chose `/route ignore` (turn proceeds with original choice). | **Not implemented** — see §5.6. |
+| `delegate.started`               | A `delegate` tool call began. Includes worker_session_id.     | Shipped (Wave 10). |
+| `delegate.completed`             | The worker session ended.                                     | Shipped (Wave 10). |
+| `delegate.failed`                | The worker session failed; includes failure mode (§6.6).      | Shipped (Wave 10). |
+| `routing.policy_invalid`         | The rule file failed to load; last-known-good in use.         | Shipped; audit-flagged (`AUDIT_EVENT_TYPES`). |
+| `routing.provider_unavailable`   | Provider state transitioned to Unavailable.                   | Payload defined in the catalog; **emission not wired** — the availability state machine ([`availability.py`](../../packages/metis/src/metis/core/routing/availability.py)) has no event-bus handle in v1. |
+| `routing.provider_recovered`     | Provider state transitioned back to Healthy.                  | Payload defined in the catalog; **emission not wired** (as above). |
 
 All events conform to the schema defined in `event-bus-and-trace-catalog.md`.
 
@@ -821,16 +833,18 @@ Turn 01HZ_xyz · session sess_42 · 2026-05-08T14:23:11Z
 Chose: anthropic:claude-sonnet-4-6                           (workspace default)
 
 Chain:
-  [1] PER_MESSAGE_OVERRIDE   not_applicable  no @model token in message
-  [2] MANUAL_STICKY          not_applicable  no sticky model set
-  [3] CONFIGURED_RULES       rejected        rule "deep for architecture" matched →
+  [1] per_message_override   not_applicable  no @model token in message
+  [2] manual_sticky          not_applicable  no sticky model set
+  [3] rule                   rejected        rule "deep for architecture" matched →
                                              anthropic:claude-opus-4-7 (provider_unavailable)
-  [4] PATTERN_RECOMMENDATION deferred        suggested anthropic:claude-sonnet-4-6
-                                             (confidence 0.71, 14 samples) — outranked by rule
-  [5] WORKSPACE_DEFAULT      chose           anthropic:claude-sonnet-4-6
+  [4] pattern                not_applicable  no high-confidence recommendation
+  [5] delegate_request       not_applicable  not a delegation re-entry
+  [6] workspace_default      chose           anthropic:claude-sonnet-4-6
 ```
 
-The TUI's `/model show` command prints the same trace inline.
+The chain stops at the first `chose` entry (here slot 6), so `global_default`
+(slot 7) does not appear. The TUI's `/model show` command prints the same
+trace inline.
 
 ---
 
@@ -951,6 +965,13 @@ Chain:
 
 ### 8.8 Rule wins, pattern recommendation deferred (and surfaced)
 
+> **Not yet implemented.** This example illustrates the opt-in
+> pattern-disagreement feature (§5.6), which is specified but unbuilt as of
+> Wave 16. With the feature off — the current behavior — the chain
+> short-circuits when the rule wins (slot 3 `chose`), the pattern slot is
+> never evaluated, and no `route.decided` entry, TUI prompt, or `deferred`
+> verdict is produced. The example is retained as the intended contract.
+
 ```
 session.active_model = None
 rules: [{name: "fast for commits", when: {message_matches: "^/commit"}, use: haiku}]
@@ -1070,6 +1091,12 @@ Now:
 | `/rules reload`               | Force re-read of routing.yaml (normally automatic).                 |
 | `/cost`                       | Print this session's cost broken down by model and role.            |
 
+> **Implementation note.** `/route override` and `/route ignore` depend on
+> the pattern-disagreement surfacing feature (§5.6) and are **not implemented**
+> as of Wave 16. The shipped CLI surface is `/model`, `/cost`, `/models`,
+> `/help` plus the per-message `@alias` override; see `AGENTS.md` for the
+> authoritative list.
+
 ### 9.2 Per-message override syntax
 
 A user message starting with `@<alias>` (e.g., `@haiku`, `@opus`, `@sonnet`) is parsed as a per-message override. The token is stripped before sending to the model. Aliases are resolved against the alias table; unknown aliases produce an inline error and the turn does not start.
@@ -1103,6 +1130,13 @@ Edge case: a user wanting to ask the agent about the literal string `@haiku` at 
 ## 10. Testing strategy
 
 ### 10.1 Required tests
+
+> **Note.** Tests 12–14, 22, 24, and 26 exercise the `delegate()` contract,
+> which is now owned by [`delegation.md`](delegation.md) — its test plan is
+> authoritative for those. Tests 13 and 22 describe an automatic
+> `fast → balanced → deep` capability upgrade that was never implemented
+> (§6.9): in the shipped engine a worker tier model that fails validation
+> falls through the chain rather than being upgraded.
 
 1. **Pipeline order.** For every pair of policies, construct a state where both can fire; verify the higher-priority one wins.
 2. **First-match-wins within rules.** Rules with overlapping predicates; verify only the first matches.
@@ -1145,7 +1179,7 @@ Worth investing in for two specific properties:
 
 Tracked here, deferred to later revisions:
 
-1. **Nested workspace matching.** A workspace inside another; whose rules apply? v1: closest path match wins; symlink ambiguity deferred.
+1. **Nested workspace matching.** A workspace inside another; whose rules apply? v1: **exact path match only** — `RoutingPolicy.workspace_for()` matches the session's absolute workspace path exactly; substring / prefix / closest-ancestor matching is a deliberate non-feature. Nested-workspace and symlink resolution deferred.
 2. **Cross-session pattern weighting.** Should very recent sessions weight more in K-nearest aggregation? v1: equal weighting. Phase 3 may add recency decay.
 3. **Multi-tier delegation depth.** v1 disallows worker-as-planner. Phase 4 may allow bounded recursion.
 4. **Streaming for delegation.** Planner currently waits for the worker to fully complete. Streaming worker output back is deferred.
@@ -1153,6 +1187,7 @@ Tracked here, deferred to later revisions:
 6. **Pattern store influencing tier resolution.** `delegate(tier="fast")` could consult patterns to pick among fast-tier models. v1: configured `fast` model is used.
 7. **Provider availability state machine.** v1 is binary (Healthy / Unavailable). The Degraded state is sketched but unused; refinement deferred.
 8. **`/rules check` shadow detection.** v1 prints rules; v2 may detect when one rule strictly shadows another and warn.
+9. **Tier config source.** The `routing.yaml` `tiers:` block (§5.1, §5.2) is parsed and validated but **not consumed** — delegation resolves tiers via the model registry's `delegation_tier` field (§6.10). v2 should either wire `SessionManager.spawn_worker` to consult the workspace-scoped `TierMap`, or drop the `routing.yaml` block in favor of registry config. Until then, per-workspace tier overrides written in `routing.yaml` have no effect.
 
 ---
 
@@ -1191,6 +1226,9 @@ Tracked here, deferred to later revisions:
 | 2026-05-08 | Tier upgrade exhausts at `deep`; no escape above it                   | Explicit failure mode rather than implicit infinite loop.                                  |
 | 2026-05-08 | Pattern override emits `route.overridden`, not `pattern.override_accepted` | Aligns with event-bus catalog; preserves one-`route.decided`-per-turn invariant.       |
 | 2026-05-08 | Delegation slot in Phase 1; `delegate()` tool in Phase 4              | Chain shape is fixed; fills stub later rather than refactoring the pipeline.               |
+| 2026-05-20 | Spec re-synced to the Wave-16 implementation (v3.3)                   | Draft v3.2 had drifted from shipped code: slots 4/5 are wired, `team_budget_remaining_lt` was added to the closed predicate set, and §6 was superseded by `delegation.md`. |
+| 2026-05-20 | §6 trimmed; `delegation.md` is the canonical `delegate()` contract    | Delegation v1 shipped Wave 10 with its own spec; routing-engine.md §6 keeps only the routing-owned surface (slot 5, tier resolution), §6.1–§6.8 as cross-reference stubs. |
+| 2026-05-20 | Automatic `fast → balanced → deep` tier upgrade dropped from the spec | Never implemented. The shipped engine falls a rejected worker-tier candidate through the chain like any other rejection (§6.9). Supersedes the 2026-05-08 "Tier upgrade exhausts at deep" row. |
 
 ---
 
@@ -1198,5 +1236,7 @@ Tracked here, deferred to later revisions:
 
 - `canonical-message-format.md` — `Message`, `ToolDefinition`, `AdapterCapabilities`.
 - `event-bus-and-trace-catalog.md` — payload shape for `route.decided` and routing auxiliaries.
-- `streaming-protocol.md` (planned) — turn lifecycle events; how delegation result streaming works (or doesn't, in v1).
-- Architecture overview — pattern fingerprint design and pattern store schema.
+- `delegation.md` — canonical `delegate()` tool contract, worker session lifecycle, slot-5 re-entry.
+- `pattern-store.md` — task fingerprint design, K-NN aggregation, and the v2 hybrid embedding fingerprint that backs slot 4.
+- `streaming-protocol.md` — turn lifecycle events; the three cancellation cases (§3.4).
+- `multi-user.md` — data source for the `team_budget_remaining_lt` predicate (§5.3).

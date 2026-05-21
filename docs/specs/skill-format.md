@@ -1,7 +1,7 @@
 # Skill Format Specification
 
-**Status:** Draft v1 (retrospective; documents the existing implementation in [packages/metis-core/src/metis_core/skills/](../../packages/metis-core/src/metis_core/skills/))
-**Last updated:** 2026-05-13
+**Status:** Draft v1 (retrospective; documents the existing implementation in [packages/metis/src/metis/core/skills/](../../packages/metis/src/metis/core/skills/)). §8.3 (`skill_save`) + §9.2 (`skill.created`) added 2026-05-20 — the Phase 2.5 agent-authoring path.
+**Last updated:** 2026-05-20
 
 ---
 
@@ -25,6 +25,13 @@ into the system prompt. The agent activates a skill by calling `skill_load`,
 which returns the full body and emits a `skill.loaded` event. This implements
 the agentskills.io three-stage **progressive disclosure** model (discovery →
 activation → execution).
+
+The agent can also **author** a skill: the `skill_save` tool (§8.3) composes
+a SKILL.md from structured input, validates it against the frontmatter
+contract below, writes it under `<workspace>/.metis/skills/`, and emits a
+`skill.created` event. This is the Phase 2.5 agent-authoring path; it is the
+prerequisite the skill curator ([`skill-curator.md`](skill-curator.md)) is
+gated on.
 
 This spec depends on:
 
@@ -66,9 +73,12 @@ guideline "conform to it; don't invent fields."
 
 ### 2.2 Non-goals
 
-1. **Auto-generated skills.** `skill.created` (auto-generation,
-   import) is a Phase 2.5 concern (`event-bus-and-trace-catalog.md §6.6`).
-   v1 ships only loading.
+1. **Trace-mined auto-generation.** Synthesising a *new* skill by mining
+   a finished session's trace — without the agent explicitly deciding to
+   author one — is deferred. The agent *can* author skills explicitly via
+   the `skill_save` tool (§8.3, shipped 2026-05-20), which emits
+   `skill.created(source="auto_generated")`; what stays out of scope is
+   *automatic* generation and third-party `import`.
 2. **Reload-on-change.** A `SkillStore` is built once at session creation; mid-
    session edits to SKILL.md are not reflected until the next session.
 3. **`allowed-tools` enforcement.** The field is parsed and exposed on the
@@ -363,8 +373,11 @@ and supply self-contained scripts.
 
 ## 8. Tools
 
-Two tools, both `SideEffects.READ`, both `requires_workspace=False`.
-Registered via `metis_core.skills.tools.register_skill_tools(dispatcher)`.
+Three tools. `skill_search` (§8.1) and `skill_load` (§8.2) are
+`SideEffects.READ` / `requires_workspace=False`, registered via
+`metis.core.skills.tools.register_skill_tools(dispatcher)`. `skill_save`
+(§8.3) is `SideEffects.WRITE` / `requires_workspace=True`, registered as a
+built-in via `register_builtins(dispatcher)`.
 
 The dispatcher binds a per-session `SkillStore` onto each `ToolContext` via
 the `skills` field (`tool-dispatcher.md`; `ToolContext.skills` is `Any` to
@@ -464,6 +477,81 @@ touched, no memory is mutated, no bus events beyond `skill.loaded`.
 `load_size_tokens`. Plus `already_preloaded: True` on the pre-activated
 pointer path, or `already_loaded: True` on the re-load pointer path.
 
+### 8.3 `skill_save`
+
+Author a new skill into the workspace skill library. This is the Phase 2.5
+agent-authoring path — the prerequisite that unblocks the skill curator
+([`skill-curator.md §3`](skill-curator.md)): the curator may only act on
+skills whose creation it can attribute, so an explicit authoring tool that
+emits `skill.created` has to exist first.
+
+`skill_save` is a **built-in** (`metis.core.tools.builtins.skill_save`),
+not a skill tool — it does not consult the per-session `SkillStore`. It
+composes a SKILL.md from structured input, validates it, writes it to the
+workspace root, and emits `skill.created`.
+
+**Input schema:**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "name":        {"type": "string", "minLength": 1, "maxLength": 64},
+    "description": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "body":        {"type": "string", "minLength": 1},
+    "metadata":    {"type": "object"}
+  },
+  "required": ["name", "description", "body"],
+  "additionalProperties": false
+}
+```
+
+**Semantics:**
+
+- The agent supplies the frontmatter fields (`name`, `description`,
+  optional `metadata`) and the Markdown `body` as separate structured
+  inputs; the tool composes the SKILL.md — the agent never hand-writes
+  YAML frontmatter. Frontmatter key order is fixed (`name`,
+  `description`, then `metadata`) so the composed document, and therefore
+  `Skill.version`, is deterministic for identical inputs.
+- The composed document is validated by reusing the loader's
+  `parse_skill()` — the §4 frontmatter contract (name regex, length
+  bounds, `description` non-empty, `metadata` string-valued) applies
+  identically to an agent-authored skill and a hand-written one. The
+  skill directory is `<workspace>/.metis/skills/<name>/`, so the
+  `name == directory name` invariant (§4.1, §10.1) holds by construction.
+- On success the tool writes `<workspace>/.metis/skills/<name>/SKILL.md`
+  through the `WorkspaceFileAPI` and emits one
+  `skill.created(source="auto_generated")` (§9.2).
+- **Creation only.** If a skill with that name already exists in the
+  workspace root, the tool fails — it does not overwrite. Editing an
+  existing skill body is the curator's `edit` action
+  ([`skill-curator.md §4.1`](skill-curator.md)); re-authoring is
+  semantically a `skill.modified`, not a `skill.created`.
+- A validation failure or a name collision raises a user-visible
+  `validation_error` — the agent sees the specific reason and can correct
+  its input and retry. The defensive worker refusal raises
+  `execution_error`.
+- **Planner-only.** `skill_save` is in the session manager's
+  `_WORKER_FORBIDDEN_TOOLS` set — workers never see it in their effective
+  tool list ([`delegation.md §5.6`](delegation.md)), and `execute()`
+  additionally refuses when `ToolContext.is_worker` is set. Workers run
+  focused sub-tasks; they do not author durable skills.
+- `skill_save` writes only to the **workspace** root, never the global
+  `~/.metis/skills/` root. Agent-authored skills are workspace-pinned.
+
+**Side effects:** `SideEffects.WRITE` — a confirmation handler may gate
+the write like any other write tool. Emits exactly one `skill.created`
+per successful save.
+
+**Output metadata:** `skill_id`, `skill_version`, `source`
+(`"auto_generated"`), `size_tokens`.
+
+**Reload caveat (§5, §10.4).** The `SkillStore` is snapshot at session
+creation, so a skill saved mid-session is not visible to `skill_search` /
+`skill_load` until the next session. The `skill.created` event fires
+immediately; the discovery-index entry appears next session.
+
 ---
 
 ## 9. Events
@@ -499,11 +587,32 @@ Pre-activation fires before any `turn.started` in the session.
 description-match-driven activation mechanism
 (context-assembler.md v3 §5.2.7 q3). Not wired in v3.
 
-### 9.2 No `skill.created` in v1
+### 9.2 `skill.created`
 
-`skill.created` is a Phase 2.5 event for auto-generation / import flows
-(`event-bus-and-trace-catalog.md §6.6`). v1 only loads skills the user
-authored manually, so no creation event is emitted.
+Emitted by the `skill_save` tool (§8.3) when the agent authors a skill,
+per `event-bus-and-trace-catalog.md §6.6`:
+
+```python
+{
+    "skill_id": str,          # = Skill.name
+    "skill_version": str,     # SHA-256(body)[:16]
+    "source": Literal["manual", "auto_generated", "imported", "curator_generated"],
+    "size_tokens": int,       # estimated_body_tokens
+}
+```
+
+Sensitivity: `pseudonymous` — the payload carries the skill name, body
+version hash, and size, never the body text (same floor as
+`skill.loaded`). `Actor` is `SYSTEM`; the event has no `parent_event_id`
+(it is emitted from inside the `skill_save` tool, alongside the
+dispatcher's `tool.called` / `tool.completed`, not chained under them).
+
+`skill_save` always emits `source="auto_generated"`. The other enum
+values are reserved: `"curator_generated"` for the skill curator
+(`skill-curator.md §8.5`), `"imported"` for a future third-party import
+path, and `"manual"` for an operator-authored SKILL.md. A hand-placed
+SKILL.md emits **no** event — the curator treats the *absence* of a
+`skill.created` event as `source="manual"` (`skill-curator.md §3`).
 
 ---
 

@@ -29,6 +29,7 @@ from metis.core.skills.store import (
     SkillStore,
     SkillValidationError,
     load_skills,
+    parse_skill,
 )
 from metis.core.skills.tools import (
     SkillLoadTool,
@@ -50,5 +51,6 @@ __all__ = [
     "SkillStore",
     "SkillValidationError",
     "load_skills",
+    "parse_skill",
     "register_skill_tools",
 ]

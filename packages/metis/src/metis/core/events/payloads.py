@@ -314,6 +314,29 @@ class SkillLoaded(msgspec.Struct, frozen=True):
     triggered_by_tool_use_id: str | None = None
 
 
+SkillCreatedSource = Literal["manual", "auto_generated", "imported", "curator_generated"]
+
+
+class SkillCreated(msgspec.Struct, frozen=True):
+    """`skill.created` per event-bus-and-trace-catalog §6.6.
+
+    Emitted when a skill is authored into a skills root. The agent authors
+    skills via the `skill_save` tool (`source="auto_generated"`,
+    skill-format.md §8.3); `"curator_generated"` is reserved for the skill
+    curator (skill-curator.md §8.5), `"imported"` for a future third-party
+    import path, `"manual"` for an operator-authored SKILL.md.
+
+    The payload carries structural metadata only — skill name, body version
+    hash, and estimated size — never the body text, so the floor sensitivity
+    is `pseudonymous`, matching `skill.loaded`.
+    """
+
+    skill_id: str
+    skill_version: str
+    source: SkillCreatedSource
+    size_tokens: int
+
+
 # --- §6.7 Memory domain -----------------------------------------------------
 
 
@@ -587,6 +610,7 @@ DelegateFailureModeLiteral = Literal[
     "output_schema_validation_failed",
     "no_model_available_for_tier",
     "cancelled_by_user",
+    "timeout",
 ]
 
 
@@ -940,8 +964,9 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     "routing.policy_invalid": (RoutingPolicyInvalid, Sensitivity.PSEUDONYMOUS),
     "routing.provider_unavailable": (RoutingProviderUnavailable, Sensitivity.PSEUDONYMOUS),
     "routing.provider_recovered": (RoutingProviderRecovered, Sensitivity.PSEUDONYMOUS),
-    # skills (Phase 2)
+    # skills (Phase 2; skill.created Phase 2.5 — skill-format.md §8.3)
     "skill.loaded": (SkillLoaded, Sensitivity.PSEUDONYMOUS),
+    "skill.created": (SkillCreated, Sensitivity.PSEUDONYMOUS),
     # memory (Phase 2)
     "memory.updated": (MemoryUpdated, Sensitivity.PRIVATE),
     "memory.eviction": (MemoryEviction, Sensitivity.PRIVATE),

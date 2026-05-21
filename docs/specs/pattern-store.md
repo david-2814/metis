@@ -1382,9 +1382,12 @@ hit/miss/eviction (TTL + LRU), mixed-version K-NN, and the routing
 slot-4 v2 code path end-to-end. **v2 stays opt-in** — §A3-rev3 inverted
 slot 4 under v1, so v2 is the implementation-ready alternative for
 workspaces whose structural-Jaccard washes out (the explicit motivation
-in §16.1). The headline cluster-tightening fixture (§16.10 test 5
-against the 6-workload + 4-agent-loop corpus) is deferred to a follow-up
-A/B benchmark wave.
+in §16.1). The headline cluster-tightening fixture (§16.10 test 5)
+landed as a synthetic deterministic fixture in Wave 11
+(`test_v2_cluster_tightening.py`); the real-embedder confidence check
+over §A3 patterns DBs landed 2026-05-20
+(`test_v2_cluster_tightening_real_embedder.py`) — see §16.10.1 for the
+result.
 
 This section converts the v2 sketch in §5.2, §13.1, and §13.2 into a
 concrete implementation contract: an `EmbeddingProvider` Protocol, three
@@ -2054,6 +2057,80 @@ lands with Phase 4; the test count is what the implementation owes.
     `"2"` and `embedding_cache` is created. No existing rows are
     touched. Reopening the same DB under a v1 process succeeds
     (`schema_version="2"` is tolerated; unknown table ignored).
+
+### 16.10.1 Real-embedder confidence check (test 5 follow-up, resolved 2026-05-20)
+
+Test 5 above shipped in Wave 11 as a **synthetic** fixture
+(`test_v2_cluster_tightening.py`): deterministic one-hot-per-workload
+vectors that, by construction, clear the >=0.10-intra / >=0.05-inter
+gates. The synthetic fixture controls the cluster geometry exactly and
+is the load-bearing CI gate. What it deliberately did *not* answer: do
+*real* embedders preserve the cluster signal it asserts? That
+real-fixture confidence check was the documented test-5 deferral.
+
+It is now resolved. `test_v2_cluster_tightening_real_embedder.py`
+re-runs the test-5 gates against the `embedding_blob` column of the
+`a3rev5-patterns.db` (54 fingerprints / 7 workloads) and
+`a3rev7-patterns.db` (109 fingerprints / 5 workloads) patterns DBs —
+vectors `openai:text-embedding-3-small` genuinely produced over real
+§A3 user-message turns. (`a3rev2` predates v2; `a3rev4` is 70/70
+STRUCTURAL — the embedding-recording wiring landed in Wave 11, so
+rev5/rev7 are the earliest DBs carrying real HYBRID fingerprints. The
+pattern store does not retain raw user text per §7.3, so the stored
+vector *is* the only real-embedder artifact available — and re-embedding
+is impossible, not merely unnecessary.) `workload_id` is stripped before
+the similarity call, mirroring the synthetic fixture's `workload_id=None`
+choice — otherwise the §5.3 near-keyed partition collapses both v1 and
+v2 and masks the embedding's contribution.
+
+**Result — the v2 design is confirmed end-to-end, with one regime
+caveat.**
+
+| Corpus    | n / workloads | intra v1 -> v2  | inter v1 -> v2  | raw cosine intra / inter | v1 sep | v2 sep | sep gain |
+|-----------|---------------|-----------------|-----------------|--------------------------|--------|--------|----------|
+| a3rev7    | 109 / 5       | 0.813 -> 0.748  | 0.744 -> 0.573  | 0.705 / 0.460            | +0.069 | +0.175 | +0.106   |
+| a3rev5    | 54 / 7        | 0.784 -> 0.693  | 0.763 -> 0.480  | 0.631 / 0.291            | +0.022 | +0.213 | +0.191   |
+
+A fresh live `openai:text-embedding-3-small` call over the 25
+checked-in benchmark workload turn prompts (2026-05-20, gated behind
+`OPENAI_API_KEY`) separates same-workload from different-workload pairs
+by **+0.190** (intra cosine 0.531, inter 0.340) — independent
+confirmation that the production `OpenAIEmbeddingProvider` class still
+clusters today, not just in the May run vectors.
+
+By every **separation-based** metric the real embedder strongly
+preserves the cluster signal: raw cosine separates same- from
+different-workload pairs by **+0.245 / +0.340**, and v2's blended
+cluster separation (intra - inter) beats v1's by **+0.106 / +0.191**.
+The inter leg of the literal test-5 gate also transfers cleanly — v2's
+inter-cluster mean is **0.171 / 0.283** lower than v1's (gate: >=0.05).
+
+**The caveat — the literal test-5 *intra* gate does not transfer to the
+benchmark corpus.** The gate asks for v2 intra >= 0.10 *higher* than
+v1; on real §A3 data v2 intra is *lower* (-0.065 / -0.092). The cause
+is not a v2 failure — it is that v1 structural-Jaccard is already
+**saturated** intra-cluster (~0.78-0.81) on this corpus, even with
+`workload_id` stripped, because turns within one benchmark workload
+repeatedly touch the same files with the same tools. There is no
+headroom to raise intra; the embedding (whose intra cosine ~0.63-0.70
+is *lower* than the saturated structural score) pulls the blended intra
+mean down while pulling the blended *inter* mean down much further. The
+synthetic fixture models the opposite, sparse-structural agent-loop
+regime on purpose — it asserts `v1 intra < 0.7` — which is exactly the
+regime where v2 *raises* intra. Both regimes agree on the load-bearing
+conclusion: v2 tightens clusters. They disagree only on which leg of
+the absolute-delta gate the tightening shows up in.
+
+**Spec consequence.** Test 5's intra/inter absolute-delta phrasing is
+calibrated for the sparse-structural regime; on a dense-structural
+corpus the regime-robust metric is cluster **separation** (intra -
+inter), not the absolute intra delta. The real-embedder test therefore
+asserts the regime-robust gates (raw-cosine separation >= 0.15, inter
+leg >= 0.05, separation improvement >= 0.08) and pins the v1-saturation
+finding explicitly. A future test-5 revision should phrase the headline
+gate as a separation-improvement gate so it transfers across both
+regimes; the synthetic fixture's existing absolute-delta gates stay as
+the sparse-regime check.
 
 ### 16.11 Open questions (v2-specific)
 
