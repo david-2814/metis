@@ -14,6 +14,7 @@ from metis.core.adapters.anthropic import (
     _canonical_messages_to_anthropic,
     _stop_reason,
     _wire_model_name,
+    _with_history_cache_breakpoint,
 )
 from metis.core.adapters.protocol import StopReason
 from metis.core.adapters.tool_id_map import ToolIdMap
@@ -320,3 +321,70 @@ def test_stop_reason_mapping():
     # Unknown / None defaults to END_TURN (forward compatibility).
     assert _stop_reason(None) == StopReason.END_TURN
     assert _stop_reason("future_reason") == StopReason.END_TURN
+
+
+# ---- Rolling history cache breakpoint (context-assembler.md §3) ---------
+
+
+def test_history_breakpoint_marks_last_block_of_last_message():
+    tm = ToolIdMap()
+    wire, _ = _canonical_messages_to_anthropic(
+        [_msg(Role.USER, [TextBlock(text="hello")])],
+        system_prompt=None,
+        tool_map=tm,
+    )
+    marked = _with_history_cache_breakpoint(wire)
+    assert marked[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_history_breakpoint_only_on_last_message():
+    """Earlier messages must NOT carry the breakpoint — exactly one rolling
+    marker per request, on the last message."""
+    tm = ToolIdMap()
+    wire, _ = _canonical_messages_to_anthropic(
+        [
+            _msg(Role.USER, [TextBlock(text="first")]),
+            _msg(Role.ASSISTANT, [TextBlock(text="reply")]),
+            _msg(Role.USER, [TextBlock(text="second")]),
+        ],
+        system_prompt=None,
+        tool_map=tm,
+    )
+    marked = _with_history_cache_breakpoint(wire)
+    assert len(marked) == 3
+    assert "cache_control" not in marked[0]["content"][-1]
+    assert "cache_control" not in marked[1]["content"][-1]
+    assert marked[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_history_breakpoint_lands_on_tool_result_block():
+    """When the last message is a merged tool-result user message, the
+    breakpoint lands on its final tool_result block."""
+    tm = ToolIdMap()
+    wire, _ = _canonical_messages_to_anthropic(
+        [
+            _msg(Role.ASSISTANT, [ToolUseBlock(id="tu_a", name="read_file", input={})]),
+            _msg(Role.TOOL, [ToolResultBlock(tool_use_id="tu_a", content=[TextBlock(text="r")])]),
+        ],
+        system_prompt=None,
+        tool_map=tm,
+    )
+    marked = _with_history_cache_breakpoint(wire)
+    last_block = marked[-1]["content"][-1]
+    assert last_block["type"] == "tool_result"
+    assert last_block["cache_control"] == {"type": "ephemeral"}
+
+
+def test_history_breakpoint_empty_messages_is_noop():
+    assert _with_history_cache_breakpoint([]) == []
+
+
+def test_history_breakpoint_does_not_mutate_input():
+    tm = ToolIdMap()
+    wire, _ = _canonical_messages_to_anthropic(
+        [_msg(Role.USER, [TextBlock(text="hello")])],
+        system_prompt=None,
+        tool_map=tm,
+    )
+    _with_history_cache_breakpoint(wire)
+    assert "cache_control" not in wire[-1]["content"][-1]

@@ -424,6 +424,17 @@ async def test_single_tool_carries_cache_control():
     assert fake.calls[0]["tools"][0]["cache_control"] == {"type": "ephemeral"}
 
 
+async def test_history_cache_breakpoint_reaches_wire_request():
+    """The rolling history breakpoint (context-assembler.md §3) lands on the
+    last content block of the last message in the wire request, extending
+    the cached prefix past the static `tools + system` head."""
+    fake = _FakeMessagesClient(responses=[_fake_text_response()])
+    adapter = AnthropicAdapter(client=_FakeClient(messages=fake))
+    await adapter.complete(_user_request("hi"))
+    messages = fake.calls[0]["messages"]
+    assert messages[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
 # ---- file_ref ImageBlock resolution (KNOWN_ISSUES carryover) -----------
 
 

@@ -221,6 +221,7 @@ class AnthropicAdapter:
         anthropic_messages, stable_system_text = _canonical_messages_to_anthropic(
             request.messages, request.system_prompt, tool_map, workspace_files
         )
+        anthropic_messages = _with_history_cache_breakpoint(anthropic_messages)
         wire_tools = _tools_to_anthropic_with_cache(request.tools)
         wire_model = _wire_model_name(request.model)
 
@@ -283,6 +284,7 @@ class AnthropicAdapter:
         anthropic_messages, stable_system_text = _canonical_messages_to_anthropic(
             request.messages, request.system_prompt, tool_map, workspace_files
         )
+        anthropic_messages = _with_history_cache_breakpoint(anthropic_messages)
         wire_tools = _tools_to_anthropic_with_cache(request.tools)
         wire_model = _wire_model_name(request.model)
 
@@ -386,6 +388,39 @@ def _tools_to_anthropic_with_cache(tools: list[ToolDefinition]) -> list[ToolPara
     out: list[dict] = [_tool_to_anthropic(t) for t in tools]  # type: ignore[misc]
     out[-1] = {**out[-1], "cache_control": {"type": "ephemeral"}}
     return out  # type: ignore[return-value]
+
+
+def _with_history_cache_breakpoint(messages: list[MessageParam]) -> list[MessageParam]:
+    """Place a rolling cache breakpoint on the last content block of the
+    last message, extending the cached prefix over the whole transcript.
+
+    The tools and stable-system breakpoints (`_tools_to_anthropic_with_cache`,
+    `_system_blocks`) cache only the static prefix; without this third
+    breakpoint the conversation transcript falls outside the cached prefix
+    and is re-billed at full input rate every turn. With it, turn N+1 reads
+    `tools + system + history-through-turn-N` at cache-read rate and pays
+    full price only on the new delta.
+
+    The marker rolls forward — it sits on a newer block every request — but
+    the prefix it caches is byte-stable with the previous turn, which is
+    what Anthropic matches on. See `docs/specs/context-assembler.md` §3.
+
+    Returns a new list; the input is not mutated. A no-op on empty input or
+    a last message with no content blocks.
+    """
+    if not messages:
+        return messages
+    last: dict = dict(messages[-1])
+    content = last.get("content")
+    # Messages from `_canonical_messages_to_anthropic` always carry a
+    # non-empty list `content`; guard so a malformed message can't crash
+    # request assembly.
+    if not isinstance(content, list) or not content:
+        return messages
+    new_content: list = list(content)
+    new_content[-1] = {**new_content[-1], "cache_control": {"type": "ephemeral"}}
+    last["content"] = new_content
+    return [*messages[:-1], last]  # type: ignore[list-item]
 
 
 def _system_blocks(stable_text: str | None, volatile_text: str | None) -> list[dict] | None:
