@@ -84,6 +84,19 @@ When changing a spec, the dependent specs (right column whose left column is the
 
 ## Change log
 
+### 2026-05-21 — provider-adapter-contract.md v1.3: §4.5 prompt-caching detection + breakpoint responsibility for aggregator upstreams (OpenRouter)
+
+- **Spec:** [`provider-adapter-contract.md`](provider-adapter-contract.md) — header (v1.2 → v1.3), new §4.5 (§4.5.1–§4.5.5), §11 open questions 7 (OpenRouter half resolved) + new 8, §12 decision log (three rows).
+- **Change:** Resolves the open questions for adding Anthropic prompt-cache support to the OpenRouter provider adapter (the adapter speaks OpenAI wire format and currently attaches no `cache_control` breakpoints, so Anthropic models routed via OpenRouter get zero prompt caching). New §4.5 pins, concretely enough to build the wire translation from: (1) **caching-capability detection** — `/api/v1/models` carries no caching flag and `supported_parameters` omits `cache_control` (verified 2026-05-21); the only machine signal is `pricing.input_cache_read` / `input_cache_write`, which is incomplete (DeepSeek caches automatically yet exposes neither), so a maintained wire-id-prefix family allowlist (`anthropic/`, `google/`, `qwen/`) is required to decide breakpoint emission; (2) **breakpoint wire shape** — `cache_control: {type: "ephemeral"[, ttl: "1h"]}` on content-part objects inside a message `content` array; Metis emits exactly one system-tail breakpoint on the stable system segment (promoting the system `content` from string to part-array), which subsumes tool caching via Anthropic's `tools → system` prefix walk; (3) **usage readback** — `prompt_tokens_details.cached_tokens` → `cached_input_tokens`, `prompt_tokens_details.cache_write_tokens` → `cache_creation_input_tokens`; (4) **provider routing** — leave the `provider` object unset so OpenRouter's automatic sticky routing keeps caches warm without losing failover. Spec-only; no code changed.
+- **Type:** additive. No contract change to existing adapters; `TokenUsage` / `AdapterCapabilities` / `ModelPricing` shapes are unchanged (the change is which fields the OpenRouter adapter populates). The shared `_usage_to_canonical` helper and `_parse_pricing` will need additive edits at implementation time (read `cache_write_tokens`; read `input_cache_write`) — flagged in §4.5.2 / §4.5.4, not yet done.
+- **References to verify:**
+  - `context-assembler.md §5.1` — §4.5.3 relies on the existing `MIN_CACHEABLE_PREFIX_TOKENS = 4500` padding floor clearing Anthropic's per-model cache minimums (4096 for haiku-4.5); no edit to context-assembler required, cross-reference only. ✓
+  - `canonical-message-format.md §6.4` — cost recomputed locally from the price table; OpenRouter's `usage.cost` is ignored. `cache_creation_per_mtok` already exists on `ModelPricing`. No edit required. ✓
+  - the two-segment `system_prompt` / `system_prompt_volatile` fields on `CanonicalRequest` — §4.5.3's system-tail breakpoint mirrors `adapters/anthropic.py::_system_blocks`; no canonical-format change. ✓
+- **Status:** pending review — the implementation-time edits to `_usage_to_canonical` + `_parse_pricing` + the OpenRouter wire path land in a follow-up code batch; this entry returns to `verified` once the OpenRouter caching code ships against §4.5.
+
+---
+
 ### 2026-05-20 — routing-engine.md v3.3: spec re-synced to the Wave-16 implementation
 
 - **Specs:** [`routing-engine.md`](routing-engine.md) — header (v3.2 → v3.3), §4.1/§4.2, §4.4, §4.5, §5.1–§5.7, §6 (trimmed), §7, §8.8, §9.1, §10.1, §11, §12, §13. Plus a one-line docstring fix in `routing/__init__.py`.

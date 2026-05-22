@@ -1,8 +1,16 @@
 # Provider Adapter Contract
 
-**Status:** Draft v1.2
-**Last updated:** 2026-05-14
+**Status:** Draft v1.3
+**Last updated:** 2026-05-21
 **Owner:** _your name_
+
+> **v1.3 changes:** New §4.5 — prompt-caching capability detection and the
+> adapter's breakpoint responsibility for aggregator upstreams (OpenRouter).
+> Pins per-model caching detection from `/api/v1/models` pricing fields, the
+> `cache_control` wire shape on the OpenAI-shaped `/chat/completions`
+> endpoint, the `usage` cache-token fields, and the provider-routing posture
+> for keeping cache hits sticky. Resolves the OpenRouter half of §11 open
+> question 7. Additive — no contract change to existing adapters.
 
 > **v1.2 changes:** `CanonicalResponse` returns `content: list[ContentBlock]`
 > + `model` + `provider` rather than a full `Message` (§3.3). The adapter
@@ -314,6 +322,120 @@ Examples:
 - `ThinkingBlock` sent to OpenAI: dropped, logged.
 - `RedactedThinkingBlock` cross-provider (any direction not Anthropic→Anthropic): dropped, logged.
 - `ImageBlock` sent to a model whose `supports_images: false`: should never reach the adapter (routing rejects), but if it does, dropped and logged. The session manager should treat this as a bug.
+
+---
+
+### 4.5 Prompt-caching capability detection and breakpoint responsibility
+
+A **direct** provider adapter (Anthropic, OpenAI) knows its upstream's caching contract at build time — §4.2 and §4.3 hardcode it. An **aggregator** adapter (OpenRouter today; an optional LiteLLM egress proxy later) fronts dozens of upstreams with *different* caching contracts behind one OpenAI-shaped wire. It cannot hardcode caching; it must (a) detect per-model whether caching is available and which *style* it uses, and (b) attach explicit cache breakpoints for the upstreams that require them, or those upstreams cache nothing.
+
+This subsection pins both. The worked example is OpenRouter (`/api/v1/chat/completions`, OpenAI wire shape); the rules generalize to any aggregator. The findings here are verified against OpenRouter's documentation and a live `/api/v1/models` fetch on 2026-05-21.
+
+#### 4.5.1 Two caching styles
+
+| Style | Upstreams (via OpenRouter) | Adapter responsibility |
+|-------|----------------------------|------------------------|
+| **Implicit / automatic** — upstream caches the prompt prefix on its own; the client sends no markers. | OpenAI, Grok, DeepSeek, Moonshot, Groq, Gemini 2.5 (implicit) | Attach nothing. Only read cache token counts back (§4.5.4). |
+| **Explicit / breakpoint** — upstream caches only spans the client marks with a `cache_control` breakpoint. | Anthropic Claude, Google Gemini (explicit path), Alibaba Qwen | MUST attach a breakpoint (§4.5.3) or caching never fires. |
+
+A direct adapter targets one style. An aggregator adapter sees both and branches per model. **The current `OpenRouterAdapter` attaches no breakpoints and declares `supports_prompt_caching=False` for every model — so Anthropic models routed via OpenRouter get zero prompt caching today. This subsection is the contract for closing that gap.**
+
+#### 4.5.2 Detecting caching capability per model
+
+OpenRouter's `/api/v1/models` carries **no dedicated caching capability flag**. `supported_parameters` does **not** list `cache_control` (verified 2026-05-21 across `anthropic/claude-haiku-4.5`, `anthropic/claude-sonnet-4.5`, `openai/gpt-4o-mini`, `google/gemini-2.5-flash`, `deepseek/deepseek-chat`). The only machine-readable signal is the `pricing` block:
+
+| `pricing` field | Meaning | Present on (2026-05-21 sample) |
+|-----------------|---------|--------------------------------|
+| `input_cache_read` | Cache reads are priced → caching pays off. $/token string. | Anthropic, OpenAI, Gemini |
+| `input_cache_write` | Cache writes are *separately* priced. $/token string. | Anthropic, Gemini (absent on OpenAI — its cache writes are free; absent on DeepSeek) |
+
+Detection rules:
+
+1. **`supports_prompt_caching`** — set `AdapterCapabilities.supports_prompt_caching = True` iff `pricing.input_cache_read` is present, else `False`. This is the honest per-model declaration §3.4 requires.
+2. **Cache-write pricing** — `_parse_pricing` currently hardcodes `ModelPricing.cache_creation_per_mtok = Decimal("0")`. Fix it to read `pricing.input_cache_write` (× `_PER_MTOK`) when present, mirroring how it already reads `input_cache_read` for `cached_read_per_mtok`.
+3. **The pricing block does NOT tell you the caching *style*.** `input_cache_write` present is a *hint* toward the explicit-breakpoint family (Anthropic, Gemini, Alibaba all expose it; OpenAI does not), but it is neither authoritative nor complete: `deepseek/deepseek-chat` exposes *neither* cache field yet still caches automatically (verified 2026-05-21).
+
+Because the API gives no style signal, the adapter MUST carry a small **family allowlist** keyed on the wire-id prefix:
+
+```python
+# Maintained constant in the OpenRouter adapter. Reviewed when OpenRouter
+# adds explicit-caching providers. The API offers no way to derive this.
+EXPLICIT_BREAKPOINT_FAMILIES = ("anthropic/", "google/", "qwen/")
+```
+
+A model gets an explicit breakpoint **iff** its wire id starts with an allowlisted prefix **AND** `pricing.input_cache_read` is present. Every other model gets no markers and relies on implicit caching. Note the asymmetry this preserves honesty: a model can have `supports_prompt_caching=True` (it has cache-read pricing) and still not be on the allowlist — it caches *implicitly*, the adapter just doesn't mark it. The allowlist governs *breakpoint emission*, not the capability flag.
+
+#### 4.5.3 Breakpoint wire format (OpenAI-shaped `/chat/completions`)
+
+For explicit-breakpoint families, `cache_control` attaches to individual **content-part objects** inside a message's `content` array. It is **not** a top-level message field, and — per OpenRouter's documented surface — **not** a field on `tools[]` entries (see the tools note below).
+
+A breakpoint is a content part with one extra key:
+
+```json
+{ "type": "text", "text": "...", "cache_control": { "type": "ephemeral" } }
+```
+
+`{"type": "ephemeral"}` is the only cache type. An optional `"ttl": "1h"` extends the default 5-minute TTL to 1 hour (`{"type": "ephemeral", "ttl": "1h"}`); omit it for the 5-minute default, which is what a turn-locked agent loop wants.
+
+**System-prompt placement — the placement Metis uses.** Metis assembles a two-segment system prompt (stable + volatile; see `context-assembler.md §5.1`). To attach a breakpoint, the system message `content` must be promoted from a plain string to a content-part array, breakpoint on the last *stable* part:
+
+```json
+{
+  "role": "system",
+  "content": [
+    { "type": "text", "text": "<stable system prompt>", "cache_control": { "type": "ephemeral" } },
+    { "type": "text", "text": "<volatile system prompt>" }
+  ]
+}
+```
+
+This mirrors the direct Anthropic adapter's `_system_blocks` (`adapters/anthropic.py`) exactly: the breakpoint sits on the stable segment so per-turn mutations to the volatile content don't churn the cached prefix. If the volatile segment is empty, emit a single stable part carrying the breakpoint. The OpenAI adapter's `_canonical_messages_to_openai` currently concatenates both segments into one string `content` — the OpenRouter path must instead emit the content-part array above when the target model is breakpoint-eligible (§4.5.2).
+
+**Tool definitions.** OpenRouter forwards the breakpoint to Anthropic's Messages API, whose cache-prefix walk is `tools → system → messages`. A single breakpoint at the end of the *stable system segment* therefore caches the tool definitions too — the cached prefix includes everything before the breakpoint. OpenRouter's OpenAI-shaped `tools[]` array carries **no documented `cache_control` field**, so the direct-Anthropic adapter's separate last-tool breakpoint (`_tools_to_anthropic_with_cache`) has no OpenRouter equivalent — and needs none: the system-tail breakpoint subsumes it. (This is a real documentation gap, flagged in §11 — if a future need arises to cache tools *without* a system prompt, the Anthropic-Messages-shaped endpoint `/api/v1/messages` would be required.)
+
+**Limits.** Anthropic allows at most **4** explicit breakpoints per request; Gemini honors only the **last** one. Metis emits exactly **one** (system-tail) — within both limits.
+
+**Minimum cacheable prefix.** Anthropic will not cache a prefix below a per-model floor: **4096** tokens for `claude-haiku-4.5` / `claude-opus-4.5`+, **2048** for `claude-sonnet-4.6`, **1024** for older Sonnet/Opus. The context-assembler's existing `MIN_CACHEABLE_PREFIX_TOKENS = 4500` padding floor (`context-assembler.md §5.1`) clears the highest of these, so **no aggregator-specific padding work is required** — the stable prefix is already padded above the haiku-4.5 floor.
+
+**Why not top-level automatic caching.** OpenRouter also offers a request-body-level `"cache_control"` field that auto-advances a breakpoint over the growing history. Metis does **not** use it: (a) it caches up to the last cacheable block, *including* volatile content, defeating the stable/volatile split; (b) its presence forces routing to Anthropic-direct and **excludes Bedrock / Vertex** upstreams. Explicit per-block breakpoints work across *all* Anthropic-compatible upstreams and keep the split under Metis's control.
+
+#### 4.5.4 Reading cache usage back
+
+OpenRouter returns cache counts inside the standard `usage` object on **every** response — no opt-in. `usage: {include: true}` and `stream_options: {include_usage: true}` are deprecated no-ops.
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 194,
+    "completion_tokens": 2,
+    "total_tokens": 196,
+    "prompt_tokens_details": { "cached_tokens": 0, "cache_write_tokens": 100 },
+    "cost": 0.95,
+    "cost_details": { "upstream_inference_cost": 19 }
+  }
+}
+```
+
+Canonical mapping into `TokenUsage`:
+
+| OpenRouter `usage` field | `TokenUsage` field |
+|--------------------------|--------------------|
+| `prompt_tokens` | `input_tokens` |
+| `completion_tokens` | `output_tokens` |
+| `prompt_tokens_details.cached_tokens` | `cached_input_tokens` (cache **read** / hit) |
+| `prompt_tokens_details.cache_write_tokens` | `cache_creation_input_tokens` (cache **write**) |
+
+This is a strict superset of the OpenAI mapping in §7.2. The shared `_usage_to_canonical` helper (`adapters/openai.py`) currently hardcodes `cache_creation_input_tokens = 0`; it must be extended to read `prompt_tokens_details.cache_write_tokens` for the OpenRouter path. `cache_write_tokens` is returned only for models with explicit caching + cache-write pricing; absent → `0` (a plain cache hit, or an implicit-cache model). On a cold call that establishes the cache, expect `cached_tokens = 0` and `cache_write_tokens > 0`; on a warm hit, `cached_tokens > 0` and `cache_write_tokens = 0`.
+
+`usage.cost` and `cost_details.upstream_inference_cost` are OpenRouter's own accounting; Metis **ignores them** and computes cost from the local price table per §7.1, using the catalog's `input_cache_read` / `input_cache_write` rates (§4.5.2). The `cache_discount` field referenced in OpenRouter's caching guide is surfaced via `/api/v1/generation`, **not** the inline `usage` object — Metis does not need it, since canonical cost is recomputed locally.
+
+#### 4.5.5 Keeping cache hits sticky without losing failover
+
+A cached prefix lives on **one** upstream endpoint. A cache hit only happens if the follow-up request lands on that same upstream. OpenRouter handles this with **provider sticky routing**: after a cache-eligible request it routes subsequent same-conversation requests for that model to the same upstream, and falls back to the next-best upstream if the sticky one is unavailable. Stickiness is keyed per account × model × conversation (OpenRouter hashes the first system/developer message + the first non-system message of each request).
+
+**Implication for the adapter: do NOT send a `provider` object to chase cache hits.** Setting `provider.order` or `provider.sort` **disables** sticky routing (and price-based load balancing) — the explicit ordering takes priority. The default — no `provider` object, `allow_fallbacks` defaults to `true` — gives *both* cache warmth (via sticky routing) *and* failover. The OpenRouter adapter SHOULD leave provider routing unset on the caching path.
+
+If a deployment needs a deterministic upstream for an unrelated reason (e.g. data residency), `provider: {"order": ["<slug>"], "allow_fallbacks": true}` pins `<slug>` first and still fails over to the normal list — but trades away sticky routing's load-balancing. That is a deployment-policy choice, outside the adapter's caching path. `allow_fallbacks: false` and `provider.only` remove failover entirely; **do not** use them to pin caching.
 
 ---
 
@@ -715,7 +837,8 @@ Cassettes are reviewed in PRs the same as code.
 4. **Tool definition deduplication across providers.** When the same tool definition is sent on every turn, both providers handle it cheaply, but for cache efficiency the adapter could emit `tools` only on the first turn of a session. Deferred — premature optimization.
 5. **Streaming reconnection at the adapter level.** If the underlying HTTP connection drops mid-stream, can the adapter resume? v1: no, the call fails and routing handles fallthrough. Both providers don't currently support stream resume.
 6. **`response_format` validation.** When `output_schema` is set, OpenAI's `response_format: {type: "json_schema"}` enforces schema. Anthropic doesn't have an equivalent strict mode in the same way; the adapter currently passes the schema as a hint in the system prompt. Inconsistency worth flagging.
-7. **Ollama and OpenRouter capability declarations.** These adapters are deferred but the contract should accommodate them. Specifically: Ollama-served models have wildly varying tool-call quality; the adapter config should let the user explicitly declare per-model capability (`supports_tools: false` for a specific local model). Not implemented in v1; spec accommodates.
+7. **Ollama and OpenRouter capability declarations.** Ollama-served models have wildly varying tool-call quality; the adapter config should let the user explicitly declare per-model capability (`supports_tools: false` for a specific local model). Not implemented; spec accommodates. The OpenRouter half of this question is resolved: the OpenRouter adapter ships and §4.5 pins how it detects per-model prompt-caching capability (from `/api/v1/models` pricing fields, no dedicated flag exists) and where it attaches `cache_control` breakpoints for explicit-caching upstreams.
+8. **OpenRouter tool-definition cache breakpoints.** OpenRouter's OpenAI-shaped `/chat/completions` endpoint documents `cache_control` on message content parts only, not on `tools[]` entries (§4.5.3). Metis's system-tail breakpoint subsumes tool caching because Anthropic's cache-prefix walk runs `tools → system`, so this is not a blocker. But it means a hypothetical "cache tools without a system prompt" need could not be met on the chat-completions endpoint — it would require the Anthropic-Messages-shaped `/api/v1/messages` endpoint. Flagged, not pursued.
 
 ---
 
@@ -733,6 +856,9 @@ Cassettes are reviewed in PRs the same as code.
 | 2026-05-08 | Adapter registry separate from routing.yaml                            | Adapter config is per-installation; routing rules are per-user-policy. Different lifecycles. |
 | 2026-05-08 | OpenAI thinking-block translation deferred; Anthropic→OpenAI loses thinking | Formats are too different for clean v1 mapping; documented asymmetry.                  |
 | 2026-05-08 | Closed `ErrorClass` enum drives consistent classification             | Routing and analytics depend on uniform error semantics across providers.                  |
+| 2026-05-21 | Aggregator adapters detect prompt-caching from `/api/v1/models` pricing fields + a maintained family allowlist (§4.5) | OpenRouter exposes no caching capability flag and `supported_parameters` omits `cache_control`; `pricing.input_cache_read` is the only machine signal and is incomplete, so a wire-id-prefix allowlist is required for breakpoint-style detection. |
+| 2026-05-21 | OpenRouter explicit caching uses a single system-tail `cache_control` breakpoint, not a `tools[]` breakpoint or top-level auto-caching (§4.5.3) | `tools[]` cache_control is undocumented on the chat-completions endpoint; Anthropic's `tools → system` prefix walk means a system-tail breakpoint caches tools anyway. Top-level auto-caching caches volatile content and forces Anthropic-direct routing (excludes Bedrock/Vertex). |
+| 2026-05-21 | OpenRouter adapter leaves the `provider` routing object unset on the caching path (§4.5.5) | OpenRouter's automatic provider sticky routing keeps caches warm *and* preserves failover; setting `provider.order`/`sort` disables sticky routing. |
 
 ---
 
