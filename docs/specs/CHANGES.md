@@ -84,6 +84,19 @@ When changing a spec, the dependent specs (right column whose left column is the
 
 ## Change log
 
+### 2026-05-22 — context-assembler.md §3 v2: rolling history cache breakpoint (cache-coverage fix)
+
+- **Spec:** [`context-assembler.md`](context-assembler.md) — §3 rewritten to place **three** cache breakpoints (was two); new §3.1 "Why the rolling history breakpoint (v2)". Header `Last updated` bumped to 2026-05-22.
+- **Change:** v1 placed cache breakpoints only on `tools[-1]` and the stable `system` block, so the cached prefix ended before `messages`. The entire conversation transcript fell outside the cached prefix and was re-billed at full input rate every turn — caching covered only the static ~5K-token prefix while a long session's transcript (the dominant share of input tokens) paid full rate. Every LLM call still *reported* a cache hit (the static prefix caches), masking the gap: hit rate is not hit coverage. §3 now adds breakpoint 3 — a *rolling* `cache_control: ephemeral` marker on the last content block of the last message — so the cached prefix covers `tools + system + the whole transcript`. Because the transcript is append-only, turn N+1's prefix is byte-identical to turn N's cached prefix and reads back at cache-read rate; only the new delta (prior assistant response + new user message) pays full price.
+- **Type:** additive. Pure cost reduction — no contract, schema, event, or endpoint change; the `TokenUsage` bucket meanings are unchanged (the cached vs. uncached split just shifts toward cached). Uses 3 of Anthropic's 4 permitted breakpoints.
+- **References to verify:**
+  - `provider-adapter-contract.md` — wire-translation rules for the Anthropic adapter; the third breakpoint is additive to the request shape, no field added or removed. No spec edit required.
+  - `canonical-message-format.md §7` — adapter contract parameterized by `AdapterCapabilities.supports_prompt_caching`; the flag's meaning is unchanged. No spec edit required.
+  - OpenRouter adapter — §3 now notes the rolling breakpoint is Anthropic-adapter-only; OpenRouter parity is an open follow-up, not a regression (the 2026-05-21 OpenRouter caching change covers the system-tail breakpoint only).
+- **Status:** verified — code (`adapters/anthropic.py` `_with_history_cache_breakpoint`, wired into `_call_once` + `_stream_once`) and tests land in the same change.
+
+---
+
 ### 2026-05-22 — CLI: `metis dev` is the advised interactive-session command; `metis chat` kept as an alias
 
 - **Spec:** prose-only references across [`memory-store.md`](memory-store.md), [`multi-user.md`](multi-user.md), [`pricing.md`](pricing.md), [`credentials.md`](credentials.md), [`skill-curator.md`](skill-curator.md). No contract, schema, or endpoint changed.

@@ -1,7 +1,7 @@
 # Context Assembler Specification
 
 **Status:** Implemented v3 (v1 + v2 + v3 §5.2 explicit activation + pre-activation)
-**Last updated:** 2026-05-14
+**Last updated:** 2026-05-22
 **Scope:** v1 covers prompt-cache breakpoint placement; v2 (§5.1) adds
 a **minimum-cacheable-prefix** rule so the cached prefix tokenizes above
 the per-model cache floor on *every* session, not just long ones; v3
@@ -80,8 +80,8 @@ script) can put everything in `system_prompt` and leave
 ## 3. Cache breakpoint placement
 
 The cache prefix walked by Anthropic's API in canonical order is
-`tools → system → messages`. v1 places **two** breakpoints (both
-`{"type": "ephemeral"}`):
+`tools → system → messages`. The adapter places **three** breakpoints
+(all `{"type": "ephemeral"}`):
 
 1. **`tools[-1].cache_control = ephemeral`** — caches the tool list.
    The tools section is the largest stable prefix in a typical agent
@@ -89,15 +89,57 @@ The cache prefix walked by Anthropic's API in canonical order is
 2. **`system[<last stable block>].cache_control = ephemeral`** — caches
    `tools + stable system`. The next block is the volatile system text
    (no cache_control), so it falls outside the cached prefix.
+3. **`messages[-1].content[-1].cache_control = ephemeral`** — a *rolling*
+   breakpoint on the final content block of the last message, extending
+   the cached prefix to cover `tools + system + the whole transcript`.
+   Added 2026-05-22 (v2).
+
+### 3.1. Why the rolling history breakpoint (v2)
+
+Breakpoints 1 and 2 cache only the *static* prefix — tools plus the
+stable system prompt, on the order of `MIN_CACHEABLE_PREFIX_TOKENS`
+(~5K tokens). Everything in `messages` falls outside the cached prefix
+and is re-billed at full input rate **every turn**.
+
+For a short session that is fine: the transcript is small. For a long
+session — or any session whose early turns read large tool outputs into
+history — the transcript becomes the dominant share of input tokens,
+and caching only a fixed ~5K-token prefix saves a rounding error. A
+multi-turn session can sit at full input-rate on 90%+ of its tokens
+while every LLM call still *reports* a cache hit (the static prefix
+does cache). Cache hit **rate** is not cache hit **coverage**.
+
+Breakpoint 3 fixes this. Because the transcript is append-only, the
+prefix `tools + system + messages-through-turn-N` is byte-identical
+between turn N's request and turn N+1's request. Marking the last
+message each turn writes that prefix to cache; the next turn reads it
+back at cache-read rate (10% of input) and pays full price only on the
+new delta — the previous assistant response plus the new user message.
+The marker sits on a *different* (newer) block every request — it
+"rolls" forward — but the cached prefix it defines is stable, which is
+what Anthropic matches on.
+
+**Interaction with the volatile system block.** The volatile system
+text (breakpoint 2's trailing block) sits between the system breakpoint
+and `messages`. When `MEMORY.md` / `USER.md` mutate, the prefix up to
+breakpoint 3 changes and breakpoint 3 misses for that one turn;
+breakpoints 1 and 2 still hit. This is acceptable — memory mutations
+are infrequent — and is the deliberate cost of keeping memory writable
+mid-session.
 
 Constraints:
 
-- Anthropic's API permits up to 4 cache breakpoints. v1 uses 2.
+- Anthropic's API permits up to 4 cache breakpoints. The adapter uses 3.
 - Adapters MUST NOT place a cache breakpoint on a volatile block — that
-  defeats the purpose.
+  defeats the purpose. Breakpoint 3 lands on message *content*, which is
+  append-only and therefore stable; it is not a volatile block.
 - When `system_prompt_volatile` is empty / None, the single `system` block
   still carries the breakpoint (caches `tools + system`).
-- When there are no tools, only the system breakpoint applies.
+- When there are no tools, only the system + history breakpoints apply.
+- The history breakpoint is unconditional whenever `messages` is
+  non-empty. When the transcript tokenizes below the model's cache
+  floor, Anthropic silently drops the marker — harmless, since a
+  sub-floor transcript has nothing worth caching.
 
 OpenAI does not expose explicit breakpoints. Its caching is automatic on
 prefix matches of ≥1024 tokens. The adapter's responsibility is to keep
@@ -110,7 +152,9 @@ OpenRouter passes through to the upstream provider in OpenAI shape. For
 Anthropic-backed routes on OpenRouter, the wrapped request still carries
 `cache_control` markers in the messages/system blocks (they survive
 wrapping). For other upstream providers, OpenAI-shape prefix stability is
-the only knob.
+the only knob. The rolling history breakpoint (breakpoint 3) is emitted
+by the direct Anthropic adapter only; bringing the OpenRouter adapter to
+parity is tracked as a follow-up.
 
 ---
 
