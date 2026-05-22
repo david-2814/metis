@@ -343,6 +343,8 @@ def test_usage_readback_maps_cache_tokens():
     out = _usage_to_canonical(warm)
     assert out.cached_input_tokens == 7800
     assert out.cache_creation_input_tokens == 0
+    # prompt_tokens (8000) is the total; input_tokens is the uncached remainder.
+    assert out.input_tokens == 200
 
     # Cold call that establishes the cache: cache_write_tokens > 0.
     cold = SimpleNamespace(
@@ -353,6 +355,8 @@ def test_usage_readback_maps_cache_tokens():
     out_cold = _usage_to_canonical(cold)
     assert out_cold.cached_input_tokens == 0
     assert out_cold.cache_creation_input_tokens == 7800
+    # The written span is also excluded from input_tokens.
+    assert out_cold.input_tokens == 200
 
 
 async def test_complete_surfaces_cache_creation_tokens():
@@ -381,6 +385,8 @@ def test_stream_accumulator_reads_cache_write_tokens():
     usage = acc.usage()
     assert usage.cached_input_tokens == 50
     assert usage.cache_creation_input_tokens == 150
+    # prompt_tokens 200 = 50 cached + 150 written + 0 uncached.
+    assert usage.input_tokens == 0
 
 
 # ---- Family allowlist --------------------------------------------------

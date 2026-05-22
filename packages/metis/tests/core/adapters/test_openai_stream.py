@@ -198,6 +198,28 @@ async def test_stream_text_only():
     assert final.usage.output_tokens == 2
 
 
+async def test_stream_usage_excludes_cached_from_input_tokens():
+    # The streaming accumulator runs usage through the same
+    # _canonical_token_usage helper as the non-streaming path: prompt_tokens
+    # is the total, input_tokens is the uncached remainder (1000 - 900).
+    chunks = [
+        _role_chunk(),
+        _text_chunk("ok"),
+        _finish_chunk("stop"),
+        _usage_chunk(prompt=1000, completion=3, cached=900),
+    ]
+    adapter = OpenAIAdapter(client=_FakeClient(_FakeCompletions(stream_chunks=chunks)))
+
+    collected = []
+    async for ev in adapter.stream(_user_request()):
+        collected.append(ev)
+
+    final = collected[-1]
+    assert final.usage.input_tokens == 100
+    assert final.usage.cached_input_tokens == 900
+    assert final.usage.output_tokens == 3
+
+
 async def test_stream_single_tool_call():
     chunks = [
         _role_chunk(),
