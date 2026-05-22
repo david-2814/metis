@@ -286,17 +286,20 @@ If multiple clients are attached and one approves while another denies: first-wr
 
 A tool MUST declare its highest side-effect class. A "read-then-write" tool is `WRITE`. A shell tool that the user happens to use only for reads is still `EXECUTE` because the underlying capability is execute. The classification is by capability, not typical usage.
 
-### 5.5 Built-in tools (Phase 1)
+### 5.5 Built-in tools
 
-| Tool name      | Side effects | Description                                                |
-|----------------|--------------|------------------------------------------------------------|
-| `read_file`    | READ         | Read a file from the workspace.                            |
-| `write_file`   | WRITE        | Create or overwrite a file in the workspace.               |
-| `patch_file`   | WRITE        | Replace a unique string in a file (str_replace style).     |
-| `list_dir`     | READ         | List directory contents (workspace-scoped).                |
-| `shell`        | EXECUTE      | Run a shell command in the workspace directory.            |
+| Tool name      | Side effects | Description                                                                                                       |
+|----------------|--------------|-------------------------------------------------------------------------------------------------------------------|
+| `read_file`    | READ         | Read a file from the workspace. Optional `offset` (1-indexed start line) + `limit` (line count) for line slices.  |
+| `write_file`   | WRITE        | Create or overwrite a file in the workspace.                                                                      |
+| `patch_file`   | WRITE        | Replace a unique string in a file (str_replace style).                                                            |
+| `list_dir`     | READ         | List directory contents (workspace-scoped).                                                                       |
+| `grep_files`   | READ         | Regex search across the workspace; returns `path:line: snippet` hits.                                             |
+| `shell`        | EXECUTE      | Run a shell command in the workspace directory.                                                                   |
 
-These five constitute the v1 toolset. Memory tools (`memory_add`, `memory_replace`, `memory_consolidate`) ship in Phase 2. MCP-wrapped tools ship in Phase 3.
+Phase 1 shipped `read_file` / `write_file` / `patch_file` / `list_dir` / `shell`. The `read_file` slicing affordance (`offset` / `limit`) and the `grep_files` search tool landed 2026-05-22 to reduce over-reading on large workspaces — a tool call adds a full LLM round-trip carrying the result into context, so reading more than necessary is paid for twice (once when called, again on every subsequent turn until compaction). Memory tools (`memory_add`, `memory_replace`, `memory_consolidate`) ship in Phase 2; the `delegate` and `skill_save` planner tools ship in Phase 2.5 + Wave 17. MCP-wrapped tools remain out of scope for v1.
+
+`grep_files` is in-process: it walks the workspace via `os.walk(followlinks=False)`, prunes common build/cache dirs (`.git`, `__pycache__`, `.venv`, `venv`, `node_modules`, `dist`, `build`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.tox`, `site`, `.next`, `.cache`), routes each file read through `WorkspaceFileAPI.read()` (so symlinks pointing outside the workspace are rejected by construction), skips binary files (`UnicodeDecodeError`) and files larger than 5 MB, caps results at `max_results` (default 50, hard ceiling 200), and trims any snippet longer than 300 chars. The agent's prior options for "find references" — shelling out to `grep -rn` (a full tool round-trip whose output also lives in context) or reading whole files until the reference was found — are both materially more expensive in tokens.
 
 ---
 

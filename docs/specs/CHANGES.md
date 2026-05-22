@@ -84,6 +84,19 @@ When changing a spec, the dependent specs (right column whose left column is the
 
 ## Change log
 
+### 2026-05-22 — tool-dispatcher.md §5.5: `grep_files` builtin + `read_file` offset/limit (smart-reading affordances)
+
+- **Spec:** [`tool-dispatcher.md`](tool-dispatcher.md) — §5.5 built-in tools table updated: new `grep_files` (READ) row + `read_file` description note about optional `offset` / `limit` line slicing. Trailing paragraph dates the addition and explains the cost rationale + the in-process search behavior (prune list, symlink safety, binary/size limits, result cap).
+- **Change:** Adds a workspace-wide regex search builtin and extends `read_file` with optional 1-indexed `offset` / `limit` for partial reads. Both are token-shape interventions: a tool call costs a full extra LLM round-trip carrying the result into context, so reading more than necessary is paid for twice (once when called, again on every subsequent turn until compaction). The agent's prior options for "find references" were (a) shell out to `grep -rn` (a full tool round-trip whose output also lives in context) or (b) read whole files until the reference was found. `grep_files` is in-process, skips common build/cache dirs and binary/very-large files, caps at 200 results, and trims long lines to 300 chars; `read_file`'s slicing is back-compat (no args = unchanged behavior).
+- **Type:** additive. One new tool name and two new optional parameters on `read_file`; no existing tool's contract changed. Workspace path security is preserved — `grep_files` routes every file read through `WorkspaceFileAPI.read()`, which rejects symlinks pointing outside the root.
+- **References to verify:**
+  - `canonical-message-format.md §5` — tool input/output content blocks. Both new surfaces emit `TextBlock` content; no canonical shape change. No spec edit required.
+  - `routing-engine.md §3` — tool availability is independent of routing; no change. No spec edit required.
+  - `event-bus-and-trace-catalog.md §6.7` — `tool.completed` payload carries the tool name as a string; the new `grep_files` name needs no schema change. No spec edit required.
+- **Status:** verified — code (`tools/builtins/search.py` + extended `tools/builtins/file_ops.py:ReadFileTool` + `tools/builtins/__init__.py`) and tests land in the same change.
+
+---
+
 ### 2026-05-22 — context-assembler.md §3 v2: rolling history cache breakpoint (cache-coverage fix)
 
 - **Spec:** [`context-assembler.md`](context-assembler.md) — §3 rewritten to place **three** cache breakpoints (was two); new §3.1 "Why the rolling history breakpoint (v2)". Header `Last updated` bumped to 2026-05-22.

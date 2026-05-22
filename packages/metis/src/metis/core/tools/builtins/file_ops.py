@@ -20,10 +20,27 @@ class _BaseFileTool:
 class ReadFileTool(_BaseFileTool):
     definition = ToolDefinition(
         name="read_file",
-        description="Read a file from the workspace and return its text content.",
+        description=(
+            "Read a file from the workspace and return its text content. "
+            "Optional `offset` (1-indexed start line) and `limit` (line count) "
+            "read only a slice — use these when a file is large and you only "
+            "need a specific section. Omitting both returns the full file."
+        ),
         input_schema={
             "type": "object",
-            "properties": {"path": {"type": "string"}},
+            "properties": {
+                "path": {"type": "string"},
+                "offset": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "1-indexed line number to start reading from.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum number of lines to return.",
+                },
+            },
             "required": ["path"],
             "additionalProperties": False,
         },
@@ -32,6 +49,8 @@ class ReadFileTool(_BaseFileTool):
 
     async def execute(self, input: dict, context: ToolContext) -> ToolOutput:
         path = input["path"]
+        offset = input.get("offset")
+        limit = input.get("limit")
         try:
             text = context.workspace_files.read(path)
         except WorkspaceEscapeError as exc:
@@ -40,7 +59,23 @@ class ReadFileTool(_BaseFileTool):
             raise ToolExecutionError(
                 f"file not found: {path}", tool_use_id=context.tool_use_id, underlying=exc
             ) from exc
-        return ToolOutput(content=[TextBlock(text=text)])
+
+        # Back-compat: no slicing params → unchanged behavior.
+        if offset is None and limit is None:
+            return ToolOutput(content=[TextBlock(text=text)])
+
+        # `keepends=True` preserves newline characters so the rejoined slice
+        # is byte-faithful for the lines it covers.
+        lines = text.splitlines(keepends=True)
+        total = len(lines)
+        start = (offset - 1) if offset is not None else 0
+        if start >= total:
+            return ToolOutput(
+                content=[TextBlock(text=f"(file has {total} line(s); offset {offset} is past end)")]
+            )
+        end = total if limit is None else min(start + limit, total)
+        header = f"(showing lines {start + 1}-{end} of {total})\n"
+        return ToolOutput(content=[TextBlock(text=header + "".join(lines[start:end]))])
 
 
 class WriteFileTool(_BaseFileTool):

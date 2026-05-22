@@ -7,11 +7,13 @@ from metis.core.tools.builtins.file_ops import (
     ReadFileTool,
     WriteFileTool,
 )
+from metis.core.tools.builtins.search import GrepFilesTool
 from metis.core.tools.builtins.shell import ShellTool
 from metis.core.tools.builtins.skill_save import SkillSaveTool
 
 __all__ = [
     "DelegateTool",
+    "GrepFilesTool",
     "ListDirTool",
     "PatchFileTool",
     "ReadFileTool",
@@ -37,6 +39,7 @@ def register_builtins(dispatcher, *, with_delegate: bool = True) -> None:
     dispatcher.register(WriteFileTool)
     dispatcher.register(PatchFileTool)
     dispatcher.register(ListDirTool)
+    dispatcher.register(GrepFilesTool)
     dispatcher.register(ShellTool)
     dispatcher.register(SkillSaveTool)
     if with_delegate:
