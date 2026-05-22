@@ -166,6 +166,8 @@ class StopReason(StrEnum):
     ERROR          = "error"
 
 class TokenUsage:
+    # The three input buckets are DISJOINT and sum to the total prompt
+    # token count (see §7.1). `input_tokens` is the *uncached* remainder.
     input_tokens: int
     output_tokens: int
     cached_input_tokens: int = 0     # cache hit (reads from cache)
@@ -420,12 +422,13 @@ Canonical mapping into `TokenUsage`:
 
 | OpenRouter `usage` field | `TokenUsage` field |
 |--------------------------|--------------------|
-| `prompt_tokens` | `input_tokens` |
+| `prompt_tokens` (total — includes cached + written) | — used to *derive* `input_tokens`, see below |
+| `prompt_tokens − cached_tokens − cache_write_tokens` | `input_tokens` (the uncached remainder) |
 | `completion_tokens` | `output_tokens` |
 | `prompt_tokens_details.cached_tokens` | `cached_input_tokens` (cache **read** / hit) |
 | `prompt_tokens_details.cache_write_tokens` | `cache_creation_input_tokens` (cache **write**) |
 
-This is a strict superset of the OpenAI mapping in §7.2. The shared `_usage_to_canonical` helper (`adapters/openai.py`) currently hardcodes `cache_creation_input_tokens = 0`; it must be extended to read `prompt_tokens_details.cache_write_tokens` for the OpenRouter path. `cache_write_tokens` is returned only for models with explicit caching + cache-write pricing; absent → `0` (a plain cache hit, or an implicit-cache model). On a cold call that establishes the cache, expect `cached_tokens = 0` and `cache_write_tokens > 0`; on a warm hit, `cached_tokens > 0` and `cache_write_tokens = 0`.
+This is a strict superset of the OpenAI mapping in §7.2. `prompt_tokens` is the *total* prompt count and **already includes** both `cached_tokens` and `cache_write_tokens`, so `input_tokens` is the subtraction `prompt_tokens − cached_tokens − cache_write_tokens` (the uncached remainder) per the disjoint-bucket contract in §7.1 — returning `prompt_tokens` verbatim would double-bill the cached span against the §7.1 cost formula. The shared `_usage_to_canonical` helper (`adapters/openai.py`) currently hardcodes `cache_creation_input_tokens = 0`; it must be extended to read `prompt_tokens_details.cache_write_tokens` for the OpenRouter path. `cache_write_tokens` is returned only for models with explicit caching + cache-write pricing; absent → `0` (a plain cache hit, or an implicit-cache model). On a cold call that establishes the cache, expect `cached_tokens = 0` and `cache_write_tokens > 0`; on a warm hit, `cached_tokens > 0` and `cache_write_tokens = 0`.
 
 `usage.cost` and `cost_details.upstream_inference_cost` are OpenRouter's own accounting; Metis **ignores them** and computes cost from the local price table per §7.1, using the catalog's `input_cache_read` / `input_cache_write` rates (§4.5.2). The `cache_discount` field referenced in OpenRouter's caching guide is surfaced via `/api/v1/generation`, **not** the inline `usage` object — Metis does not need it, since canonical cost is recomputed locally.
 
@@ -611,11 +614,23 @@ Adapters report raw token counts in `TokenUsage`. They do NOT compute USD cost. 
 
 ```python
 class TokenUsage:
-    input_tokens: int
+    input_tokens: int                # uncached prompt tokens only
     output_tokens: int
     cached_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
 ```
+
+**The three input buckets are disjoint.** `input_tokens` is the *uncached*
+prompt tokens; `cached_input_tokens` is the cache-read (hit) span; and
+`cache_creation_input_tokens` is the cache-write span. They do not overlap, and
+`input_tokens + cached_input_tokens + cache_creation_input_tokens` equals the
+total prompt token count. The cost formula below depends on this — it prices
+each bucket exactly once at its own rate. An adapter whose upstream reports a
+*total* prompt count that already includes the cached/created spans (every
+OpenAI-wire provider — see §7.2 and §4.5.4) MUST subtract those spans out of
+`input_tokens` before returning `TokenUsage`, or the cached span is billed
+twice. The Anthropic API reports disjoint buckets natively, so its adapter maps
+them straight through.
 
 The core, on receiving a `CanonicalResponse` from the adapter:
 
@@ -629,8 +644,8 @@ This separation lets the core retroactively reprice (walk traces, recompute) and
 
 Both Anthropic and OpenAI report tokens in their response bodies:
 
-- **Anthropic:** `usage: {input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}`. Map directly: `cache_read_input_tokens` → `cached_input_tokens`.
-- **OpenAI:** `usage: {prompt_tokens, completion_tokens, prompt_tokens_details: {cached_tokens}}`. Map: `prompt_tokens` → `input_tokens`, `completion_tokens` → `output_tokens`, `prompt_tokens_details.cached_tokens` → `cached_input_tokens`. `cache_creation_input_tokens = 0` (OpenAI doesn't separately report it).
+- **Anthropic:** `usage: {input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}`. Anthropic's `input_tokens` is already the uncached remainder (the buckets are disjoint upstream). Map directly: `cache_read_input_tokens` → `cached_input_tokens`.
+- **OpenAI:** `usage: {prompt_tokens, completion_tokens, prompt_tokens_details: {cached_tokens}}`. `prompt_tokens` is the *total* prompt count and **already includes** `cached_tokens`. Map: `input_tokens` = `prompt_tokens − cached_tokens` (the uncached remainder, per the disjoint-bucket contract in §7.1), `completion_tokens` → `output_tokens`, `prompt_tokens_details.cached_tokens` → `cached_input_tokens`. `cache_creation_input_tokens = 0` (OpenAI doesn't separately report it). Mapping `prompt_tokens` straight to `input_tokens` would double-bill the cached span.
 
 For streaming responses, both providers send usage in the final stream chunk (OpenAI requires `stream_options: {include_usage: true}` in the request). Adapters MUST request usage in streaming mode and propagate it via `message.complete.usage`.
 
@@ -859,6 +874,7 @@ Cassettes are reviewed in PRs the same as code.
 | 2026-05-21 | Aggregator adapters detect prompt-caching from `/api/v1/models` pricing fields + a maintained family allowlist (§4.5) | OpenRouter exposes no caching capability flag and `supported_parameters` omits `cache_control`; `pricing.input_cache_read` is the only machine signal and is incomplete, so a wire-id-prefix allowlist is required for breakpoint-style detection. |
 | 2026-05-21 | OpenRouter explicit caching uses a single system-tail `cache_control` breakpoint, not a `tools[]` breakpoint or top-level auto-caching (§4.5.3) | `tools[]` cache_control is undocumented on the chat-completions endpoint; Anthropic's `tools → system` prefix walk means a system-tail breakpoint caches tools anyway. Top-level auto-caching caches volatile content and forces Anthropic-direct routing (excludes Bedrock/Vertex). |
 | 2026-05-21 | OpenRouter adapter leaves the `provider` routing object unset on the caching path (§4.5.5) | OpenRouter's automatic provider sticky routing keeps caches warm *and* preserves failover; setting `provider.order`/`sort` disables sticky routing. |
+| 2026-05-22 | OpenAI-wire adapters derive `input_tokens` as `prompt_tokens − cached − written` so the three `TokenUsage` input buckets stay disjoint (§4.5.4, §7.1, §7.2) | OpenAI/OpenRouter report `prompt_tokens` as the total (it already includes the cached span); the §7.1 cost formula sums the three buckets, so returning the total verbatim double-bills cache reads — caching was reported as *more* expensive than no caching. |
 
 ---
 

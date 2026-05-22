@@ -84,6 +84,19 @@ When changing a spec, the dependent specs (right column whose left column is the
 
 ## Change log
 
+### 2026-05-22 — provider-adapter-contract.md §4.5.4 / §7: OpenAI-wire `input_tokens` is the uncached remainder (cached-token double-bill fix)
+
+- **Spec:** [`provider-adapter-contract.md`](provider-adapter-contract.md) — §3 `TokenUsage` definition (disjoint-bucket comment), §4.5.4 OpenRouter usage-mapping table + prose, §7.1 (new disjoint-bucket paragraph + `input_tokens` comment), §7.2 OpenAI mapping, §12 decision log (one row). [`canonical-message-format.md`](canonical-message-format.md) §4.3 `Usage` struct (disjoint-bucket comment).
+- **Change:** Pins the previously-implicit contract that `TokenUsage` / `Usage`'s three input buckets — `input_tokens`, `cached_input_tokens`, `cache_creation_input_tokens` — are **disjoint** and sum to the total prompt token count, with `input_tokens` the *uncached* remainder. The §7.1 cost formula sums all three at their own rates, so it depends on disjointness. The spec previously said to map OpenAI/OpenRouter `prompt_tokens` straight to `input_tokens` (§7.2, §4.5.4) — but `prompt_tokens` is the upstream *total* and already includes the cached span, so the formula double-billed every cached call: a live OpenRouter run measured the cache firing (96.9% hit rate) yet Metis reported the cached pass as *more* expensive than the no-cache control. The mappings now derive `input_tokens = prompt_tokens − cached_tokens − cache_write_tokens`. Anthropic is unaffected — its API reports disjoint buckets natively.
+- **Type:** breaking (corrects a contract the OpenAI/OpenRouter adapters were violating). Behavioral effect: `TokenUsage.input_tokens` from the OpenAI-wire adapters drops by the cached/written token count on cached calls, and `cost_usd` for those calls falls to the correct (lower) value. Anthropic adapter output is byte-identical. Trace rows written before this change keep the inflated cost; retroactive reprice (canonical-format §6.4) would correct them but is out of scope here.
+- **References to verify:**
+  - `canonical-message-format.md §4.3 / §6.4` — `Usage` struct picks up the disjoint-bucket comment; the §6.4 retroactive-reprice mechanism is the documented path to correct pre-change trace rows. Edited (comment only). ✓
+  - `analytics-api.md` — `/analytics/cost` and `/analytics/savings` roll up `cost_usd` / `input_tokens` from `llm.call_completed`; no schema change, the per-call values are now correct for OpenAI/OpenRouter traffic. No spec edit required. ✓
+  - `event-bus-and-trace-catalog.md §6.3` — `llm.call_completed` payload carries `input_tokens` / `cached_input_tokens` / `cache_creation_input_tokens` / `cost_usd`; field shapes unchanged, only the OpenAI-wire `input_tokens` value is corrected. No spec edit required. ✓
+- **Status:** verified — code (`adapters/openai.py` `_usage_to_canonical` + `_OpenAIStreamAccumulator.usage()`) and tests land in the same change. Supersedes the implementation-time `_usage_to_canonical` note in the 2026-05-21 entry below (the `cache_write_tokens` read shipped with the OpenRouter caching batch; this entry adds the subtraction).
+
+---
+
 ### 2026-05-21 — provider-adapter-contract.md v1.3: §4.5 prompt-caching detection + breakpoint responsibility for aggregator upstreams (OpenRouter)
 
 - **Spec:** [`provider-adapter-contract.md`](provider-adapter-contract.md) — header (v1.2 → v1.3), new §4.5 (§4.5.1–§4.5.5), §11 open questions 7 (OpenRouter half resolved) + new 8, §12 decision log (three rows).

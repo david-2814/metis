@@ -576,6 +576,47 @@ def _openai_message_to_canonical(message, tool_map: ToolIdMap) -> list[ContentBl
     return out
 
 
+def _canonical_token_usage(
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int,
+    cache_write_tokens: int,
+) -> TokenUsage:
+    """Build a canonical `TokenUsage` from OpenAI-wire token counts.
+
+    OpenAI / OpenRouter report `prompt_tokens` as the *total* prompt count —
+    it already includes the cache-read (`cached_tokens`) and cache-write
+    (`cache_write_tokens`) spans. The canonical `TokenUsage` contract treats
+    the three input buckets as DISJOINT, and `PriceTable.compute_cost` sums
+    them at their own rates — so the cached/written tokens MUST be subtracted
+    out of `input_tokens` here, or the cached span is billed twice (once at
+    the full input rate, once at the cache rate). The Anthropic adapter
+    reports disjoint buckets natively; this keeps the OpenAI-wire adapters
+    consistent with that contract. See provider-adapter-contract.md
+    §4.5.4 / §7.1.
+    """
+    uncached_input = prompt_tokens - cached_tokens - cache_write_tokens
+    if uncached_input < 0:
+        # The upstream usage object is internally inconsistent. Clamp rather
+        # than emit a negative token count; this leaves cost a slight
+        # over-estimate, never a silent under-count.
+        logger.warning(
+            "openai-wire usage inconsistent: prompt_tokens=%d < cached=%d + "
+            "cache_write=%d; clamping input_tokens to 0",
+            prompt_tokens,
+            cached_tokens,
+            cache_write_tokens,
+        )
+        uncached_input = 0
+    return TokenUsage(
+        input_tokens=uncached_input,
+        output_tokens=completion_tokens,
+        cached_input_tokens=cached_tokens,
+        cache_creation_input_tokens=cache_write_tokens,
+    )
+
+
 def _usage_to_canonical(usage) -> TokenUsage:
     """OpenAI-shaped usage → canonical TokenUsage.
 
@@ -585,7 +626,12 @@ def _usage_to_canonical(usage) -> TokenUsage:
     *does* report explicit cache writes for breakpoint-style upstreams as
     `prompt_tokens_details.cache_write_tokens`; reading it here is a no-op
     for OpenAI (the field is absent) and populates `cache_creation_input_tokens`
-    for OpenRouter — see provider-adapter-contract.md §4.5.4."""
+    for OpenRouter — see provider-adapter-contract.md §4.5.4.
+
+    `prompt_tokens` is the upstream *total* and already includes the
+    cached/written spans; `_canonical_token_usage` subtracts them back out so
+    `input_tokens` is the uncached remainder (provider-adapter-contract.md
+    §7.1)."""
     prompt = getattr(usage, "prompt_tokens", 0) or 0
     completion = getattr(usage, "completion_tokens", 0) or 0
     cached = 0
@@ -594,11 +640,11 @@ def _usage_to_canonical(usage) -> TokenUsage:
     if details is not None:
         cached = getattr(details, "cached_tokens", 0) or 0
         cache_creation = getattr(details, "cache_write_tokens", 0) or 0
-    return TokenUsage(
-        input_tokens=prompt,
-        output_tokens=completion,
-        cached_input_tokens=cached,
-        cache_creation_input_tokens=cache_creation,
+    return _canonical_token_usage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        cached_tokens=cached,
+        cache_write_tokens=cache_creation,
     )
 
 
@@ -932,11 +978,14 @@ class _OpenAIStreamAccumulator:
         return [b[1] for b in blocks]
 
     def usage(self) -> TokenUsage:
-        return TokenUsage(
-            input_tokens=self._input_tokens,
-            output_tokens=self._output_tokens,
-            cached_input_tokens=self._cached_input_tokens,
-            cache_creation_input_tokens=self._cache_creation_input_tokens,
+        # `self._input_tokens` is the upstream `prompt_tokens` total; the
+        # helper subtracts the cached/written spans so `input_tokens` is the
+        # uncached remainder (provider-adapter-contract.md §7.1).
+        return _canonical_token_usage(
+            prompt_tokens=self._input_tokens,
+            completion_tokens=self._output_tokens,
+            cached_tokens=self._cached_input_tokens,
+            cache_write_tokens=self._cache_creation_input_tokens,
         )
 
 

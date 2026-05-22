@@ -216,10 +216,14 @@ class RoutingMode(StrEnum):
     DEFAULT   = "default"      # workspace or global default
 
 class Usage:
+    # input_tokens, cached_input_tokens and cache_creation_input_tokens are
+    # three DISJOINT buckets that sum to the total prompt token count;
+    # input_tokens is the *uncached* remainder. cost_usd prices each bucket
+    # once at its own rate — see provider-adapter-contract.md §7.1.
     input_tokens: int
     output_tokens: int
-    cached_input_tokens: int = 0
-    cache_creation_input_tokens: int = 0
+    cached_input_tokens: int = 0      # cache read (hit)
+    cache_creation_input_tokens: int = 0  # cache write
     cost_usd: Decimal                 # computed from local price table; see §6.3
     pricing_version: str              # FK to price table entry
     latency_ms: int

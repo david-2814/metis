@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from metis.core.adapters.openai import (
     _canonical_messages_to_openai,
+    _canonical_token_usage,
     _classify_openai_response,
     _openai_message_to_canonical,
     _stop_reason,
@@ -30,6 +31,7 @@ from metis.core.canonical.content import (
 )
 from metis.core.canonical.messages import Message, MessageMetadata, Role
 from metis.core.canonical.tools import SideEffects, ToolDefinition
+from metis.core.pricing import DEFAULT_PRICE_TABLE
 
 
 def _msg(role: Role, content: list, **md) -> Message:
@@ -485,16 +487,21 @@ def test_stop_reason_mapping():
 
 
 def test_usage_maps_cached_tokens():
+    # `prompt_tokens` is the OpenAI-wire *total* — it already includes the
+    # 200 cached tokens. The canonical contract keeps the three input buckets
+    # disjoint, so `input_tokens` is the uncached remainder (1000 - 200).
     usage = SimpleNamespace(
         prompt_tokens=1000,
         completion_tokens=500,
         prompt_tokens_details=SimpleNamespace(cached_tokens=200),
     )
     out = _usage_to_canonical(usage)
-    assert out.input_tokens == 1000
+    assert out.input_tokens == 800
     assert out.output_tokens == 500
     assert out.cached_input_tokens == 200
     assert out.cache_creation_input_tokens == 0
+    # The three input buckets sum back to the upstream prompt_tokens total.
+    assert out.input_tokens + out.cached_input_tokens + out.cache_creation_input_tokens == 1000
 
 
 def test_usage_without_details_is_safe():
@@ -503,6 +510,61 @@ def test_usage_without_details_is_safe():
     assert out.input_tokens == 10
     assert out.output_tokens == 5
     assert out.cached_input_tokens == 0
+
+
+def test_usage_input_tokens_excludes_cached_and_written():
+    # OpenRouter shape: prompt_tokens includes both the cache-read and the
+    # cache-write spans; input_tokens is what's left.
+    usage = SimpleNamespace(
+        prompt_tokens=10_000,
+        completion_tokens=12,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=6_000, cache_write_tokens=2_000),
+    )
+    out = _usage_to_canonical(usage)
+    assert out.input_tokens == 2_000
+    assert out.cached_input_tokens == 6_000
+    assert out.cache_creation_input_tokens == 2_000
+    assert out.input_tokens + out.cached_input_tokens + out.cache_creation_input_tokens == 10_000
+
+
+def test_canonical_token_usage_clamps_inconsistent_counts():
+    # An upstream total smaller than cached + written is internally
+    # inconsistent; input_tokens clamps to 0 rather than going negative.
+    out = _canonical_token_usage(
+        prompt_tokens=100,
+        completion_tokens=5,
+        cached_tokens=80,
+        cache_write_tokens=50,
+    )
+    assert out.input_tokens == 0
+    assert out.cached_input_tokens == 80
+    assert out.cache_creation_input_tokens == 50
+
+
+def test_cached_call_is_not_double_billed():
+    # Regression: a warm (cache-hit) OpenAI-wire call must cost strictly less
+    # than the same-size uncached call. Before the fix, _usage_to_canonical
+    # copied prompt_tokens (cached span included) into input_tokens and
+    # compute_cost summed input + cached — billing the cached span twice, so
+    # caching showed up as *more* expensive than no caching.
+    model = "anthropic:claude-haiku-4-5"  # carries cache-read pricing
+    warm = _usage_to_canonical(
+        SimpleNamespace(
+            prompt_tokens=10_000,
+            completion_tokens=10,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=9_500, cache_write_tokens=0),
+        )
+    )
+    cold = _usage_to_canonical(
+        SimpleNamespace(
+            prompt_tokens=10_000,
+            completion_tokens=10,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=0, cache_write_tokens=0),
+        )
+    )
+    warm_cost = DEFAULT_PRICE_TABLE.compute_cost(model, warm)
+    cold_cost = DEFAULT_PRICE_TABLE.compute_cost(model, cold)
+    assert warm_cost < cold_cost
 
 
 # ---- Error classification ----------------------------------------------
