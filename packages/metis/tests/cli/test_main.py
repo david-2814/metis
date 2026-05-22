@@ -12,28 +12,33 @@ def test_help_returns_zero(capsys):
     assert exc.value.code == 0
     out = capsys.readouterr().out
     assert "metis" in out.lower()
-    assert "chat" in out
+    # `dev` is the advised command; `chat` is a kept alias.
+    assert "dev" in out
 
 
-def test_chat_subcommand_requires_workspace(capsys):
+@pytest.mark.parametrize("command", ["dev", "chat"])
+def test_dev_subcommand_requires_workspace(command):
     with pytest.raises(SystemExit) as exc:
-        main(["chat"])
+        main([command])
     # argparse exits with code 2 on missing required args
     assert exc.value.code == 2
 
 
-def test_chat_subcommand_parses_args():
-    """We can parse `chat <workspace> --model X` without executing."""
+@pytest.mark.parametrize("command", ["dev", "chat"])
+def test_dev_subcommand_parses_args(command):
+    """`dev` and its `chat` alias parse `<workspace> --model X` identically."""
     parser = build_parser()
-    args = parser.parse_args(["chat", "/some/dir", "--model", "sonnet"])
-    assert args.command == "chat"
+    args = parser.parse_args([command, "/some/dir", "--model", "sonnet"])
+    # argparse records the invoked name; the router treats both the same.
+    assert args.command == command
     assert args.workspace == "/some/dir"
     assert args.model == "sonnet"
 
 
-def test_chat_default_global_default_model():
+@pytest.mark.parametrize("command", ["dev", "chat"])
+def test_dev_default_global_default_model(command):
     parser = build_parser()
-    args = parser.parse_args(["chat", "/some/dir"])
+    args = parser.parse_args([command, "/some/dir"])
     assert args.global_default == "anthropic:claude-sonnet-4-6"
 
 

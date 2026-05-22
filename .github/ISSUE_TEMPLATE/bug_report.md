@@ -35,7 +35,7 @@ log output.
 - Python version:
 - OS:
 - Provider(s) in use (Anthropic / OpenAI / OpenRouter):
-- Surface (`metis chat` / `metis tui` / `metis serve` / `metis gateway`):
+- Surface (`metis dev` / `metis tui` / `metis serve` / `metis gateway`):
 
 ## Additional context
 

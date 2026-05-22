@@ -11,6 +11,12 @@ changes to the design specs), see [`docs/specs/CHANGES.md`](docs/specs/CHANGES.m
 
 ## [Unreleased]
 
+### Added
+
+- **`metis dev`** — the advised command to start an interactive dev session
+  (line-based REPL). `metis chat` is kept as an interchangeable alias, so
+  existing workflows and scripts are unaffected.
+
 ## [0.1.0] - 2026-05-19
 
 First public release — the GA launch milestone. Metis is a local-first AI dev

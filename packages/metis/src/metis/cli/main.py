@@ -44,8 +44,13 @@ def build_parser() -> argparse.ArgumentParser:
             default="anthropic:claude-sonnet-4-6",
         )
 
-    chat = sub.add_parser("chat", help="Start an interactive line-based REPL.")
-    _add_session_args(chat)
+    # `dev` is the advised command; `chat` is a kept alias (interchangeable).
+    dev = sub.add_parser(
+        "dev",
+        aliases=["chat"],
+        help="Start an interactive dev session (line-based REPL). `chat` is a kept alias.",
+    )
+    _add_session_args(dev)
 
     tui = sub.add_parser("tui", help="Start the Textual TUI.")
     _add_session_args(tui)
@@ -725,7 +730,7 @@ def main(argv: list[str] | None = None) -> int:
     # so the user sees a clean exit instead of a traceback. 130 is the
     # conventional SIGINT exit code.
     try:
-        if args.command == "chat":
+        if args.command in ("dev", "chat"):
             return asyncio.run(
                 run_chat(
                     workspace_path=args.workspace,
@@ -736,7 +741,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "tui":
             # Import lazily so users without the textual extra don't pay
-            # import cost when running `metis chat`.
+            # import cost when running `metis dev`.
             from metis.cli.tui.app import run_tui
 
             return asyncio.run(

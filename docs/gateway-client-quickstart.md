@@ -243,7 +243,7 @@ not exercised on gateway traffic unless a client deliberately omits
 `model` — which most SDKs make hard. This is per
 `gateway.md §V` and not a bug; if you want server-side routing
 policy to win on gateway traffic, either build a client that omits
-`model` or use the agent surface (`metis chat` / `metis serve`)
+`model` or use the agent surface (`metis dev` / `metis serve`)
 instead.
 
 ---

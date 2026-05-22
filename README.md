@@ -12,7 +12,7 @@ leave it. Apache-2.0.
 </p>
 
 ```text
-$ uv run metis chat .
+$ uv run metis dev .
 metis> help me debug src/parser.py        # uses your default model (sonnet)
 metis> @haiku summarize what you just did # route one turn to a cheaper model
 metis> /cost                              # per-turn USD breakdown
@@ -27,7 +27,7 @@ Every turn is cost-stamped in Decimal USD and a full routing-decision trace.
 
 ## New here? Pick a path
 
-- 🦾 **Just want to chat against an LLM locally?** [Quick start](#quick-start) below — `uv sync` + `uv run metis chat .`. Two minutes to first turn.
+- 🦾 **Just want to chat against an LLM locally?** [Quick start](#quick-start) below — `uv sync` + `uv run metis dev .`. Two minutes to first turn.
 - 🧭 **Want the design rationale first?** [Project overview](docs/project-overview.md) — vision, principles, architecture, and the three cost levers.
 - 🔌 **Already use Claude Code / Cursor / an SDK?** [Gateway client quickstart](docs/gateway-client-quickstart.md) — point `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` at a Metis gateway, no client changes.
 - 🏢 **Evaluating for a team?** [First savings number in &lt; 1 hour](docs/operations/quickstart.md) — kind cluster + helm + per-key cost rollup, end-to-end.
@@ -47,8 +47,11 @@ uv run metis auth add anthropic               # interactive; key is never echoed
                                               # ↓ alternative (12-factor / CI):
                                               # echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 
-uv run metis chat .                           # start chatting in this workspace
+uv run metis dev .                            # start a dev session in this workspace
 ```
+
+`metis dev` is the advised command; `metis chat` is a kept alias — the two are
+interchangeable.
 
 `metis auth add` is the discoverable default. It validates the key with a
 free / sub-cent ping before persisting. If you prefer the env-var path,
@@ -153,7 +156,7 @@ proxy for existing clients such as Claude Code, Cursor, and SDK apps.
 ```mermaid
 flowchart LR
   subgraph Clients
-    CLI["metis chat / tui"]
+    CLI["metis dev / tui"]
     HTTP["HTTP / WebSocket clients"]
     SDK["Claude Code / Cursor / SDKs"]
   end
@@ -231,7 +234,7 @@ flowchart LR
 
 ### Agent path
 
-The agent path is used by `metis chat`, `metis tui`, and `metis serve`.
+The agent path is used by `metis dev`, `metis tui`, and `metis serve`.
 Metis owns the conversation lifecycle:
 
 1. A client submits a user turn.
@@ -409,7 +412,7 @@ The `MemoryStore` is keyed only on workspace path:
 | Multi-user identity (Wave 8 user_id stamping)               | Same files (limitation, not per-user) |
 
 The mental model: **memory is a property of the workspace directory**, not of
-the agent or the user. When you `cd` into a directory and start `metis chat`,
+the agent or the user. When you `cd` into a directory and start `metis dev`,
 you inherit the agent's accumulated memory about that codebase.
 
 **Worker isolation.** When a planner spawns a worker via `delegate()`, the

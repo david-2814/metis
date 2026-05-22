@@ -10,7 +10,7 @@ and self-improving. Your codebase stays on your machine; your prompts and traces
 don't leave it.
 
 ```text
-$ uv run metis chat .
+$ uv run metis dev .
 metis> help me debug src/parser.py        # uses your default model (sonnet)
 metis> @haiku summarize what you just did # route one turn to a cheaper model
 metis> /cost                              # per-turn USD breakdown
@@ -94,8 +94,10 @@ uv sync                                       # resolves the workspace
 
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env    # or OPENAI / OPENROUTER
 
-uv run metis chat .                           # start chatting
+uv run metis dev .                            # start a dev session
 ```
+
+`metis dev` is the advised command; `metis chat` is a kept alias — interchangeable.
 
 Sanity-check the loop against the real API in under a minute (~$0.015 with
 haiku):
@@ -117,7 +119,7 @@ Want a server? `uv run metis serve . --port 8421` exposes HTTP + WebSocket.
 
     ---
 
-    Run `metis chat` or `metis tui` against any workspace. Tools, memory,
+    Run `metis dev` or `metis tui` against any workspace. Tools, memory,
     routing, evaluator — full agent loop on localhost.
 
     [:octicons-arrow-right-24: Project overview](project-overview.md)

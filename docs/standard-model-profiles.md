@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-05-12
 
-Curated "what this model is good for" tags that Metis ships as a default for known models. These appear in `metis chat` / `metis tui` `/models` output and on the HTTP `GET /models` response as `task_profile`.
+Curated "what this model is good for" tags that Metis ships as a default for known models. These appear in `metis dev` / `metis tui` `/models` output and on the HTTP `GET /models` response as `task_profile`.
 
 These tags are **recommendations, not enforcement.** Routing rules (per [`routing-engine.md §5`](specs/routing-engine.md)) remain the customization layer customers use to actually shape model selection for their workload. The tags exist to:
 
