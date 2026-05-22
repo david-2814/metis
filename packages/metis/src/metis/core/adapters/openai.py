@@ -320,16 +320,24 @@ def _canonical_messages_to_openai(
     system_prompt: str | None,
     tool_map: ToolIdMap,
     system_prompt_volatile: str | None = None,
+    *,
+    cache_system_breakpoint: bool = False,
 ) -> list[dict]:
     """Translate the canonical message list to OpenAI wire format.
 
-    - SYSTEM canonical messages and the optional `system_prompt` are
-      concatenated into a single first message with role=system.
-    - `system_prompt_volatile` (if any) is appended at the *end* of the
-      system message text so the byte-stable stable prefix sits first —
-      OpenAI's automatic prefix-match cache (≥1024 tokens, see
-      `docs/specs/context-assembler.md` §3) keys on the prefix, not the
-      whole message.
+    - SYSTEM canonical messages and the optional `system_prompt` form the
+      *stable* system segment; `system_prompt_volatile` is the *volatile*
+      segment.
+    - With `cache_system_breakpoint=False` (the default — the pure OpenAI
+      adapter) the two segments are concatenated stable-first into a single
+      string `content`. OpenAI's automatic prefix-match cache (≥1024 tokens,
+      see `docs/specs/context-assembler.md` §3) keys on the byte-stable
+      prefix, so the stable head sitting first is what matters.
+    - With `cache_system_breakpoint=True` (the OpenRouter adapter, for
+      explicit-breakpoint upstreams like Anthropic) the system message
+      `content` is a content-part array carrying a `cache_control`
+      breakpoint on the stable part — see provider-adapter-contract.md
+      §4.5.3.
     - ASSISTANT messages produce content text + a `tool_calls[]` array.
     - TOOL canonical messages produce role=tool messages with `tool_call_id`.
     """
@@ -354,13 +362,41 @@ def _canonical_messages_to_openai(
             out.extend(_tool_messages(msg, tool_map))
             continue
 
-    if system_prompt_volatile:
-        system_parts.append(system_prompt_volatile)
-
-    system_text = "\n\n".join(s for s in system_parts if s)
-    if system_text:
-        out.insert(0, {"role": "system", "content": system_text})
+    stable_text = "\n\n".join(s for s in system_parts if s)
+    volatile_text = system_prompt_volatile or ""
+    system_msg = _openai_system_message(stable_text, volatile_text, cache_system_breakpoint)
+    if system_msg is not None:
+        out.insert(0, system_msg)
     return out
+
+
+def _openai_system_message(
+    stable_text: str, volatile_text: str, cache_breakpoint: bool
+) -> dict | None:
+    """Build the OpenAI `role: system` message, or None when empty.
+
+    Without a breakpoint the segments are concatenated into one string —
+    byte-identical to the pre-caching behavior. With a breakpoint the
+    message carries a content-part array with a `cache_control` marker on
+    the stable part, so per-turn volatile mutations don't churn the cached
+    prefix (provider-adapter-contract.md §4.5.3).
+    """
+    if not cache_breakpoint:
+        full = "\n\n".join(s for s in (stable_text, volatile_text) if s)
+        return {"role": "system", "content": full} if full else None
+
+    parts: list[dict] = []
+    if stable_text:
+        parts.append({"type": "text", "text": stable_text, "cache_control": {"type": "ephemeral"}})
+        if volatile_text:
+            parts.append({"type": "text", "text": volatile_text})
+    elif volatile_text:
+        # No stable segment to anchor the breakpoint — mark the only part we
+        # have so caching still fires.
+        parts.append(
+            {"type": "text", "text": volatile_text, "cache_control": {"type": "ephemeral"}}
+        )
+    return {"role": "system", "content": parts} if parts else None
 
 
 def _user_message(msg: Message) -> dict:
@@ -541,21 +577,28 @@ def _openai_message_to_canonical(message, tool_map: ToolIdMap) -> list[ContentBl
 
 
 def _usage_to_canonical(usage) -> TokenUsage:
-    """OpenAI usage → canonical TokenUsage.
+    """OpenAI-shaped usage → canonical TokenUsage.
 
-    cache_creation_input_tokens is always 0 — OpenAI doesn't separately
-    report cache creation tokens; their cache is provider-managed."""
+    `prompt_tokens_details.cached_tokens` is the cache read (hit). For
+    direct OpenAI, cache creation is not separately reported and stays 0 —
+    their cache is provider-managed. OpenRouter, sharing this wire shape,
+    *does* report explicit cache writes for breakpoint-style upstreams as
+    `prompt_tokens_details.cache_write_tokens`; reading it here is a no-op
+    for OpenAI (the field is absent) and populates `cache_creation_input_tokens`
+    for OpenRouter — see provider-adapter-contract.md §4.5.4."""
     prompt = getattr(usage, "prompt_tokens", 0) or 0
     completion = getattr(usage, "completion_tokens", 0) or 0
     cached = 0
+    cache_creation = 0
     details = getattr(usage, "prompt_tokens_details", None)
     if details is not None:
         cached = getattr(details, "cached_tokens", 0) or 0
+        cache_creation = getattr(details, "cache_write_tokens", 0) or 0
     return TokenUsage(
         input_tokens=prompt,
         output_tokens=completion,
         cached_input_tokens=cached,
-        cache_creation_input_tokens=0,
+        cache_creation_input_tokens=cache_creation,
     )
 
 
@@ -643,11 +686,15 @@ async def _stream_openai_compat(
     provider_name: str,
     wire_model: str,
     _on_translate_error,
+    cache_system_breakpoint: bool = False,
+    extra_body: dict | None = None,
 ) -> AsyncIterator[StreamingEvent]:
     """Run an OpenAI-compatible streaming request and yield canonical events.
 
     Used by both OpenAIAdapter and OpenRouterAdapter — same SDK shape, just
-    different base URLs and provider names.
+    different base URLs and provider names. `cache_system_breakpoint` and
+    `extra_body` are OpenRouter-only knobs (prompt-cache breakpoint placement
+    and the `provider` routing object); both default to the OpenAI behavior.
     """
     tool_map = request.tool_id_map if request.tool_id_map is not None else ToolIdMap()
     wire_messages = _canonical_messages_to_openai(
@@ -655,6 +702,7 @@ async def _stream_openai_compat(
         request.system_prompt,
         tool_map,
         system_prompt_volatile=request.system_prompt_volatile,
+        cache_system_breakpoint=cache_system_breakpoint,
     )
     wire_tools = [_tool_to_openai(t) for t in request.tools]
 
@@ -665,6 +713,8 @@ async def _stream_openai_compat(
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    if extra_body:
+        kwargs["extra_body"] = extra_body
     if wire_tools:
         kwargs["tools"] = wire_tools
     if request.stop_sequences:
@@ -740,6 +790,7 @@ class _OpenAIStreamAccumulator:
         self._input_tokens = 0
         self._output_tokens = 0
         self._cached_input_tokens = 0
+        self._cache_creation_input_tokens = 0
 
     def consume(self, chunk) -> list[StreamingEvent]:
         emitted: list[StreamingEvent] = []
@@ -755,6 +806,7 @@ class _OpenAIStreamAccumulator:
             details = getattr(usage, "prompt_tokens_details", None)
             if details is not None:
                 self._cached_input_tokens = getattr(details, "cached_tokens", 0) or 0
+                self._cache_creation_input_tokens = getattr(details, "cache_write_tokens", 0) or 0
 
         if choice is None:
             return emitted
@@ -884,7 +936,7 @@ class _OpenAIStreamAccumulator:
             input_tokens=self._input_tokens,
             output_tokens=self._output_tokens,
             cached_input_tokens=self._cached_input_tokens,
-            cache_creation_input_tokens=0,
+            cache_creation_input_tokens=self._cache_creation_input_tokens,
         )
 
 

@@ -7,7 +7,7 @@ leave it. Apache-2.0.
 <p>
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
   <img alt="Python 3.13" src="https://img.shields.io/badge/Python-3.13-blue.svg">
-  <img alt="1843 tests passing" src="https://img.shields.io/badge/tests-1843_passing-brightgreen.svg">
+  <img alt="1865 tests passing" src="https://img.shields.io/badge/tests-1865_passing-brightgreen.svg">
   <img alt="Status: Phase 3 GA" src="https://img.shields.io/badge/status-Phase_3_GA-success.svg">
 </p>
 
