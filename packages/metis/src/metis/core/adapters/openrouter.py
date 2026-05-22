@@ -58,6 +58,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 _PER_MTOK = Decimal("1000000")
 
+# Upstreams reached via OpenRouter that cache *only* the spans the client
+# marks with an explicit `cache_control` breakpoint (Anthropic Claude,
+# Google Gemini's explicit path, Alibaba Qwen) — as opposed to implicit
+# prefix caching (OpenAI, DeepSeek, …) which needs no markers. OpenRouter's
+# /api/v1/models exposes no caching-style signal, so this is a maintained
+# wire-id-prefix allowlist; review it when OpenRouter onboards new
+# explicit-caching providers. See provider-adapter-contract.md §4.5.2.
+EXPLICIT_BREAKPOINT_FAMILIES = ("anthropic/", "google/", "qwen/")
+
 
 @dataclass(frozen=True)
 class CatalogResult:
@@ -209,12 +218,32 @@ class OpenRouterAdapter:
                 provider_name=self.name,
                 wire_model=_wire_model_name(request.model),
                 _on_translate_error=_translate_status_error,
+                cache_system_breakpoint=self._wants_cache_breakpoint(request.model),
+                extra_body=_provider_routing(),
             ):
                 yield event
         except asyncio.CancelledError as exc:
             raise CancelledError("request cancelled", request_id=request.request_id) from exc
         finally:
             self._in_flight.pop(request.request_id, None)
+
+    # ---- Prompt caching ------------------------------------------------
+
+    def _wants_cache_breakpoint(self, model: str) -> bool:
+        """True iff `model` is an explicit-breakpoint-family upstream that
+        also has cache-read pricing — provider-adapter-contract.md §4.5.2.
+
+        Implicit-cache upstreams (OpenAI, DeepSeek, …) return False: they
+        cache the prompt prefix on their own, so attaching a breakpoint
+        would be wrong. The capability gate (`supports_prompt_caching`,
+        derived from `pricing.input_cache_read`) means the catalog must be
+        fetched first; without it no breakpoints are emitted, which is the
+        safe default.
+        """
+        if not _wire_model_name(model).startswith(EXPLICIT_BREAKPOINT_FAMILIES):
+            return False
+        caps = self._capabilities.get(model)
+        return caps is not None and caps.supports_prompt_caching
 
     # ---- Single call ---------------------------------------------------
 
@@ -225,6 +254,7 @@ class OpenRouterAdapter:
             request.system_prompt,
             tool_map,
             system_prompt_volatile=request.system_prompt_volatile,
+            cache_system_breakpoint=self._wants_cache_breakpoint(request.model),
         )
         wire_tools = [_tool_to_openai(t) for t in request.tools]
         wire_model = _wire_model_name(request.model)
@@ -233,6 +263,7 @@ class OpenRouterAdapter:
             "model": wire_model,
             "max_completion_tokens": request.max_output_tokens,
             "messages": wire_messages,
+            "extra_body": _provider_routing(),
         }
         if wire_tools:
             kwargs["tools"] = wire_tools
@@ -291,6 +322,23 @@ def _wire_model_name(canonical: str) -> str:
     return canonical.split(":", 1)[1]
 
 
+def _provider_routing() -> dict:
+    """The OpenRouter `provider` routing object attached to every request,
+    delivered through the SDK's `extra_body` escape hatch (the field is not
+    in OpenAI's schema).
+
+    `allow_fallbacks: true` keeps OpenRouter's failover to the next-best
+    upstream when the primary is unavailable. A *bare* routing object (no
+    `order` / `sort` / `only`) leaves OpenRouter's automatic provider sticky
+    routing intact, so cache prefixes stay warm — see
+    provider-adapter-contract.md §4.5.5 for the trade-off.
+
+    A fresh dict is returned per call so a caller (or the SDK) mutating
+    `extra_body` can't leak across requests.
+    """
+    return {"provider": {"allow_fallbacks": True}}
+
+
 def _parse_capabilities(entry: dict) -> AdapterCapabilities:
     """Build AdapterCapabilities from an OpenRouter /api/v1/models entry."""
     arch = entry.get("architecture") or {}
@@ -300,6 +348,7 @@ def _parse_capabilities(entry: dict) -> AdapterCapabilities:
     supports_images = "image" in input_modalities
     supports_tools = "tools" in supported
     supports_structured_output = "response_format" in supported
+    supports_prompt_caching = _catalog_supports_caching(entry)
 
     top_provider = entry.get("top_provider") or {}
     max_context = entry.get("context_length") or top_provider.get("context_length") or 8_192
@@ -314,7 +363,7 @@ def _parse_capabilities(entry: dict) -> AdapterCapabilities:
         supports_streaming=True,
         supports_streaming_tool_calls=bool(supports_tools),
         supports_parallel_tool_calls=bool(supports_tools),
-        supports_prompt_caching=False,  # not reliably reportable across underlying providers
+        supports_prompt_caching=supports_prompt_caching,
         supports_system_messages_in_list=True,
         max_context_tokens=int(max_context),
         max_output_tokens=int(max_output),
@@ -322,6 +371,17 @@ def _parse_capabilities(entry: dict) -> AdapterCapabilities:
             ["image/png", "image/jpeg", "image/gif", "image/webp"] if supports_images else []
         ),
     )
+
+
+def _catalog_supports_caching(entry: dict) -> bool:
+    """Per provider-adapter-contract.md §4.5.2: OpenRouter's /api/v1/models
+    exposes no dedicated caching capability flag and `supported_parameters`
+    omits `cache_control`. The presence of `pricing.input_cache_read` (cache
+    reads are separately priced) is the only machine-readable signal that
+    prompt caching pays off for a model — so it drives the honest per-model
+    `supports_prompt_caching` declaration."""
+    pricing = entry.get("pricing")
+    return isinstance(pricing, dict) and pricing.get("input_cache_read") is not None
 
 
 def _parse_pricing(entry: dict) -> ModelPricing | None:
@@ -345,11 +405,19 @@ def _parse_pricing(entry: dict) -> ModelPricing | None:
         cached_per_token = Decimal(str(cached_raw)) if cached_raw else Decimal("0")
     except Exception:
         cached_per_token = Decimal("0")
+    # Cache *writes* are separately priced for explicit-breakpoint upstreams
+    # (Anthropic, Gemini); absent on implicit-cache models — default to 0.
+    # See provider-adapter-contract.md §4.5.2.
+    write_raw = pricing.get("input_cache_write") or pricing.get("cache_write")
+    try:
+        write_per_token = Decimal(str(write_raw)) if write_raw else Decimal("0")
+    except Exception:
+        write_per_token = Decimal("0")
     return ModelPricing(
         input_per_mtok=prompt_per_token * _PER_MTOK,
         output_per_mtok=completion_per_token * _PER_MTOK,
         cached_read_per_mtok=cached_per_token * _PER_MTOK,
-        cache_creation_per_mtok=Decimal("0"),
+        cache_creation_per_mtok=write_per_token * _PER_MTOK,
     )
 
 
