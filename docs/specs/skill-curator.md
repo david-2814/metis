@@ -857,7 +857,7 @@ Integration:
     runs without confirmation prompts (it is the operator running the
     CLI). If we add a "confirm each action" mode later, the toggle
     follows the existing `--auto-allow` convention for
-    `metis chat` / `metis tui`.
+    `metis dev` / `metis tui`.
 
 ---
 

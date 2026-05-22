@@ -20,7 +20,7 @@
 
 Three problems with the current env-var-only approach:
 
-1. **Discoverability.** A new user installs Metis, runs `metis chat`, and sees
+1. **Discoverability.** A new user installs Metis, runs `metis dev`, and sees
    "set ANTHROPIC_API_KEY". They don't know which providers are required vs
    optional, how to verify their key works, or where multiple keys would live.
 2. **Per-session pain.** API keys live in shell sessions, `.envrc`, `.env`, or
@@ -342,7 +342,7 @@ v1.0 never emits it.
 
 ## 9. Open questions
 
-1. **First-run wizard.** Should `metis chat` on a fresh install detect zero
+1. **First-run wizard.** Should `metis dev` on a fresh install detect zero
    configured providers and offer to run `metis auth add` interactively? Or
    should the error message be sufficient? Default lean: error message
    only; wizards have a reputation for being annoying. **Resolved v1

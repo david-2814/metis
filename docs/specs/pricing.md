@@ -306,7 +306,7 @@ The proposed structure is:
 **What's included:**
 
 - Self-hosted gateway (`apps/gateway/`) — full routing, lossless canonical IR, sync + SSE on both OpenAI- and Anthropic-shapes, all shipped per-key analytics.
-- The shipped CLI / TUI agent surface (`metis chat`, `metis tui`) — self-hosted, single-user.
+- The shipped CLI / TUI agent surface (`metis dev`, `metis tui`) — self-hosted, single-user.
 - Bounded memory, pattern store, evaluator (heuristic tier), single-user-mode analytics dashboard.
 - Source code under a permissive license (the specific license is the owner's call; the spec assumes "open enough that a CTO does not need legal review to install").
 
@@ -331,7 +331,7 @@ The proposed structure is:
 - **LLM-judge evaluator tier** — hybrid and LLM judges, `/analytics/quality` dashboard.
 - **Hosted SaaS option** — Metis-operated deployment; the buyer brings their provider keys, Metis operates the gateway / dashboard.
 - **Audit log export** — when shipped per [`multi-user.md §7.3`](multi-user.md); Pro-tier feature out of the gate.
-- **Replacement agent tier** — when shipped per the project strategy (private) "If hybrid"; the `metis chat`-and-beyond surface with skills, context-assembler, memory, learned routing.
+- **Replacement agent tier** — when shipped per the project strategy (private) "If hybrid"; the `metis dev`-and-beyond surface with skills, context-assembler, memory, learned routing.
 
 **Why per-seat for Pro:**
 

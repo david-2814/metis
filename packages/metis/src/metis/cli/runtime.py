@@ -1,4 +1,4 @@
-"""Shared setup for both the REPL (`metis chat`) and the Textual TUI (`metis tui`).
+"""Shared setup for both the REPL (`metis dev`) and the Textual TUI (`metis tui`).
 
 Both entry points wire the same components: event bus → trace store →
 session store → adapters → routing → tool dispatcher → session manager.

@@ -7,7 +7,7 @@ data shape are identical. This module owns:
 - ``parse_models_command(arg)`` — slash-command argument parsing.
 - ``resolve_models(...)`` — filter the registered set by mode (primary /
   all / pattern), always including the active sticky if present.
-- ``format_models_lines(...)`` — text rows for `metis chat` and `metis tui`.
+- ``format_models_lines(...)`` — text rows for `metis dev` and `metis tui`.
 - ``model_dict(...)`` — structured per-model record for the HTTP response.
 
 Filtering uses :mod:`metis.core.routing.families` to collapse OpenRouter versions

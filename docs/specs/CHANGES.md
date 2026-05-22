@@ -84,6 +84,16 @@ When changing a spec, the dependent specs (right column whose left column is the
 
 ## Change log
 
+### 2026-05-22 — CLI: `metis dev` is the advised interactive-session command; `metis chat` kept as an alias
+
+- **Spec:** prose-only references across [`memory-store.md`](memory-store.md), [`multi-user.md`](multi-user.md), [`pricing.md`](pricing.md), [`credentials.md`](credentials.md), [`skill-curator.md`](skill-curator.md). No contract, schema, or endpoint changed.
+- **Change:** The interactive line-REPL subcommand is now advised as `metis dev`; `metis chat` is registered as an interchangeable argparse alias (same handler, same args). Documentation and spec prose use `metis dev` going forward. Existing `metis chat` invocations, scripts, and decision-log rows are unaffected.
+- **Type:** additive. The `chat` alias preserves every existing invocation; no behavior change.
+- **References to verify:** none — purely a user-facing command name. Dated decision-log table rows in `multi-user.md` / `skill-curator.md` retain their original `metis chat` wording as historical record.
+- **Status:** verified — code (`cli/main.py` subparser `aliases=["chat"]`) and tests land in the same change.
+
+---
+
 ### 2026-05-22 — provider-adapter-contract.md §4.5.4 / §7: OpenAI-wire `input_tokens` is the uncached remainder (cached-token double-bill fix)
 
 - **Spec:** [`provider-adapter-contract.md`](provider-adapter-contract.md) — §3 `TokenUsage` definition (disjoint-bucket comment), §4.5.4 OpenRouter usage-mapping table + prose, §7.1 (new disjoint-bucket paragraph + `input_tokens` comment), §7.2 OpenAI mapping, §12 decision log (one row). [`canonical-message-format.md`](canonical-message-format.md) §4.3 `Usage` struct (disjoint-bucket comment).

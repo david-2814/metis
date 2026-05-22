@@ -1,6 +1,6 @@
 """Terminal-prompting confirmation handler for the CLI.
 
-Replaces `AutoAllowHandler` as the default for `metis chat` / `metis tui`.
+Replaces `AutoAllowHandler` as the default for `metis dev` / `metis tui`.
 Auto-approves `NONE` and `READ` side effects (matching the conservative
 defaults in `ConfirmationPolicy`); for `WRITE` / `EXECUTE` / `NETWORK`
 side effects, consults a per-workspace trust file and otherwise prompts

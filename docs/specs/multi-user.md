@@ -114,10 +114,10 @@ The trace store **never** carries plaintext email and never carries `email_sha25
 
 ### 3.4 The agent path
 
-The single-developer agent surfaces — `metis chat`, `metis tui`, `metis serve` — do not bind to a `user_id` in v1. Their traces carry `user_id: null` / `team_id: null`, the same convention `gateway.md §6` already uses for `gateway_key_id: null`. This is intentional:
+The single-developer agent surfaces — `metis dev`, `metis tui`, `metis serve` — do not bind to a `user_id` in v1. Their traces carry `user_id: null` / `team_id: null`, the same convention `gateway.md §6` already uses for `gateway_key_id: null`. This is intentional:
 
 - The agent path is operationally single-user (`metis serve` binds loopback-only per [`server-api.md §3.1`](server-api.md)); the operating developer **is** the user.
-- Adding `--user` / `--team` flags to `metis chat` would force the local-first dev to opt into an identity layer they don't need.
+- Adding `--user` / `--team` flags to `metis dev` would force the local-first dev to opt into an identity layer they don't need.
 - The analytics surface already handles the null case cleanly (see [`analytics-api.md §4.8`](analytics-api.md)) — the "agent-loop traffic" bucket gets a friendly label in the SPA.
 
 A future "team agent surface" (multi-dev `metis serve` behind an authenticated dashboard) would re-introduce per-request `user_id` binding via the auth context. That's downstream of the the project strategy (private) local-first-vs-SaaS resolution; v1 leaves the door open without specifying a contract.
@@ -478,7 +478,7 @@ These are deliberately not in this spec; they're the upgrade reasons that distin
 4. **Multi-org tenancy.** v1 assumes one deployment per organization, matching [`gateway.md §10.1`](gateway.md). Multi-org (separate keystores per org, trace-store partitioning, dashboard filtering) is a separate design.
 5. **Multi-workspace per key.** A single key still maps to exactly one workspace ([`gateway.md §3.3`](gateway.md)). A future v2 may allow `--workspace A --workspace B` on one key; the analytics surface would need a workspace-dimension addition. Default for v1 stays at one-workspace-per-key per §10.1.
 6. **Per-user audit retention overrides.** All trace data shares one retention policy in v1. Per-user GDPR-style retention is a Phase 4 concern.
-7. **Quota enforcement on `metis chat` / `metis serve`.** The agent path is loopback-only and operator-trusted; no user-binding, no budget enforcement. The gateway is where caps land.
+7. **Quota enforcement on `metis dev` / `metis serve`.** The agent path is loopback-only and operator-trusted; no user-binding, no budget enforcement. The gateway is where caps land.
 
 ### 8.1 Why no IdP in v1
 

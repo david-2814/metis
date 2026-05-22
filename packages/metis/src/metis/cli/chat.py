@@ -1,4 +1,4 @@
-"""Interactive line-based REPL (`metis chat`).
+"""Interactive line-based REPL (`metis dev`, alias `metis chat`).
 
 For the richer Textual TUI, see `metis tui` (src/metis/tui/app.py).
 """

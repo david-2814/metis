@@ -100,7 +100,7 @@ buyer's compliance team asks which shape they're signing off on.
 
 | Shape | Where it runs | Compliance posture |
 |-------|---------------|---------------------|
-| **Local-first** (dev laptop, `metis chat`) | Operator's workstation | Loopback-only; never crosses a network boundary; no SOC2 question because no shared infrastructure. Suitable for solo / pre-pilot evaluation. |
+| **Local-first** (dev laptop, `metis dev`) | Operator's workstation | Loopback-only; never crosses a network boundary; no SOC2 question because no shared infrastructure. Suitable for solo / pre-pilot evaluation. |
 | **In-VPC** (buyer-operated helm chart) | Buyer's cloud account (AWS / GCP / Azure) | Buyer's cloud-provider SOC2 Type 2 covers infrastructure; [`soc2-readiness.md`](soc2-readiness.md) covers the application layer. **This is the v1 reference posture.** |
 | **SaaS** (Metis-hosted, not v1) | Metis-operated cloud | Metis would need its own SOC2 attestation for the hosted product. **Not in scope for v1.** |
 

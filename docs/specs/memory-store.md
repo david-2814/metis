@@ -29,7 +29,7 @@ This spec depends on:
 1. **Bounded by design.** Both files have hard byte caps. Unbounded markdown ("everything CLAUDE.md") is the dominant competitor pattern; bounded memory is the wedge.
 2. **Agent-curated.** Adds, replaces, consolidates are tool calls the LLM makes — not human-edited config (though humans CAN edit the files directly; they're just markdown).
 3. **File-on-disk and portable.** No database, no JSON envelope. Plain markdown, `git add`-able, human-readable.
-4. **Cross-session continuity.** Memory persists across `metis chat` invocations. The agent doesn't relearn the workspace every session.
+4. **Cross-session continuity.** Memory persists across `metis dev` invocations. The agent doesn't relearn the workspace every session.
 5. **Eviction is observable.** Soft-cap overflow emits `memory.eviction` as a signal the agent must consolidate; hard-cap overflow rejects the write so the agent can't keep growing.
 6. **No silent garbage collection.** The agent decides what to evict via `memory_consolidate`. Auto-pruning would lose curation.
 
