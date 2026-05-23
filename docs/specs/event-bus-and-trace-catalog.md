@@ -412,6 +412,84 @@ For each event:
 
 `abandoned` is emitted on a configurable inactivity timeout (default 24h). `error` is emitted on unrecoverable session failure.
 
+#### `session.compaction_started`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 4 (Wave 18 catalog wiring; Wave 19 emitter)
+> **Actor:** SYSTEM
+> **Parent:** `turn.started`
+
+```python
+{
+    "session_id": str,
+    "turn_id": str,
+    "watermark_before": int,            # exclusive end-index of the compacted span in the message list
+    "span_message_count": int,          # how many messages are in the compacted span
+    "span_token_count_in": int,         # estimated input tokens of the compacted span
+    "threshold_or_hard_cap": Literal["threshold", "hard_cap"],
+}
+```
+
+Emitted by `SessionManager` when a compaction call is about to begin — after the threshold check fires and before the summarization request is sent (`session-compaction.md §3.1`). The summary text being produced is **not** in the event payload; it lives in the session message store. `threshold_or_hard_cap` records whether the soft `compaction_threshold_tokens` or the hard `compaction_hard_cap_tokens` triggered the call (`session-compaction.md §3.1`).
+
+#### `session.compaction_completed`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 4 (Wave 18 catalog wiring; Wave 19 emitter)
+> **Actor:** SYSTEM
+> **Parent:** `session.compaction_started`
+
+```python
+{
+    "session_id": str,
+    "turn_id": str,
+    "watermark_before": int,
+    "watermark_after": int,             # index of the synthetic summary message in the post-compaction list
+    "span_message_count": int,
+    "span_token_count_in": int,
+    "span_token_count_out": int,        # token count of the synthetic summary message
+    "cache_hit": bool,
+    "cache_key": str,                   # SHA-256 hex of (messages, model, prompt_version, max_tokens), §5.1
+    "cost_usd": Decimal,                # serialized as string per canonical-message-format §6.4; "0" on cache hit
+    "latency_ms": int,
+}
+```
+
+Emitted on every successful compaction — whether the summarization call ran (`cache_hit=False`, real `cost_usd` and `latency_ms`) or the cache hit short-circuited it (`cache_hit=True`, `cost_usd="0"`, `latency_ms` ≈ 0). The summary text itself lives in the session message store, not the event payload. `cache_key` is the SHA-256 hex digest of the cache key tuple per `session-compaction.md §5.1`.
+
+#### `session.compaction_failed`
+
+> **Sensitivity:** `pseudonymous`
+> **Phase:** 4 (Wave 18 catalog wiring; Wave 19 emitter)
+> **Actor:** SYSTEM
+> **Parent:** `session.compaction_started`
+
+```python
+{
+    "session_id": str,
+    "turn_id": str,
+    "watermark_before": int,
+    "span_message_count": int,
+    "failure_mode": Literal[
+        "adapter_error",                # provider-side failure during the summarization call
+        "no_valid_boundary",            # watermark cannot land on a clean tool-cycle boundary (§3.3)
+        "budget_exhausted_forced",      # per-session compaction budget exhausted past the hard cap (§3.4)
+        "validation_failed",            # synthetic message fails validate_message() post-compaction
+    ],
+    # --- additive (default null; populated per failure_mode) ---
+    "error_class": Literal[             # populated only on failure_mode="adapter_error"
+        "rate_limit", "auth", "server_error", "network",
+        "context_overflow", "invalid_request", "cancelled", "other",
+    ] | None,
+    "error_message": str | None,        # populated only on failure_mode="adapter_error"; PII-stripped per redaction.md
+    "truncated_message_count": int | None,  # populated only when the fallback path drops messages (§3.4)
+}
+```
+
+The four `failure_mode` values are pinned by `session-compaction.md §6`. `adapter_error` below the hard cap simply skips compaction and retries on the next threshold trip; `adapter_error` at or above the hard cap degrades to forced truncation and additionally populates `truncated_message_count`. `no_valid_boundary` fires when the boundary-guard slide (`§3.3`) finds no tool-cycle boundary in the candidate span. `budget_exhausted_forced` fires when the per-session `compaction_max_cost_per_session_usd` cap is already exhausted but the session is past the hard cap and must compact anyway (truncation fallback). `validation_failed` fires when the synthesized message fails `validate_message()` post-compaction.
+
+These three `session.compaction_*` events are **NOT** in `AUDIT_EVENT_TYPES` ([`audit-log.md`](audit-log.md)) — compaction is an operational optimization, not a compliance event. They are subject to the standard `trace-retention.md` sweep.
+
 ### 6.2 Turn domain
 
 #### `turn.started`
