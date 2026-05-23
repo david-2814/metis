@@ -14,9 +14,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 
 from metis.core.adapters.tool_id_map import ToolIdMap
+from metis.core.canonical.batch import BatchError, BatchHandle, BatchStatus
 from metis.core.canonical.capabilities import AdapterCapabilities
 from metis.core.canonical.content import ContentBlock
 from metis.core.canonical.messages import Message
@@ -35,12 +36,20 @@ class StopReason(StrEnum):
 @dataclass(frozen=True)
 class TokenUsage:
     """Raw token counts. Cost computation is the core's responsibility per
-    provider-adapter-contract.md §7."""
+    provider-adapter-contract.md §7.
+
+    `pricing_mode` is a transient adapter hint that propagates to the
+    caller's later `Usage.pricing_mode` and tells `PriceTable.compute_cost`
+    which rate column to read (sync rates vs `ModelPricing.batch_rates`).
+    `None` means "unknown / sync default"; the adapter stamps `"batch"`
+    on every `TokenUsage` returned via `fetch_batch` per §4.6.4.
+    """
 
     input_tokens: int
     output_tokens: int
     cached_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    pricing_mode: Literal["sync", "batch"] | None = None
 
 
 @dataclass
@@ -126,6 +135,61 @@ class ProviderAdapter(Protocol):
     async def close(self) -> None: ...
 
     def capabilities_for(self, model: str) -> AdapterCapabilities: ...
+
+    # ---- Asynchronous batch submission (§4.6) ----
+    #
+    # Default implementations raise NotImplementedError so existing
+    # adapters that don't override them still satisfy the structural
+    # Protocol shape. Adapters that declare `supports_batch_api=True` on
+    # any model row MUST override all three.
+
+    async def submit_batch(
+        self,
+        requests: list[CanonicalRequest],
+    ) -> BatchHandle:
+        """Submit a batch of requests to the provider's batch endpoint.
+
+        Returns a `BatchHandle` that the caller persists. The handle's
+        `custom_ids` tuple is same-length, same-order as the input
+        `requests` list; `fetch_batch` will later return results keyed
+        against this mapping.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement batch submission "
+            "(provider-adapter-contract.md §4.6)"
+        )
+
+    async def poll_batch(self, handle: BatchHandle) -> BatchStatus:
+        """Return the current upstream status of `handle`.
+
+        Callers SHOULD poll this before `fetch_batch`; calling
+        `fetch_batch` on an unfinished batch is permitted but blocks
+        until completion.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement batch submission "
+            "(provider-adapter-contract.md §4.6)"
+        )
+
+    async def fetch_batch(
+        self,
+        handle: BatchHandle,
+    ) -> list[CanonicalResponse | BatchError]:
+        """Retrieve per-request results for a completed batch.
+
+        Returns a list same-length and same-order as the `requests` list
+        that produced `handle`. Successful entries are `CanonicalResponse`;
+        failed entries are `BatchError`. Batch-level failures raise
+        `AdapterError`. Expired batches surface one `BatchError` per
+        `custom_id` with `error_class=ErrorClass.SERVER_ERROR` and
+        `retryable=True` (the spec names this `PROVIDER_TRANSIENT`; the
+        closed `ErrorClass` enum uses `SERVER_ERROR` for the same
+        semantics — see `canonical/batch.py`).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement batch submission "
+            "(provider-adapter-contract.md §4.6)"
+        )
 
 
 # Forward-reference: import here to avoid a cycle (streaming imports protocol).

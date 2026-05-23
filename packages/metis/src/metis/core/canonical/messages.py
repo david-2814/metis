@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Literal
 
 import msgspec
 
@@ -70,6 +71,25 @@ class RoutingDecisionRecord(msgspec.Struct, frozen=True):
 
 
 class Usage(msgspec.Struct, frozen=True):
+    """Resource accounting for one LLM call.
+
+    Input tokens partition into three disjoint buckets:
+      - `input_tokens`: full-billed input tokens.
+      - `cached_input_tokens`: cache-read tokens (provider charged at the
+        reduced cache-read rate).
+      - `cache_creation_input_tokens`: cache-write tokens (provider
+        charged at the cache-creation rate).
+
+    `pricing_mode` is orthogonal to the three input-token buckets — it
+    records *which rate table* the cost was computed from, not how
+    tokens were classified. `"sync"` is the historical default for every
+    interactive turn; `"batch"` is set by the adapter when the call
+    came back from a batch-submission path (Anthropic Batches / OpenAI
+    Batches at flat 50% discount, per provider-adapter-contract.md
+    §4.6). `None` is the pre-§4.6 trace convention; analytics consumers
+    SHOULD treat `None` as `"sync"`.
+    """
+
     input_tokens: int
     output_tokens: int
     cost_usd: Decimal
@@ -77,6 +97,7 @@ class Usage(msgspec.Struct, frozen=True):
     latency_ms: int
     cached_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    pricing_mode: Literal["sync", "batch"] | None = None
 
 
 class MessageMetadata(msgspec.Struct, frozen=True, eq=False):
