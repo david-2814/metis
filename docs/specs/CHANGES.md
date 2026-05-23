@@ -99,6 +99,7 @@ When changing a spec, the dependent specs (right column whose left column is the
   - `pattern-store.md §17` — concurrency pattern (`threading.RLock()`) reused. No edit required. ✓
   - `evaluator.md` — `BudgetTracker` pattern + rubric-versioning analog (`compaction_summary_prompt_version`) reused. No edit required. ✓
 - **Status:** pending review — the catalog wiring for the three new event types lands with the Wave-18 substrate batch; this entry returns to `verified` once `event-bus-and-trace-catalog.md §6` carries the three rows.
+- **Update (Wave 18a-5, branch `wave-18a-5`):** `event-bus-and-trace-catalog.md §6.1` now carries the three `session.compaction_*` payload rows; `PAYLOAD_REGISTRY` registers all three as PSEUDONYMOUS. No emitter wiring yet — Wave 19 §19a-2 wires `SessionManager`. The `References to verify` bullet for `event-bus-and-trace-catalog.md §6` is now satisfied; this entry can move toward `verified` once the rest of the Wave-18 substrate lands.
 
 ---
 
