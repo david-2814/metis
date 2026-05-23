@@ -36,3 +36,11 @@ class AdapterCapabilities(msgspec.Struct, frozen=True):
 
     # Image format support (only meaningful if supports_images)
     accepted_image_media_types: list[str] = msgspec.field(default_factory=list)
+
+    # Asynchronous batch submission (provider-adapter-contract.md §4.6).
+    # `False` is the safe default for every existing adapter row; the
+    # routing capability gate ignores this flag — batch eligibility is a
+    # *consumer-side* decision (e.g. `metis evaluate --batch-mode`), not
+    # a routing one. Adapters that declare `True` MUST implement
+    # `submit_batch` / `poll_batch` / `fetch_batch`.
+    supports_batch_api: bool = False
