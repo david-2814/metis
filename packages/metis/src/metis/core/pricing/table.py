@@ -6,10 +6,13 @@ Decimal arithmetic preserves accuracy for cent-level costs.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from metis.core.adapters.protocol import TokenUsage
+
+logger = logging.getLogger(__name__)
 
 
 class UnknownPricingModelError(KeyError):
@@ -22,12 +25,25 @@ class UnknownPricingModelError(KeyError):
 
 @dataclass(frozen=True)
 class ModelPricing:
-    """USD per million tokens for a single model."""
+    """USD per million tokens for a single model.
+
+    `batch_rates` is the optional batch-discounted rate variant per
+    provider-adapter-contract.md §4.6.4. When set, `PriceTable.compute_cost`
+    bills batch-submitted calls (those carrying `TokenUsage.pricing_mode
+    == "batch"`) off this row instead of the sync row. Anthropic and
+    OpenAI both document a flat 50% discount on input + output tokens for
+    batch submission; populate `batch_rates` with half the sync rates.
+
+    When `pricing_mode == "batch"` but `batch_rates is None`, the
+    PriceTable logs a WARN once per model and falls back to sync rates
+    (correctness preserved, savings lost). See §4.6.4 acceptance bar.
+    """
 
     input_per_mtok: Decimal
     output_per_mtok: Decimal
     cached_read_per_mtok: Decimal = Decimal("0")
     cache_creation_per_mtok: Decimal = Decimal("0")
+    batch_rates: ModelPricing | None = field(default=None)
 
 
 _MILLION = Decimal("1000000")
@@ -55,8 +71,16 @@ class PriceTable:
             raise UnknownPricingModelError(model_id) from None
 
     def compute_cost(self, model_id: str, usage: TokenUsage) -> Decimal:
-        """Compute cost in USD for a token usage record (canonical-format §6.3)."""
+        """Compute cost in USD for a token usage record (canonical-format §6.3).
+
+        When `usage.pricing_mode == "batch"` and the model's `ModelPricing`
+        row declares `batch_rates`, the batch rates are applied. When
+        `pricing_mode == "batch"` but the row has no `batch_rates`, the
+        sync rates are used and a WARN is logged once per model (per
+        provider-adapter-contract.md §4.6.4 acceptance bar).
+        """
         rates = self.pricing_for(model_id)
+        rates = self._effective_rates(model_id, rates, usage.pricing_mode)
         cost = (
             (Decimal(usage.input_tokens) * rates.input_per_mtok)
             + (Decimal(usage.output_tokens) * rates.output_per_mtok)
@@ -64,6 +88,33 @@ class PriceTable:
             + (Decimal(usage.cache_creation_input_tokens) * rates.cache_creation_per_mtok)
         ) / _MILLION
         return cost
+
+    def _effective_rates(
+        self, model_id: str, rates: ModelPricing, pricing_mode: str | None
+    ) -> ModelPricing:
+        if pricing_mode != "batch":
+            return rates
+        if rates.batch_rates is not None:
+            return rates.batch_rates
+        self._warn_missing_batch_rates(model_id)
+        return rates
+
+    def _warn_missing_batch_rates(self, model_id: str) -> None:
+        # Cache the warning per (table_version, model) so a long-running
+        # process logs once per model rather than per call.
+        cache = getattr(self, "_warned_missing_batch_rates", None)
+        if cache is None:
+            cache: set[str] = set()
+            object.__setattr__(self, "_warned_missing_batch_rates", cache)
+        if model_id in cache:
+            return
+        cache.add(model_id)
+        logger.warning(
+            "pricing: model %r requested batch rates but ModelPricing.batch_rates is None; "
+            "falling back to sync rates (savings lost, correctness preserved). "
+            "See provider-adapter-contract.md §4.6.4.",
+            model_id,
+        )
 
     def __contains__(self, model_id: object) -> bool:
         return model_id in self._models
@@ -87,24 +138,44 @@ class PriceTable:
 DEFAULT_PRICE_TABLE = PriceTable(
     version="2026-05-08",
     models={
-        # Anthropic
+        # Anthropic. `batch_rates` is the Anthropic Batches API flat 50%
+        # discount on every line item (input + output + cache reads +
+        # cache creation), per provider-adapter-contract.md §4.6.4.
         "anthropic:claude-opus-4-7": ModelPricing(
             input_per_mtok=Decimal("15.00"),
             output_per_mtok=Decimal("75.00"),
             cached_read_per_mtok=Decimal("1.50"),
             cache_creation_per_mtok=Decimal("18.75"),
+            batch_rates=ModelPricing(
+                input_per_mtok=Decimal("7.50"),
+                output_per_mtok=Decimal("37.50"),
+                cached_read_per_mtok=Decimal("0.75"),
+                cache_creation_per_mtok=Decimal("9.375"),
+            ),
         ),
         "anthropic:claude-sonnet-4-6": ModelPricing(
             input_per_mtok=Decimal("3.00"),
             output_per_mtok=Decimal("15.00"),
             cached_read_per_mtok=Decimal("0.30"),
             cache_creation_per_mtok=Decimal("3.75"),
+            batch_rates=ModelPricing(
+                input_per_mtok=Decimal("1.50"),
+                output_per_mtok=Decimal("7.50"),
+                cached_read_per_mtok=Decimal("0.15"),
+                cache_creation_per_mtok=Decimal("1.875"),
+            ),
         ),
         "anthropic:claude-haiku-4-5": ModelPricing(
             input_per_mtok=Decimal("1.00"),
             output_per_mtok=Decimal("5.00"),
             cached_read_per_mtok=Decimal("0.10"),
             cache_creation_per_mtok=Decimal("1.25"),
+            batch_rates=ModelPricing(
+                input_per_mtok=Decimal("0.50"),
+                output_per_mtok=Decimal("2.50"),
+                cached_read_per_mtok=Decimal("0.05"),
+                cache_creation_per_mtok=Decimal("0.625"),
+            ),
         ),
         # OpenAI — GPT-5 family. cache_creation_input_tokens is always 0 for
         # OpenAI (their cache is provider-managed, not separately reported).
