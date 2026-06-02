@@ -10,6 +10,7 @@ import pytest
 from metis.core.events.envelope import Actor, Sensitivity
 from metis.core.events.errors import EventValidationError, UnknownEventTypeError
 from metis.core.events.payloads import (
+    AUDIT_EVENT_TYPES,
     PAYLOAD_REGISTRY,
     EvalCompleted,
     EvalFailed,
@@ -20,6 +21,9 @@ from metis.core.events.payloads import (
     PatternRecorded,
     PolicyEvaluation,
     RouteDecided,
+    SessionCompactionCompleted,
+    SessionCompactionFailed,
+    SessionCompactionStarted,
     SessionCreated,
     TurnCompleted,
     TurnStarted,
@@ -794,3 +798,181 @@ def test_turn_completed_rejects_more_private_sensitivity_override():
             sensitivity=Sensitivity.PRIVATE,
         )
     assert "more private" in str(exc.value)
+
+
+# --- Wave 18a-5: session.compaction_* events --------------------------------
+# session-compaction.md §6 — three new PSEUDONYMOUS event types.
+
+
+def test_compaction_registry_membership():
+    """All three compaction events register with PSEUDONYMOUS sensitivity."""
+    expected = {
+        "session.compaction_started": SessionCompactionStarted,
+        "session.compaction_completed": SessionCompactionCompleted,
+        "session.compaction_failed": SessionCompactionFailed,
+    }
+    for event_type, payload_cls in expected.items():
+        assert event_type in PAYLOAD_REGISTRY, f"{event_type} missing from registry"
+        registered_cls, sensitivity = PAYLOAD_REGISTRY[event_type]
+        assert registered_cls is payload_cls
+        assert sensitivity == Sensitivity.PSEUDONYMOUS
+
+
+def test_compaction_events_not_in_audit_set():
+    """session-compaction.md §6: compaction is operational, not compliance."""
+    assert "session.compaction_started" not in AUDIT_EVENT_TYPES
+    assert "session.compaction_completed" not in AUDIT_EVENT_TYPES
+    assert "session.compaction_failed" not in AUDIT_EVENT_TYPES
+
+
+def test_compaction_started_roundtrip_and_event():
+    payload = SessionCompactionStarted(
+        session_id="sess_1",
+        turn_id="t_42",
+        watermark_before=30,
+        span_message_count=25,
+        span_token_count_in=27_500,
+        threshold_or_hard_cap="threshold",
+    )
+    data = msgspec.to_builtins(payload)
+    assert msgspec.convert(data, SessionCompactionStarted) == payload
+    event = make_event(
+        type="session.compaction_started",
+        session_id="sess_1",
+        turn_id="t_42",
+        actor=Actor.SYSTEM,
+        payload=payload,
+        timestamp=_now(),
+    )
+    assert event.type == "session.compaction_started"
+    assert event.sensitivity == Sensitivity.PSEUDONYMOUS
+    assert event.payload["threshold_or_hard_cap"] == "threshold"
+    assert event.payload["span_token_count_in"] == 27_500
+
+
+def test_compaction_completed_roundtrip_with_decimal_cost():
+    """§6: cost_usd is Decimal (canonical-format §6.4 string-serialized)."""
+    payload = SessionCompactionCompleted(
+        session_id="sess_1",
+        turn_id="t_42",
+        watermark_before=30,
+        watermark_after=6,  # tail of 5 preserved + 1 synthetic summary message
+        span_message_count=25,
+        span_token_count_in=27_500,
+        span_token_count_out=2_400,
+        cache_hit=False,
+        cache_key="abc123def456" * 5 + "abcd",  # 64-char SHA-256 hex
+        cost_usd=Decimal("0.003456"),
+        latency_ms=1820,
+    )
+    data = msgspec.to_builtins(payload)
+    # Decimal serializes as string per canonical-format §6.4.
+    assert data["cost_usd"] == "0.003456"
+    assert data["cache_hit"] is False
+    decoded = msgspec.convert(data, SessionCompactionCompleted)
+    assert decoded == payload
+    event = make_event(
+        type="session.compaction_completed",
+        session_id="sess_1",
+        turn_id="t_42",
+        actor=Actor.SYSTEM,
+        payload=payload,
+        timestamp=_now(),
+    )
+    assert event.sensitivity == Sensitivity.PSEUDONYMOUS
+    assert event.payload["cost_usd"] == "0.003456"
+
+
+def test_compaction_completed_cache_hit_zero_cost():
+    """A cache hit reports cost_usd=Decimal('0') and latency_ms ≈ 0."""
+    payload = SessionCompactionCompleted(
+        session_id="sess_1",
+        turn_id="t_43",
+        watermark_before=30,
+        watermark_after=6,
+        span_message_count=25,
+        span_token_count_in=27_500,
+        span_token_count_out=2_400,
+        cache_hit=True,
+        cache_key="d" * 64,
+        cost_usd=Decimal("0"),
+        latency_ms=3,
+    )
+    data = msgspec.to_builtins(payload)
+    assert data["cache_hit"] is True
+    assert data["cost_usd"] == "0"
+    assert msgspec.convert(data, SessionCompactionCompleted) == payload
+
+
+def test_compaction_failed_adapter_error_roundtrip():
+    """failure_mode='adapter_error' populates error_class + error_message."""
+    payload = SessionCompactionFailed(
+        session_id="sess_1",
+        turn_id="t_44",
+        watermark_before=30,
+        span_message_count=25,
+        failure_mode="adapter_error",
+        error_class="rate_limit",
+        error_message="upstream 429 from anthropic",
+    )
+    data = msgspec.to_builtins(payload)
+    decoded = msgspec.convert(data, SessionCompactionFailed)
+    assert decoded == payload
+    # truncated_message_count defaults to None — adapter_error below the hard
+    # cap skips compaction without truncating, per §3.4.
+    assert payload.truncated_message_count is None
+    event = make_event(
+        type="session.compaction_failed",
+        session_id="sess_1",
+        turn_id="t_44",
+        actor=Actor.SYSTEM,
+        payload=payload,
+        timestamp=_now(),
+    )
+    assert event.sensitivity == Sensitivity.PSEUDONYMOUS
+    assert event.payload["failure_mode"] == "adapter_error"
+    assert event.payload["error_class"] == "rate_limit"
+
+
+def test_compaction_failed_no_valid_boundary_omits_error_fields():
+    """failure_mode='no_valid_boundary': no adapter call, so no error fields."""
+    payload = SessionCompactionFailed(
+        session_id="sess_1",
+        turn_id="t_45",
+        watermark_before=30,
+        span_message_count=25,
+        failure_mode="no_valid_boundary",
+    )
+    assert payload.error_class is None
+    assert payload.error_message is None
+    assert payload.truncated_message_count is None
+    data = msgspec.to_builtins(payload)
+    assert msgspec.convert(data, SessionCompactionFailed) == payload
+
+
+def test_compaction_failed_remaining_failure_modes():
+    """§6: the four pinned failure_mode values round-trip; truncation count
+    populates only when the fallback path drops messages (§3.4)."""
+    # budget_exhausted_forced past the hard cap → forced truncation populated.
+    forced = SessionCompactionFailed(
+        session_id="sess_1",
+        turn_id="t_46",
+        watermark_before=80,
+        span_message_count=75,
+        failure_mode="budget_exhausted_forced",
+        truncated_message_count=70,
+    )
+    assert msgspec.convert(msgspec.to_builtins(forced), SessionCompactionFailed) == forced
+    assert forced.truncated_message_count == 70
+
+    # validation_failed: synthetic message fails validate_message().
+    validation = SessionCompactionFailed(
+        session_id="sess_1",
+        turn_id="t_47",
+        watermark_before=30,
+        span_message_count=25,
+        failure_mode="validation_failed",
+        error_message="synthetic message failed validate_message()",
+    )
+    assert msgspec.convert(msgspec.to_builtins(validation), SessionCompactionFailed) == validation
+    assert validation.failure_mode == "validation_failed"
