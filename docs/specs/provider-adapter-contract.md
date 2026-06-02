@@ -440,6 +440,90 @@ A cached prefix lives on **one** upstream endpoint. A cache hit only happens if 
 
 If a deployment needs a deterministic upstream for an unrelated reason (e.g. data residency), `provider: {"order": ["<slug>"], "allow_fallbacks": true}` pins `<slug>` first and still fails over to the normal list — but trades away sticky routing's load-balancing. That is a deployment-policy choice, outside the adapter's caching path. `allow_fallbacks: false` and `provider.only` remove failover entirely; **do not** use them to pin caching.
 
+### 4.6 Asynchronous batch submission
+
+**Status:** Drafted 2026-05-22; implementation deferred to Wave 18 (Anthropic) + Wave 19 (OpenAI). See [`../design/token-reduction-strategy.md §5`](../design/token-reduction-strategy.md).
+
+Anthropic and OpenAI both expose **batch APIs** at a flat 50% discount on input + output tokens: the client submits N requests bundled together, receives a batch handle, polls for status, and retrieves results when ready. Turnaround is documented as "best-effort, target 24 hours" — incompatible with interactive use, ideal for any workload that is already asynchronous on Metis's side (evaluator backfills via `metis evaluate`, benchmark re-runs via `scripts/benchmark.py`).
+
+This subsection specifies an additive adapter capability and protocol surface that opts in to batch submission. The synchronous `call()` and `stream()` paths are unchanged — batch is an additional mode the caller selects, not a replacement.
+
+#### 4.6.1 Capability flag
+
+`AdapterCapabilities.supports_batch_api: bool` — declared per `(provider, model)`. `False` is the safe default; existing adapter capability rows return `False` until the batch path is wired. Routing's capability gate ignores this flag — batch eligibility is a *consumer-side* decision, not a routing one.
+
+#### 4.6.2 Adapter protocol additions
+
+Two new methods on the `ProviderAdapter` Protocol (§3.1):
+
+```python
+async def submit_batch(
+    self,
+    requests: list[CanonicalRequest],
+    *,
+    ctx: AdapterContext,
+) -> BatchHandle: ...
+
+async def fetch_batch(
+    self,
+    handle: BatchHandle,
+    *,
+    ctx: AdapterContext,
+) -> list[BatchResult]: ...
+```
+
+Where:
+
+- `BatchHandle` is a `msgspec.Struct(frozen=True)` carrying `{provider, batch_id, submitted_at_ms, request_count, custom_ids: list[str]}`. `custom_ids` preserves the caller's mapping from `requests[i]` to result rows.
+- `BatchResult = CanonicalResponse | BatchError`, where `BatchError` carries `{custom_id, error_class: ErrorClass, error_message, retryable: bool}`. The list returned by `fetch_batch` is the *same length and order* as the `requests` list that produced the handle; failed entries surface as `BatchError`, successful entries as `CanonicalResponse`.
+
+Default implementation in the base `ProviderAdapter` raises `NotImplementedError`. Adapters that declare `supports_batch_api=True` MUST implement both methods.
+
+A third helper, `async def poll_batch(self, handle, *, ctx) -> BatchStatus`, returns `Literal["queued", "in_progress", "completed", "expired", "failed"]`. Callers SHOULD poll this before `fetch_batch`; calling `fetch_batch` on an unfinished batch is permitted but blocks until completion (with the same timeout the adapter uses for sync calls).
+
+#### 4.6.3 Wire mapping per provider
+
+| Provider | Endpoint | Submission format | Retrieval |
+|----------|----------|-------------------|-----------|
+| Anthropic | `POST /v1/messages/batches` | JSON: `{requests: [{custom_id, params: <Messages request>}]}` (up to 100k requests / 256MB per batch) | `GET /v1/messages/batches/{id}` for status; `GET /v1/messages/batches/{id}/results` (JSONL streaming) for results |
+| OpenAI | `POST /v1/batches` | JSONL file upload to `/v1/files` (purpose=`batch`); then `POST /v1/batches` with `input_file_id`. Up to 50k requests / 200MB per batch. | `GET /v1/batches/{id}` for status; `GET /v1/files/{output_file_id}/content` (JSONL) for results |
+| OpenRouter | Not supported as of 2026-05-22 — flag remains `False` | — | — |
+
+Adapter implementations encapsulate the file-upload / id-assembly mechanics. The `BatchHandle` returned to callers is provider-agnostic; only the adapter needs to know the upstream's specifics.
+
+#### 4.6.4 Cost reporting
+
+Provider responses report usage *with the discount already applied at the line-item level*: Anthropic stamps `usage.cache_creation_input_tokens` etc. as normal but the per-token rates that apply for cost computation are the batch rates (50% of the sync rates). The adapter MUST:
+
+1. Look up the batch-rate variant of the model's `ModelPricing` row in the local price table. The price table grows a `ModelPricing.batch_rates: ModelPricing | None` optional field — when present, batch-submitted calls cost off this row instead of the sync row.
+2. Stamp `Usage.pricing_mode: Literal["sync", "batch"] = "batch"` on the resulting `CanonicalResponse` per result.
+3. Emit `llm.call_completed` events per result with `pricing_mode="batch"` in the payload so the analytics surface can partition (`group_by=pricing_mode`).
+
+This is **additive** to §7 (Cost reporting); the existing `Usage.cost_usd: Decimal` field continues to carry the final post-discount cost and remains the single source of truth for the savings dashboard.
+
+#### 4.6.5 Lifecycle and persistence
+
+Batch submission is intrinsically multi-process / multi-restart — the caller submits, the process may exit, a later process fetches. The adapter is therefore **stateless**: `submit_batch` returns a `BatchHandle` and the *caller* persists it. Two callers are anticipated in v1:
+
+- `metis evaluate --batch-mode` persists handles to a small table in the existing trace DB (`evaluator_batch_handles` — schema added in
+  [`evaluator.md`](evaluator.md) when wired). On the next run, the CLI checks pending handles, polls, and ingests completed results.
+- `scripts/benchmark.py --batch-mode` persists handles to `benchmarks/.runs/<run_id>/batch-handles.jsonl`, in-line with how the harness already stores per-run artifacts.
+
+No adapter-side persistence is required. Adapters that *want* to surface "pending batches" in a future operator CLI (`metis batch list / cancel / fetch`) can do so via the provider's own list-batches endpoint, but v1 does not require it.
+
+#### 4.6.6 Errors
+
+Batch-level errors (entire batch expired, batch failed before any results were produced) are raised as `AdapterError` with the appropriate `ErrorClass` from §6.1. Per-request errors inside a successfully-completed batch surface as `BatchError` entries in the result list — they do not raise.
+
+`expired` batches (24h elapsed without completion) MUST surface a `BatchError` for every `custom_id` with `error_class=ErrorClass.PROVIDER_TRANSIENT` and `retryable=True`. The caller decides whether to re-submit.
+
+#### 4.6.7 Who uses this
+
+This subsection is the *adapter* contract; consumers (evaluator, benchmark harness, future batched routing) own the decision to submit a batch. The synchronous `call()` and `stream()` paths remain the default and are used by every interactive surface (`metis dev`, `metis tui`, `metis serve`, the gateway).
+
+Live agent loops MUST NOT use batch — interactive latency is incompatible with 24h turnaround. The gateway-side decision to expose batch as a pass-through endpoint
+([`gateway.md`](gateway.md)) is a separate question and **out of scope of this subsection**; it would need its own gateway-spec amendment if added.
+
 ---
 
 ## 5. Streaming normalization
