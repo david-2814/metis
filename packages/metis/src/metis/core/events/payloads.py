@@ -41,6 +41,86 @@ class SessionEnded(msgspec.Struct, frozen=True):
     duration_seconds: float
 
 
+# Compaction failure modes per session-compaction.md §6. Exactly these four
+# values — no more, no less. `adapter_error` covers any provider-side failure
+# during the summarization call (rate limit, server error, network, etc.);
+# `no_valid_boundary` is emitted when the watermark cannot land on a clean
+# tool-cycle boundary (§3.3); `budget_exhausted_forced` is emitted when the
+# per-session `compaction_max_cost_per_session_usd` cap is already exhausted
+# but the session is past the hard cap and must compact (§3.4 fallback);
+# `validation_failed` is emitted when the synthesized message fails
+# `validate_message()` post-compaction.
+CompactionFailureMode = Literal[
+    "adapter_error",
+    "no_valid_boundary",
+    "budget_exhausted_forced",
+    "validation_failed",
+]
+
+
+class SessionCompactionStarted(msgspec.Struct, frozen=True):
+    """`session.compaction_started` per session-compaction.md §6.
+
+    Emitted by `SessionManager` when a compaction call is about to begin —
+    after the threshold check fires and before the summarization request is
+    sent. PSEUDONYMOUS: the payload carries only structural metadata
+    (token counts, watermark indices); the message text being compacted
+    lives in the session store, not in the event payload.
+    """
+
+    session_id: str
+    turn_id: str
+    watermark_before: int  # message-list index where compaction span ends (exclusive)
+    span_message_count: int  # how many messages are in the compacted span
+    span_token_count_in: int  # estimated input tokens of the compacted span
+    threshold_or_hard_cap: Literal["threshold", "hard_cap"]
+
+
+class SessionCompactionCompleted(msgspec.Struct, frozen=True):
+    """`session.compaction_completed` per session-compaction.md §6.
+
+    Emitted after a successful summarization (or on a cache hit). PSEUDONYMOUS
+    for the same reason as `_started`. `cost_usd` is `Decimal` per the
+    canonical-message-format.md §6.4 convention; `cache_hit=True` callers
+    write `Decimal("0")`. `cache_key` is the SHA-256 hex digest of
+    (messages, model, prompt_version, max_tokens) per §5.1.
+    """
+
+    session_id: str
+    turn_id: str
+    watermark_before: int
+    watermark_after: int  # index where the synthetic summary message lives
+    span_message_count: int
+    span_token_count_in: int
+    span_token_count_out: int  # token count of the summary message
+    cache_hit: bool
+    cache_key: str  # SHA-256 hex of the cache key tuple, §5.1
+    cost_usd: Decimal
+    latency_ms: int
+
+
+class SessionCompactionFailed(msgspec.Struct, frozen=True):
+    """`session.compaction_failed` per session-compaction.md §6.
+
+    Emitted on every compaction-attempt failure. The four `failure_mode`
+    values are pinned by `session-compaction.md §6`; see the
+    `CompactionFailureMode` literal for the rationale. `error_class` and
+    `error_message` are populated only for `failure_mode="adapter_error"`
+    (the message goes through the standard PII-stripping pass per
+    `redaction.md`); `truncated_message_count` is populated only when the
+    fallback path drops messages (hard-cap forced truncation per §3.4).
+    """
+
+    session_id: str
+    turn_id: str
+    watermark_before: int
+    span_message_count: int
+    failure_mode: CompactionFailureMode
+    error_class: LLMErrorClass | None = None
+    error_message: str | None = None
+    truncated_message_count: int | None = None
+
+
 # --- §6.2 Turn domain -------------------------------------------------------
 
 
@@ -944,6 +1024,13 @@ PAYLOAD_REGISTRY: dict[str, tuple[type[msgspec.Struct], Sensitivity]] = {
     "session.created": (SessionCreated, Sensitivity.PSEUDONYMOUS),
     "session.resumed": (SessionResumed, Sensitivity.PSEUDONYMOUS),
     "session.ended": (SessionEnded, Sensitivity.PSEUDONYMOUS),
+    # session compaction (Wave 18 — session-compaction.md §6). All three
+    # PSEUDONYMOUS: the summary text lives in the session message store, not
+    # in the event payload. NOT in `AUDIT_EVENT_TYPES` — compaction is an
+    # operational optimization, not a compliance event.
+    "session.compaction_started": (SessionCompactionStarted, Sensitivity.PSEUDONYMOUS),
+    "session.compaction_completed": (SessionCompactionCompleted, Sensitivity.PSEUDONYMOUS),
+    "session.compaction_failed": (SessionCompactionFailed, Sensitivity.PSEUDONYMOUS),
     # turn
     "turn.started": (TurnStarted, Sensitivity.PRIVATE),
     "turn.completed": (TurnCompleted, Sensitivity.PSEUDONYMOUS),
