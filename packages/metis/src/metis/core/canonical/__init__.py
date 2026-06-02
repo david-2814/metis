@@ -3,6 +3,7 @@
 See docs/specs/canonical-message-format.md for the full specification.
 """
 
+from metis.core.canonical.batch import BatchError, BatchHandle, BatchStatus
 from metis.core.canonical.capabilities import AdapterCapabilities
 from metis.core.canonical.content import (
     ContentBlock,
@@ -35,6 +36,9 @@ from metis.core.canonical.validation import validate_message
 
 __all__ = [
     "AdapterCapabilities",
+    "BatchError",
+    "BatchHandle",
+    "BatchStatus",
     "ContentBlock",
     "ImageBlock",
     "ImageSource",

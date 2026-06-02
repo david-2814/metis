@@ -41,7 +41,10 @@ from anthropic.types import (
 from metis.core.adapters.errors import (
     AdapterError,
     CancelledError,
+    ErrorClass,
+    InvalidRequestError,
     NetworkError,
+    ServerError,
     classify_anthropic_response,
     error_for_class,
 )
@@ -63,6 +66,11 @@ from metis.core.adapters.streaming import (
     ToolUseStart,
 )
 from metis.core.adapters.tool_id_map import ToolIdMap
+from metis.core.canonical.batch import (
+    BatchError,
+    BatchHandle,
+    BatchStatus,
+)
 from metis.core.canonical.capabilities import AdapterCapabilities
 from metis.core.canonical.content import (
     ContentBlock,
@@ -93,7 +101,9 @@ _IMAGE_EXTENSION_MEDIA_TYPES: dict[str, str] = {
 }
 
 
-# Per-model capability declarations.
+# Per-model capability declarations. `supports_batch_api=True` reflects
+# Anthropic's Batches API support across the Claude 4.x line per
+# provider-adapter-contract.md §4.6.3 (`POST /v1/messages/batches`).
 _CAPS_CLAUDE_4 = AdapterCapabilities(
     supports_thinking=True,
     supports_images=True,
@@ -108,6 +118,7 @@ _CAPS_CLAUDE_4 = AdapterCapabilities(
     max_context_tokens=200_000,
     max_output_tokens=8192,
     accepted_image_media_types=["image/png", "image/jpeg", "image/gif", "image/webp"],
+    supports_batch_api=True,
 )
 
 _MODEL_CAPS: dict[str, AdapterCapabilities] = {
@@ -195,6 +206,188 @@ class AnthropicAdapter:
     async def close(self) -> None:
         await self._client.close()
 
+    # ---- Asynchronous batch submission (§4.6) -------------------------
+
+    async def submit_batch(self, requests: list[CanonicalRequest]) -> BatchHandle:
+        """Submit `requests` to Anthropic's Batches API.
+
+        Wire mapping per provider-adapter-contract.md §4.6.3: each
+        canonical request becomes a `{custom_id, params}` entry in the
+        batch creation body. `custom_id` defaults to the canonical
+        `request_id`; the caller can pre-rewrite `request_id` if it
+        needs a stable cross-process key. Duplicate `custom_id`s within a
+        single batch are an upstream-rejected condition; the adapter
+        does not deduplicate.
+        """
+        if not requests:
+            raise InvalidRequestError(
+                "submit_batch: requests is empty",
+                request_id="",
+            )
+        # Detect duplicate custom_ids early — Anthropic rejects them
+        # upstream with a 400, but the local error is clearer.
+        seen: set[str] = set()
+        for req in requests:
+            if req.request_id in seen:
+                raise InvalidRequestError(
+                    f"submit_batch: duplicate request_id {req.request_id!r}; "
+                    "custom_ids within a batch must be unique",
+                    request_id=req.request_id,
+                )
+            seen.add(req.request_id)
+
+        # Build the wire bodies. `_assemble_messages_create_kwargs` returns
+        # the same kwarg shape `messages.create` consumes; we strip
+        # `stream` (batch is not a streaming surface).
+        wire_requests: list[dict] = []
+        for req in requests:
+            kwargs = self._assemble_messages_create_kwargs(req)
+            kwargs.pop("stream", None)
+            wire_requests.append({"custom_id": req.request_id, "params": kwargs})
+
+        try:
+            batch = await self._client.messages.batches.create(
+                requests=wire_requests  # type: ignore[arg-type]
+            )
+        except anthropic.APIStatusError as exc:
+            raise _translate_status_error(exc, request_id="") from exc
+        except anthropic.APIConnectionError as exc:
+            raise NetworkError(f"anthropic connection error: {exc}") from exc
+        except anthropic.APITimeoutError as exc:
+            raise NetworkError(f"anthropic timeout: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise NetworkError(f"http error: {exc}") from exc
+
+        submitted_at_ms = int(time.time() * 1000)
+        return BatchHandle(
+            provider=self.name,
+            batch_id=batch.id,
+            submitted_at_ms=submitted_at_ms,
+            request_count=len(requests),
+            custom_ids=tuple(req.request_id for req in requests),
+        )
+
+    async def poll_batch(self, handle: BatchHandle) -> BatchStatus:
+        """Return the current upstream status of `handle`.
+
+        Maps Anthropic's `processing_status` (`in_progress`, `canceling`,
+        `ended`) plus the `request_counts` breakdown to the canonical
+        `BatchStatus` literal. A batch in `ended` state with non-zero
+        `expired` counts maps to `"expired"`; otherwise `ended` is
+        `"completed"`. A batch with `errored == request_count` maps to
+        `"failed"` (an entire-batch upstream abort that produced no
+        successful results).
+        """
+        _ensure_provider_matches(handle, self.name)
+        try:
+            batch = await self._client.messages.batches.retrieve(handle.batch_id)
+        except anthropic.APIStatusError as exc:
+            raise _translate_status_error(exc, request_id=handle.batch_id) from exc
+        except anthropic.APIConnectionError as exc:
+            raise NetworkError(f"anthropic connection error: {exc}") from exc
+        except anthropic.APITimeoutError as exc:
+            raise NetworkError(f"anthropic timeout: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise NetworkError(f"http error: {exc}") from exc
+
+        return _classify_batch_status(batch, handle.request_count)
+
+    async def fetch_batch(
+        self,
+        handle: BatchHandle,
+    ) -> list[CanonicalResponse | BatchError]:
+        """Retrieve per-request results for a completed batch.
+
+        Returns a list same-length, same-order as `handle.custom_ids`.
+        Per-request failures (a Messages-API error returned for one
+        custom_id) surface as `BatchError`; per-request expirations
+        (24h elapsed before that request was scheduled) also surface as
+        `BatchError(error_class=SERVER_ERROR, retryable=True)`.
+
+        Batch-level failures — `processing_status='ended'` with zero
+        successes and non-trivial errored counts — currently surface as
+        `BatchError` per row too (Anthropic emits one row per
+        `custom_id` even on full-batch failure). A truly empty results
+        stream raises `ServerError`.
+        """
+        _ensure_provider_matches(handle, self.name)
+
+        # Re-fetch status first: if the batch is fully expired *without*
+        # any results being emitted (per §4.6.6), every custom_id must
+        # surface as a `BatchError`. Anthropic's results endpoint also
+        # emits an `expired`-typed row per custom_id in this case, so the
+        # natural translation falls out of the per-row classifier — but
+        # we still poll first to fail fast on `queued` / `in_progress`
+        # and to detect batch-level `failed`.
+        try:
+            batch = await self._client.messages.batches.retrieve(handle.batch_id)
+        except anthropic.APIStatusError as exc:
+            raise _translate_status_error(exc, request_id=handle.batch_id) from exc
+        except anthropic.APIConnectionError as exc:
+            raise NetworkError(f"anthropic connection error: {exc}") from exc
+        except anthropic.APITimeoutError as exc:
+            raise NetworkError(f"anthropic timeout: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise NetworkError(f"http error: {exc}") from exc
+
+        status = _classify_batch_status(batch, handle.request_count)
+        if status in ("queued", "in_progress"):
+            # Provider-side block-until-completion semantics are
+            # acceptable per §4.6.2; the synchronous re-poll path makes
+            # the caller's loop predictable.
+            raise ServerError(
+                f"batch {handle.batch_id} still {status}; poll until completed before fetching",
+                request_id=handle.batch_id,
+            )
+
+        # Pull the results stream. The SDK returns an async iterator of
+        # `MessageBatchIndividualResponse` rows. A fully-expired batch
+        # emits one `expired`-typed row per custom_id; we translate them
+        # uniformly via `_translate_batch_row`.
+        try:
+            stream = await self._client.messages.batches.results(handle.batch_id)
+        except anthropic.APIStatusError as exc:
+            raise _translate_status_error(exc, request_id=handle.batch_id) from exc
+        except anthropic.APIConnectionError as exc:
+            raise NetworkError(f"anthropic connection error: {exc}") from exc
+        except anthropic.APITimeoutError as exc:
+            raise NetworkError(f"anthropic timeout: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise NetworkError(f"http error: {exc}") from exc
+
+        by_custom_id: dict[str, CanonicalResponse | BatchError] = {}
+        async for row in stream:
+            translated = _translate_batch_row(row, model_lookup=_request_model_lookup(handle))
+            by_custom_id[translated_custom_id(translated)] = translated
+
+        # Preserve input order; missing rows surface as PROVIDER_TRANSIENT
+        # (treated as "still queued upstream" — caller can retry the
+        # whole batch). This matches §4.6.6's "expired" semantics from
+        # the caller's perspective even though Anthropic normally emits
+        # a row per custom_id.
+        if not by_custom_id:
+            raise ServerError(
+                f"batch {handle.batch_id} returned no result rows "
+                f"(processing_status={getattr(batch, 'processing_status', '?')})",
+                request_id=handle.batch_id,
+            )
+
+        out: list[CanonicalResponse | BatchError] = []
+        for custom_id in handle.custom_ids:
+            matched: CanonicalResponse | BatchError | None = by_custom_id.get(custom_id)
+            if matched is None:
+                out.append(
+                    BatchError(
+                        custom_id=custom_id,
+                        error_class=ErrorClass.SERVER_ERROR,
+                        error_message="missing result row from upstream",
+                        retryable=True,
+                    )
+                )
+            else:
+                out.append(matched)
+        return out
+
     # ---- Streaming ----------------------------------------------------
 
     async def stream(self, request: CanonicalRequest) -> AsyncIterator[StreamingEvent]:
@@ -275,7 +468,13 @@ class AnthropicAdapter:
 
     # ---- Single call --------------------------------------------------
 
-    async def _call_once(self, request: CanonicalRequest) -> CanonicalResponse:
+    def _assemble_messages_create_kwargs(self, request: CanonicalRequest) -> dict:
+        """Compose the kwargs dict that `messages.create` consumes.
+
+        Shared by `_call_once` and `submit_batch` so the batch path goes
+        through the same wire-translation logic — tool-id remapping,
+        cache breakpoint placement, system-block hoisting, etc.
+        """
         # NOTE: `or ToolIdMap()` would break — ToolIdMap.__len__ makes an
         # empty map falsy, so we'd silently allocate a new map and drop the
         # caller's mutations on the floor.
@@ -302,6 +501,11 @@ class AnthropicAdapter:
             kwargs["stop_sequences"] = request.stop_sequences
         if request.temperature is not None:
             kwargs["temperature"] = request.temperature
+        return kwargs
+
+    async def _call_once(self, request: CanonicalRequest) -> CanonicalResponse:
+        kwargs = self._assemble_messages_create_kwargs(request)
+        tool_map = request.tool_id_map if request.tool_id_map is not None else ToolIdMap()
 
         start = time.monotonic()
         try:
@@ -937,6 +1141,231 @@ def _retry_after_seconds(exc: anthropic.APIStatusError, body: dict | None) -> fl
         except ValueError:
             return None
     return None
+
+
+# ---- Batch helpers ---------------------------------------------------------
+
+
+def _ensure_provider_matches(handle: BatchHandle, expected: str) -> None:
+    """Defense against accidentally calling the wrong adapter on a handle.
+
+    `BatchHandle.provider` is set by `submit_batch`; the caller persists
+    the handle and may later route to the wrong adapter if the model
+    registry resolves differently. Catch that early.
+    """
+    if handle.provider != expected:
+        raise InvalidRequestError(
+            f"BatchHandle for provider {handle.provider!r} cannot be processed by "
+            f"adapter {expected!r}",
+            request_id=handle.batch_id,
+        )
+
+
+def _classify_batch_status(batch, request_count: int) -> BatchStatus:
+    """Map Anthropic's `MessageBatch` to the canonical BatchStatus literal.
+
+    Anthropic exposes:
+      - `processing_status: Literal["in_progress", "canceling", "ended"]`
+      - `request_counts: {processing, succeeded, errored, canceled, expired}`
+
+    The mapping:
+      - `processing_status == "in_progress"` → `"in_progress"`
+      - `processing_status == "canceling"` → `"in_progress"` (still running)
+      - `processing_status == "ended"`:
+          - all `expired` → `"expired"`
+          - all `errored` (no succeeded) → `"failed"`
+          - otherwise → `"completed"` (mixed results are still completed;
+            per-row classification surfaces individual `BatchError`s)
+    """
+    status = getattr(batch, "processing_status", None)
+    if status == "in_progress" or status == "canceling":
+        # Submitted but not yet observable at the queued-vs-running level;
+        # we use "in_progress" for both since Anthropic doesn't expose a
+        # distinct queued state in the v1 API.
+        return "in_progress"
+    if status != "ended":
+        # Unknown future status — best-effort downgrade.
+        return "in_progress"
+
+    counts = getattr(batch, "request_counts", None)
+    expired = getattr(counts, "expired", 0) if counts else 0
+    errored = getattr(counts, "errored", 0) if counts else 0
+    succeeded = getattr(counts, "succeeded", 0) if counts else 0
+
+    if request_count > 0 and expired == request_count:
+        return "expired"
+    if request_count > 0 and succeeded == 0 and errored == request_count:
+        return "failed"
+    return "completed"
+
+
+def _request_model_lookup(handle: BatchHandle):
+    """Return a callable mapping `custom_id` -> model string.
+
+    The adapter doesn't keep request bodies around after submission, but
+    the response carries enough metadata for cost stamping. We default to
+    `None` here; the per-row translator falls back to reading
+    `message.model` from each result row.
+    """
+    del handle  # unused — kept for forward-compat with a richer handle.
+    return None
+
+
+def translated_custom_id(result: CanonicalResponse | BatchError) -> str:
+    """Return the custom_id (== request_id) for a translated batch row."""
+    if isinstance(result, BatchError):
+        return result.custom_id
+    return result.request_id
+
+
+def _translate_batch_row(row, *, model_lookup) -> CanonicalResponse | BatchError:
+    """Translate one `MessageBatchIndividualResponse` to a canonical row.
+
+    The SDK returns:
+        row.custom_id: str
+        row.result: succeeded | errored | expired | canceled (tagged union)
+    """
+    del model_lookup  # reserved for future use
+    custom_id = getattr(row, "custom_id", "")
+    result = getattr(row, "result", None)
+    rtype = getattr(result, "type", None)
+
+    if rtype == "succeeded":
+        message = getattr(result, "message", None)
+        return _succeeded_row_to_canonical(custom_id, message)
+    if rtype == "errored":
+        err = getattr(result, "error", None)
+        return _errored_row_to_batch_error(custom_id, err)
+    if rtype == "expired":
+        return BatchError(
+            custom_id=custom_id,
+            error_class=ErrorClass.SERVER_ERROR,
+            error_message="batch entry expired before completion",
+            retryable=True,
+        )
+    if rtype == "canceled":
+        return BatchError(
+            custom_id=custom_id,
+            error_class=ErrorClass.CANCELLED,
+            error_message="batch entry cancelled",
+            retryable=False,
+        )
+    # Unknown future row type — surface as transient.
+    return BatchError(
+        custom_id=custom_id,
+        error_class=ErrorClass.OTHER,
+        error_message=f"unknown batch result type {rtype!r}",
+        retryable=False,
+    )
+
+
+def _succeeded_row_to_canonical(custom_id: str, message) -> CanonicalResponse:
+    """Build a `CanonicalResponse` for a successful batch entry.
+
+    The `message` body is the same shape as a sync `Messages.create`
+    response, so we reuse `_anthropic_blocks_to_canonical` and the
+    `usage` mapping. `pricing_mode='batch'` is stamped on the
+    `TokenUsage` so the caller's later `PriceTable.compute_cost`
+    selects `ModelPricing.batch_rates`.
+
+    `latency_ms` is set to 0 — batch entries don't have a meaningful
+    per-request latency. Callers that care about wall-clock spend can
+    derive it from the BatchHandle's submission timestamp.
+    """
+    tool_map = ToolIdMap()  # fresh; no carry-over within a batch
+    content = _anthropic_blocks_to_canonical(getattr(message, "content", []) or [], tool_map)
+    usage_obj = getattr(message, "usage", None)
+    usage = TokenUsage(
+        input_tokens=getattr(usage_obj, "input_tokens", 0) or 0,
+        output_tokens=getattr(usage_obj, "output_tokens", 0) or 0,
+        cached_input_tokens=(getattr(usage_obj, "cache_read_input_tokens", 0) or 0)
+        if usage_obj
+        else 0,
+        cache_creation_input_tokens=(getattr(usage_obj, "cache_creation_input_tokens", 0) or 0)
+        if usage_obj
+        else 0,
+        pricing_mode="batch",
+    )
+    raw_model = getattr(message, "model", "") or ""
+    canonical_model = _canonical_model_from_wire(raw_model)
+    return CanonicalResponse(
+        request_id=custom_id,
+        model=canonical_model,
+        provider="anthropic",
+        content=content,
+        stop_reason=_stop_reason(getattr(message, "stop_reason", None)),
+        usage=usage,
+        latency_ms=0,
+    )
+
+
+def _errored_row_to_batch_error(custom_id: str, err) -> BatchError:
+    """Map an `errored`-typed row to a BatchError.
+
+    Anthropic's per-row errors carry `{type, error: {type, message}}`. We
+    map the inner `error.type` to `ErrorClass` heuristically — the same
+    mapping the sync `classify_anthropic_response` uses for response
+    bodies. `retryable` is set conservatively: True for rate-limit / 5xx
+    / overload, False for invalid_request / auth.
+    """
+    if err is None:
+        return BatchError(
+            custom_id=custom_id,
+            error_class=ErrorClass.OTHER,
+            error_message="upstream returned errored row with no detail",
+            retryable=False,
+        )
+    inner = getattr(err, "error", None)
+    msg = getattr(inner, "message", "") or getattr(err, "message", "") or "unknown error"
+    err_type = (getattr(inner, "type", "") or getattr(err, "type", "") or "").lower()
+
+    if "rate_limit" in err_type or "overload" in err_type:
+        return BatchError(
+            custom_id=custom_id,
+            error_class=ErrorClass.RATE_LIMIT,
+            error_message=msg,
+            retryable=True,
+        )
+    if "authentication" in err_type or "permission" in err_type or "auth" in err_type:
+        return BatchError(
+            custom_id=custom_id,
+            error_class=ErrorClass.AUTH,
+            error_message=msg,
+            retryable=False,
+        )
+    if "not_found" in err_type or "invalid" in err_type:
+        return BatchError(
+            custom_id=custom_id,
+            error_class=ErrorClass.INVALID_REQUEST,
+            error_message=msg,
+            retryable=False,
+        )
+    if "api_error" in err_type or "server" in err_type or "5" in err_type[:3]:
+        return BatchError(
+            custom_id=custom_id,
+            error_class=ErrorClass.SERVER_ERROR,
+            error_message=msg,
+            retryable=True,
+        )
+    return BatchError(
+        custom_id=custom_id,
+        error_class=ErrorClass.OTHER,
+        error_message=msg,
+        retryable=False,
+    )
+
+
+def _canonical_model_from_wire(wire_model: str) -> str:
+    """Rebuild the canonical `anthropic:<name>` id from a wire model.
+
+    Inverse of `_wire_model_name`. Empty input → empty string (lets the
+    caller stamp a fallback).
+    """
+    if not wire_model:
+        return ""
+    if ":" in wire_model:
+        return wire_model
+    return f"anthropic:{wire_model}"
 
 
 __all__ = ["AnthropicAdapter"]
