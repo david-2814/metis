@@ -4583,3 +4583,133 @@ The partial section identified `regex-with-edge-cases` as the strongest reason t
 - **The Pass D / Pass D-baseline DBs are at `a3rev7-pass-d-resumed.db` / `a3rev7-pass-d-baseline-resumed.db`** (the original `a3rev7-pass-d.db` from the abort retained the half-completed turn). The original `-resumed` suffix on the Pass B + Pass D DBs preserves the partial-run artifacts for forensic comparison.
 - **Honest reporting:** the partial section predicted the regex residual signal would invert. It did not. The completion writes down both the prediction and the result without revising the partial.
 
+---
+
+## Wave 18: batch-mode cost-discount measurement (`fix-a-bug-small`, 2026-06-03)
+
+First end-to-end validation of the `scripts/benchmark.py --batch-mode`
++ `--collect-batch` two-pass workflow against the live Anthropic
+Batches API per [`provider-adapter-contract.md §4.6`](../docs/specs/provider-adapter-contract.md)
++ [`benchmark.md §3.4`](../docs/specs/benchmark.md). Wave 18a-3.
+
+### Run metadata
+
+| Field              | Value                                                       |
+|--------------------|-------------------------------------------------------------|
+| Run date (UTC)     | 2026-06-03T23:32:31Z                                        |
+| Commit SHA         | `8a3eb85` (dirty — Wave-18a-3 in progress)                  |
+| Branch             | `wave-18a-3`                                                |
+| Suite version      | 1                                                           |
+| Actual model       | `anthropic:claude-haiku-4-5`                                |
+| Pricing version    | `2026-05-08+openrouter-3ac29600f3ea`                        |
+| Temperature        | 0.0                                                         |
+| Python             | 3.13.12                                                     |
+| Workload           | `fix-a-bug-small` (3 turns, signal_strength: marginal)      |
+
+Sync run JSON artifact: `.runs/sync-2026-06-03T23-32Z.json`
+Batch run results.json: `.runs/batch-2026-06-03T23-32-31Z/results.json`
+Batch run trace DB: `.runs/batch-2026-06-03T23-32-31Z/trace.db`
+
+### Method
+
+The workload (`fix-a-bug-small`, 3 turns) was run twice against
+`anthropic:claude-haiku-4-5`:
+
+1. **Sync mode** (the existing harness path): `submit_turn` drives
+   `SessionManager`'s tool-cycle loop end-to-end. Three turns produce
+   5 `llm.call_completed` events because the agent reads files + edits
+   the bug fix across multiple LLM round-trips.
+2. **Batch mode** (this wave's new path): each turn prompt becomes one
+   independent batch entry — no tools, no prior-turn assistant text
+   fed forward. Three turns produce 3 `llm.call_completed` events.
+   Submission via `--batch-mode`; collection via `--collect-batch` ~10
+   minutes later. The Anthropic Batches API turnaround in this run was
+   well under the documented "best-effort 24h" target.
+
+### Aggregate numbers
+
+| Metric                                          | Sync       | Batch        |
+|-------------------------------------------------|------------|--------------|
+| LLM calls (`rows_total`)                         | 5          | 3            |
+| Tool calls                                       | 3          | 0            |
+| Total input tokens                               | ~3,800     | 135          |
+| Total output tokens                              | ~330       | 217          |
+| `actual_repriced_usd` (haiku rates)              | $0.015657  | $0.000610    |
+| `baseline_repriced_usd` (sonnet rates)           | $0.046972  | n/a          |
+| `savings_pct` (haiku-vs-sonnet, headline)        | 66.7%      | n/a          |
+| Wall time                                        | ~30 s      | ~10 min (provider-side) |
+
+### Apples-to-apples: the 50% discount on identical tokens
+
+The two runs aren't directly cost-comparable because batch mode drops
+the tool cycle. The clean comparison is **batch-mode tokens repriced
+at sync vs batch haiku rates**:
+
+| Repricing path     | Input @ haiku rate | Output @ haiku rate | Total cost  |
+|--------------------|--------------------|---------------------|-------------|
+| Sync ($1.00 / $5.00 per MTok)   | 135 × $1.00e-6 = $0.000135 | 217 × $5.00e-6 = $0.001085 | **$0.001220** |
+| Batch ($0.50 / $2.50 per MTok)  | 135 × $0.50e-6 = $0.000068 | 217 × $2.50e-6 = $0.000543 | **$0.000610** |
+| Δ                  |                    |                     | **$0.000610 saved (50.0%)** |
+
+Exact 50% discount as documented in `provider-adapter-contract.md
+§4.6.4`. The `cost_usd` stamped on every `llm.call_completed` event
+in the batch trace DB reflects the batch rate (because the adapter
+stamped `pricing_mode="batch"` on `TokenUsage` and
+`PriceTable.compute_cost` switched to `ModelPricing.batch_rates`).
+
+### Quality
+
+Per `benchmark.md §3.4`, batch mode is a **cost-comparison probe**,
+not an end-to-end agent run. The batch run produced 3 single-shot LLM
+responses (no tools, no file reads, no fix application); evaluating
+"did the agent fix the bug" against batch-mode output is not the
+intent. Sync-mode quality remains the canonical signal:
+
+| Workload         | Sync quality (heuristic, weight 1.0) |
+|------------------|--------------------------------------|
+| `fix-a-bug-small`| 1.00 @ 0.80                          |
+
+### Total spend
+
+| Phase              | Cost      |
+|--------------------|-----------|
+| Sync run           | $0.015657 |
+| Batch submit       | $0.000000 (batch is billed on result fetch) |
+| Batch collect      | $0.000610 |
+| **Total spend**    | **$0.016267** |
+
+Comfortably under the §3.4 single-workload ≤ $0.50 budget.
+
+### Acceptance bar (per dispatch doc § "Acceptance criteria")
+
+- `--batch-mode --workload fix-a-bug-small` submitted 1 batch with
+  3 entries, wrote `batch-handles.jsonl`, exited cleanly.
+- `--collect-batch <run_id>` polled until `completed`, fetched all 3
+  rows, marked the JSONL row `status="ingested"`, emitted 3
+  `llm.call_completed` events, and wrote `results.json`.
+- The cost delta is the documented 50% on the same prompt tokens.
+- Total spend ≤ $0.50.
+
+### Caveats + follow-ups
+
+1. **`fix-a-bug-small` is `signal_strength: marginal`.** Picked here
+   for its small size (cheapest workload in the suite). The 50% discount
+   does not depend on signal strength — any workload would have shown
+   the same input-rate / output-rate flat halving.
+2. **The dated wire model id needed a fall-back lookup.** Anthropic's
+   batch results echo back the dated wire model
+   (`claude-haiku-4-5-20251001`), which the price table doesn't carry.
+   The harness falls back to the originally-requested model id
+   (`anthropic:claude-haiku-4-5`) so the cost computation works
+   end-to-end. Documented as an open question for the adapter — out of
+   scope for 18a-3.
+3. **Idempotency was not exercised live.** A second
+   `--collect-batch` invocation against the same run dir is covered by
+   `test_collect_batch_is_idempotent_on_already_ingested` but the live
+   run completed in one collect. The JSONL row's `status="ingested"`
+   transition is the load-bearing contract.
+4. **`--collect-batch`'s poll loop has no jitter.** Set
+   `--collect-poll-interval 15` for tighter loops; `--collect-max-wait
+   900` caps any single batch's wait to 15 minutes (re-run later if
+   exceeded). The provider here completed well within that window.
+

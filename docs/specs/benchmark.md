@@ -192,6 +192,85 @@ YAML files diff cleanly in PRs, support multi-line strings (the prompts are
 prose), and read better at PR-review time than JSON. The trade-off is
 indentation sensitivity, which the schema validator catches.
 
+### 3.4 Batch-mode (Wave 18a-3)
+
+`scripts/benchmark.py` accepts two batch-flavored flags that opt the run
+into the provider's asynchronous batch endpoint (per
+[`provider-adapter-contract.md §4.6`](provider-adapter-contract.md)) at
+the documented 50% input + output discount. Anthropic-only in v1; the
+only adapter declaring `supports_batch_api=True` is the Anthropic
+adapter.
+
+#### Two-pass workflow
+
+Batch submission is "best-effort 24h" turnaround, so the harness uses a
+two-pass workflow — submit and exit, then collect later:
+
+```bash
+# Pass 1: submit. Prints the run id, persists handles, exits.
+uv run python scripts/benchmark.py \
+    --batch-mode \
+    --workload fix-a-bug-small
+
+# (provider takes minutes to hours; run pass 2 when ready)
+
+# Pass 2: collect. Polls handles, ingests results, writes results.json + trace.db.
+uv run python scripts/benchmark.py --collect-batch batch-<UTC-ts>
+```
+
+The `<run_id>` is `batch-<UTC-timestamp>` — printed by pass 1 and
+echoed in pass 2. It also doubles as the directory name under
+`benchmarks/.runs/` (gitignored).
+
+#### Persistence
+
+Each invocation of `--batch-mode` writes a single `batch-handles.jsonl`
+file under `benchmarks/.runs/<run_id>/`. One JSONL row per submitted
+batch (= one batch per workload in the selected suite):
+
+```json
+{
+  "custom_ids": ["fix-a-bug-small/t0-…", "fix-a-bug-small/t1-…", "fix-a-bug-small/t2-…"],
+  "batch_id": "batch_abc123",
+  "provider": "anthropic",
+  "submitted_at_ms": 1717000000000,
+  "workload": "fix-a-bug-small",
+  "model": "anthropic:claude-haiku-4-5",
+  "status": "submitted",
+  "request_count": 3,
+  "ingested_at_ms": null
+}
+```
+
+`status` transitions `submitted -> ingested` (or `failed`) when
+`--collect-batch` finishes a row. The JSONL is rewritten atomically
+(write-temp + rename) on every transition so an interrupted collect
+never produces a half-written handles file.
+
+#### Idempotency
+
+`--collect-batch <run_id>` is idempotent: a row at `status=ingested` is
+skipped on re-runs. A network blip during the first collect therefore
+cannot produce duplicate `llm.call_completed` events in the trace DB on
+retry.
+
+#### Trade-off vs sync mode
+
+Each turn prompt becomes one independent batch entry, with no tools
+and no prior-turn assistant text fed forward. Tool-using workloads
+therefore land in batch mode as **cost-comparison probes**, not
+end-to-end agent runs. The pricing-discount measurement (~50% drop in
+`actual_repriced_usd` for the same prompts) is the point. Sync mode
+remains the canonical "did the agent solve the task" surface (per-turn
+quality scores, tool-cycle correctness, multi-turn coherence).
+
+#### Acceptance gate
+
+Per [§5](#5-cost-budget), a single workload batch run targets ≤ $0.50
+on `fix-a-bug-small`. The Wave-18 entry in
+[`RESULTS.md`](../../benchmarks/RESULTS.md) documents the first
+measurement.
+
 ---
 
 ## 4. The suite
@@ -527,6 +606,7 @@ These are **live**. Do not unilaterally close them.
 | 2026-05-13 | Run analytics in-process (not via HTTP)                       | Avoids uvicorn lifecycle in a one-shot script; dashboard agreement is by construction.     |
 | 2026-05-13 | Quality scoring deferred to the evaluator                     | Benchmark v1 measures spend, not correctness — evaluator's job per the project strategy (private)       |
 | 2026-05-15 | `signal_strength: high \| marginal` partition + `--include-marginal` flag | §A3-rev6 Q1 finding ([`RESULTS.md`](../../benchmarks/RESULTS.md)): the per-workload haiku-vs-sonnet quality gap in the v1 suite is within run-to-run variance. v2 splits the suite by smoke-validated gap so the default run trains the K-NN only on high-signal workloads. 13a-1 smoke (2026-05-15) tested 3 candidate workloads; none cleared the 0.4 gate, so the default suite ships empty pending future candidates. |
+| 2026-06-03 | `--batch-mode` + `--collect-batch` two-pass workflow (§3.4) | Captures the documented 50% Anthropic Batches API discount on benchmark re-runs per [provider-adapter-contract.md §4.6](provider-adapter-contract.md). Two-pass workflow (submit and exit, then poll + ingest) matches the provider's "best-effort 24h" turnaround. Each turn prompt becomes one independent batch entry — tool-using workloads land as cost-comparison probes rather than end-to-end agent runs; sync mode remains canonical for quality scoring. Wave 18a-3. |
 
 ---
 
