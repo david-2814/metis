@@ -166,6 +166,17 @@ def main(argv: list[str] | None = None) -> int:
     Wired by `metis.cli.main` so users can re-evaluate without spinning
     up the full chat runtime. Reads a trace DB, runs the heuristic judge
     over each matching subject, and prints a one-line summary.
+
+    Three modes (per evaluator.md §6.2):
+      * default — synchronous re-evaluation; verdicts land before the
+        process exits.
+      * `--batch-mode` — collect requests for the window, submit them to
+        the provider's batch endpoint (50% discount; ~24h SLA), persist
+        the handle to `evaluator_batch_handles`, and exit without
+        waiting.
+      * `--collect-batches` — poll pending handles; for completed
+        batches, fetch results and emit `eval.completed` events with
+        `signals.pricing_mode="batch"`. Idempotent.
     """
     import argparse
 
@@ -186,10 +197,45 @@ def main(argv: list[str] | None = None) -> int:
         "--session-id",
         help="Restrict to a single session (default: all sessions in window).",
     )
+    parser.add_argument(
+        "--batch-mode",
+        action="store_true",
+        help=(
+            "Submit re-evaluation requests to the provider's batch API at "
+            "a flat 50%% discount (Anthropic Batches per "
+            "provider-adapter-contract.md §4.6). Persists the resulting "
+            "handle to the trace DB and exits — does NOT wait for "
+            "results. Use `--collect-batches` later to ingest verdicts."
+        ),
+    )
+    parser.add_argument(
+        "--collect-batches",
+        action="store_true",
+        help=(
+            "Poll pending batch handles in the trace DB; for completed "
+            "batches, fetch results and emit `eval.completed` events "
+            "with `signals.pricing_mode='batch'`. Idempotent — a "
+            "previously-ingested handle is skipped."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.batch_mode and args.collect_batches:
+        parser.error("--batch-mode and --collect-batches are mutually exclusive")
 
     since = datetime.fromisoformat(args.since) if args.since else None
     until = datetime.fromisoformat(args.until) if args.until else None
+
+    if args.batch_mode:
+        return _run_batch_submit(
+            db_path=args.db_path,
+            subject_kind=args.subject,
+            since=since,
+            until=until,
+            session_id=args.session_id,
+        )
+    if args.collect_batches:
+        return _run_batch_collect(db_path=args.db_path)
 
     verdicts = asyncio.run(
         reevaluate(
@@ -206,6 +252,98 @@ def main(argv: list[str] | None = None) -> int:
             f"  {v.subject_id} score={v.score:.3f} confidence={v.confidence:.3f} "
             f"judge={v.judge_kind} rubric={v.rubric_id}@{v.rubric_version}"
         )
+    return 0
+
+
+def _build_default_batch_adapter():
+    """Construct the default Anthropic adapter for the batch path.
+
+    Lazy import — the CLI shouldn't pull anthropic/httpx into RAM unless
+    the user opts into batch mode. Tests inject their own adapter via the
+    `submit_batch_for_window` / `collect_pending_batches` helpers.
+    """
+    from metis.core.adapters.anthropic import AnthropicAdapter
+
+    return AnthropicAdapter()
+
+
+def _run_batch_submit(
+    *,
+    db_path: str,
+    subject_kind: EvalSubjectKind,
+    since: datetime | None,
+    until: datetime | None,
+    session_id: str | None,
+) -> int:
+    from metis.core.eval.batch import submit_batch_for_window
+
+    adapter = _build_default_batch_adapter()
+
+    async def _go():
+        try:
+            results = await submit_batch_for_window(
+                db_path=db_path,
+                adapter=adapter,
+                subject_kind=subject_kind,
+                since=since,
+                until=until,
+                session_id=session_id,
+            )
+        finally:
+            await adapter.close()
+        return results
+
+    results = asyncio.run(_go())
+    if not results:
+        print(f"--batch-mode: no {subject_kind} subjects in window; nothing submitted")
+        return 0
+    total = sum(r.request_count for r in results)
+    print(
+        f"--batch-mode: submitted {len(results)} batch(es) "
+        f"covering {total} {subject_kind} subject(s); exiting without waiting"
+    )
+    for r in results:
+        print(
+            f"  batch_id={r.handle.batch_id} provider={r.handle.provider} "
+            f"requests={r.request_count}"
+        )
+    print(
+        "run `metis evaluate --db-path <path> --collect-batches` to ingest results "
+        "once the provider reports the batch complete (~24h)"
+    )
+    return 0
+
+
+def _run_batch_collect(*, db_path: str) -> int:
+    from metis.core.eval.batch import collect_pending_batches
+    from metis.core.pricing.table import DEFAULT_PRICE_TABLE
+
+    adapter = _build_default_batch_adapter()
+
+    async def _go():
+        try:
+            return await collect_pending_batches(
+                db_path=db_path,
+                adapter=adapter,
+                pricing=DEFAULT_PRICE_TABLE,
+            )
+        finally:
+            await adapter.close()
+
+    results = asyncio.run(_go())
+    if not results:
+        print("--collect-batches: no pending handles found")
+        return 0
+    ingested = sum(1 for r in results if r.status not in ("queued", "in_progress"))
+    print(f"--collect-batches: inspected {len(results)} batch(es); {ingested} ingested")
+    for r in results:
+        if r.status in ("queued", "in_progress"):
+            print(f"  batch_id={r.batch_id} status={r.status} (still pending; re-run later)")
+        else:
+            print(
+                f"  batch_id={r.batch_id} status={r.status} "
+                f"verdicts_emitted={r.verdicts_emitted}/{r.request_count}"
+            )
     return 0
 
 

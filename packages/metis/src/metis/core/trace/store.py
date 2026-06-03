@@ -150,6 +150,30 @@ CREATE INDEX IF NOT EXISTS idx_events_team_id
 CREATE INDEX IF NOT EXISTS idx_events_eval_subject_kind
     ON events(json_extract(payload_json, '$.subject_kind'), timestamp_us)
     WHERE type = 'eval.completed';
+
+-- Wave 18a-2: persistence for `metis evaluate --batch-mode` handles.
+-- One row per submitted batch; `custom_id` is the canonical request_id
+-- the adapter received and is unique across the entire trace DB. The
+-- handle metadata (batch_id, provider, submitted_at_ms, subject
+-- bindings) is what `--collect-batches` needs to poll, fetch, and
+-- ingest the verdicts later. Additive — schema_version stays at 1.
+CREATE TABLE IF NOT EXISTS evaluator_batch_handles (
+    custom_id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    submitted_at_ms INTEGER NOT NULL,
+    subject_kind TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    session_id TEXT,
+    turn_id TEXT,
+    judge_model TEXT,
+    status TEXT NOT NULL,
+    ingested_at_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_evaluator_batch_handles_status
+    ON evaluator_batch_handles(status);
+CREATE INDEX IF NOT EXISTS idx_evaluator_batch_handles_batch_id
+    ON evaluator_batch_handles(batch_id);
 """
 
 

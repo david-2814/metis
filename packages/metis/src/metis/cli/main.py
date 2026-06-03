@@ -90,6 +90,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--session-id",
         help="Restrict to a single session (default: all sessions in window).",
     )
+    evaluate.add_argument(
+        "--batch-mode",
+        action="store_true",
+        help=(
+            "Submit re-evaluation requests to the provider's batch API "
+            "(50%% discount, ~24h SLA per provider-adapter-contract.md §4.6). "
+            "Persists the batch handle to the trace DB and exits without "
+            "waiting. Use `--collect-batches` later to ingest results."
+        ),
+    )
+    evaluate.add_argument(
+        "--collect-batches",
+        action="store_true",
+        help=(
+            "Poll pending batch handles in the trace DB; emit "
+            "`eval.completed` events for completed batches with "
+            "`signals.pricing_mode='batch'`. Idempotent."
+        ),
+    )
 
     gateway = sub.add_parser(
         "gateway",
@@ -774,6 +793,10 @@ def main(argv: list[str] | None = None) -> int:
                 evaluate_argv.extend(["--until", args.until])
             if args.session_id:
                 evaluate_argv.extend(["--session-id", args.session_id])
+            if args.batch_mode:
+                evaluate_argv.append("--batch-mode")
+            if args.collect_batches:
+                evaluate_argv.append("--collect-batches")
             return evaluate_main(evaluate_argv)
         if args.command == "backup":
             from metis.cli.backup import run_backup_command

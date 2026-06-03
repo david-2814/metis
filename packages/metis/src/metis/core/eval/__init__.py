@@ -21,6 +21,13 @@ Tool-cycle and session subjects remain heuristic-only in v1
 `workload`.
 """
 
+from metis.core.eval.batch import (
+    DEFAULT_BATCH_JUDGE_MODEL,
+    BatchCollectResult,
+    BatchSubmitResult,
+    collect_pending_batches,
+    submit_batch_for_window,
+)
 from metis.core.eval.budget import (
     DEFAULT_PER_DAY_MAX_USD,
     DEFAULT_PER_SESSION_MAX_USD,
@@ -80,6 +87,7 @@ from metis.core.eval.verdict import (
 )
 
 __all__ = [
+    "DEFAULT_BATCH_JUDGE_MODEL",
     "DEFAULT_ESCALATION_THRESHOLD",
     "DEFAULT_JUDGE_MAX_OUTPUT_TOKENS",
     "DEFAULT_PER_DAY_MAX_USD",
@@ -101,6 +109,8 @@ __all__ = [
     "WORKLOAD_HYBRID_RUBRIC_VERSION",
     "WORKLOAD_LLM_RUBRIC_ID",
     "WORKLOAD_LLM_RUBRIC_VERSION",
+    "BatchCollectResult",
+    "BatchSubmitResult",
     "BudgetTracker",
     "EvalJudgeKind",
     "EvalSubjectKind",
@@ -124,8 +134,10 @@ __all__ = [
     "WorkloadRubric",
     "WorkloadRubricError",
     "clamp_unit",
+    "collect_pending_batches",
     "evaluate_main",
     "parse_workload_rubric",
     "reevaluate",
     "register_evaluator",
+    "submit_batch_for_window",
 ]
