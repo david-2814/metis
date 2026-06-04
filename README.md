@@ -7,7 +7,7 @@ prompts and traces don't leave it. Apache-2.0.
 <p>
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
   <img alt="Python 3.13" src="https://img.shields.io/badge/Python-3.13-blue.svg">
-  <img alt="1914 tests passing" src="https://img.shields.io/badge/tests-1914_passing-brightgreen.svg">
+  <img alt="1953 tests passing" src="https://img.shields.io/badge/tests-1953_passing-brightgreen.svg">
   <img alt="Status: Phase 3 GA" src="https://img.shields.io/badge/status-Phase_3_GA-success.svg">
 </p>
 
