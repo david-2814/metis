@@ -86,6 +86,19 @@ When changing a spec, the dependent specs (right column whose left column is the
 
 ## Change log
 
+### 2026-06-03 — benchmark.md §3.5 + new workload `long-session-compaction` (Wave 19a-5 prep)
+
+- **Specs:** [`benchmark.md`](benchmark.md) — new §3.5 ("Long-session compaction workload") between §3.4 (Batch-mode) and §4 (The suite). New workload fixture at [`benchmarks/workloads/long-session-compaction/`](../../benchmarks/workloads/long-session-compaction/) (workload.yaml + 5-file starter workspace). This `CHANGES.md` entry.
+- **Change:** Drafts the measurement artifact for [`session-compaction.md §10`](session-compaction.md) — the 30-60% input-token reduction claim from the [`token-reduction-strategy.md §4`](../design/token-reduction-strategy.md) Tier-1 ranking. The 30-turn workload builds a small Python task-tracker library feature-by-feature, with three design rules pinned in turn 3 ("dataclasses only", "errors raise", "UTC everywhere") and load-bearing in turns 9, 11, 21, 24, 27. A correct compaction summary preserves these; a lossy summary slips Pydantic in at turn 24 or `utcnow()` at turn 11 or `return None` at turn 27, all of which fail the final pytest run and lower the `test_pass_count_ratio` partial-credit score ([`evaluator.md §5.4`](evaluator.md) v1.2). Starter workspace (5 files, 9 passing tests verified locally) grows to ~27 tests by turn 30. `signal_strength: marginal` so the default v2 model-discrimination suite (§4.1) doesn't pick it up implicitly; explicit `--workload long-session-compaction` runs it. Cost budget `max_total_cost_usd: 1.50` initially; tightens after Wave 19a-5's first measurement lands in `RESULTS.md §Wave-19a-5`.
+- **Type:** additive. New §3.5 in `benchmark.md`; new workload fixture under `benchmarks/workloads/`. No existing workload changed; no spec contract amended. The measurement methodology in §3.5 describes the comparison Wave 19a-5 will run (compaction OFF vs compaction ON, same prompts, captures per-turn input-token series + total cost delta + quality delta).
+- **References to verify:**
+  - `session-compaction.md §10` — pre-existing "Measurement" section sketches the workload shape; this PR ships the concrete artifact. No edit required to §10. ✓
+  - `evaluator.md §5.4` (v1.2) — the `test_pass_count_ratio` partial-credit primitive this workload's rubric uses. Already shipped via Wave 14a-1. ✓
+  - `docs/design/token-reduction-strategy.md §4` Tier-1 ranking + §5.1.1.5 measurement risk — the workload exists to substantiate the 30-60% claim with a real number; if the first Wave 19a-5 run misses that range, the umbrella's `compaction_threshold_tokens` default needs raising. ✓
+- **Status:** verified — the workload artifact ships in this PR; the first measurement against it lands in Wave 19a-5 (deferred to after the Compactor + SessionManager wiring land in 19a-1 + 19a-2).
+
+---
+
 ### 2026-06-03 — evaluator.md §6.2.1: `metis evaluate --batch-mode` / `--collect-batches` (Wave 18a-2)
 
 - **Spec:** [`evaluator.md`](evaluator.md) — new §6.2.1 under §6.2 documenting the two batch-submission flags and the two-pass workflow. This `CHANGES.md` entry.
