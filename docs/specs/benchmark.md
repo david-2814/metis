@@ -271,6 +271,64 @@ on `fix-a-bug-small`. The Wave-18 entry in
 [`RESULTS.md`](../../benchmarks/RESULTS.md) documents the first
 measurement.
 
+### 3.5 Long-session compaction workload (Wave 19 prep)
+
+[`benchmarks/workloads/long-session-compaction/`](../../benchmarks/workloads/long-session-compaction/)
+is a 30-turn workload designed to measure
+[`session-compaction.md`](session-compaction.md)'s value claim end-to-end:
+**30-60% input-token reduction on sessions past the default
+`compaction_threshold_tokens = 30_000`** per the umbrella's Tier-1
+ranking ([`token-reduction-strategy.md §4`](../design/token-reduction-strategy.md)).
+The workload is opt-in by name (`--workload long-session-compaction`);
+its `signal_strength: marginal` keeps it out of the default
+model-discrimination suite per §4.1 — it isn't a routing-discrimination
+workload, it's a feature-validation workload.
+
+**Shape.** A user iteratively builds a small Python task-tracker library
+turn-by-turn: starts with a `Task` dataclass + minimal `TaskStore` + 9
+passing tests, ends with priority + due-date + tags + search + JSON
+persistence + ~27 passing tests. Context grows organically as the agent
+reads files, sees test output, and references earlier decisions. By
+turn 30 the message history is ~35-45k tokens — past the compaction
+threshold, well into the regime where the lever actually fires.
+
+**Compaction stress design.** Three design rules are pinned in turn 3
+("dataclasses only, no Pydantic"; "errors raise, never return `None`";
+"all datetimes UTC, use `datetime.now(UTC)`") and load-bearing in
+turns 9, 11, 21, 24, and 27. A correct compaction summary preserves
+these rules; a lossy summary lets the agent slip Pydantic in at turn
+24, or `utcnow()` at turn 11, or `return None` on file-not-found at
+turn 27 — all of which fail the final pytest run. Quality regression
+shows up in the partial-credit rubric, not just in the diff.
+
+**Measurement methodology.** Wave 19a-5 runs the workload twice on the
+same model (default haiku):
+
+1. **Compaction OFF** (`--compaction-disabled` once that flag lands in
+   `scripts/benchmark.py`): baseline input-token totals + cost per turn,
+   pytest pass count, total cost.
+2. **Compaction ON** (default once Wave 19a-2 wires `SessionManager`):
+   same prompts, compaction fires at the threshold. Capture per-turn
+   input tokens (expect 30-60% reduction past turn ~20), total cost,
+   pytest pass count.
+
+The comparison logs to `RESULTS.md §Wave-19a-5` with:
+- Per-turn input-token series (a chart-able pair of curves)
+- Total cost delta + percentage
+- Quality delta (pytest pass count) — should be within ±0.10 of the
+  baseline per `session-compaction.md §10`
+- One-time cache-write cost at compaction (visible as a turn-N spike in
+  the ON curve) per `session-compaction.md §7`
+
+**Final-turn assertion.** Turn 30 prints `PASS N/M` (or `FAIL N/M` on
+unfixed failures) for the `test_pass_count_ratio` partial-credit
+primitive ([`evaluator.md §5.4`](evaluator.md) v1.2). A clean run
+produces `PASS 27/27` (score 1.0); compaction-induced rule violations
+produce a lower fraction (e.g. `PASS 24/27` → 0.89).
+
+**Cost budget.** `max_total_cost_usd: 1.50` initially; tighten after
+the Wave 19a-5 measurement lands.
+
 ---
 
 ## 4. The suite

@@ -1,0 +1,271 @@
+name: long-session-compaction
+description: >-
+  A 30-turn build-out of a small task-manager library. Each turn adds
+  one focused piece (priority field, due dates, tags, search, JSON
+  persistence) with tests. The session deliberately grows past the
+  default 30k-token compaction threshold (`session-compaction.md §3.1`)
+  so per-turn input billing for turns 20-30 lands in the compacted
+  regime — making the lever measurable end-to-end.
+
+  Three design rules are pinned in turn 3 ("dataclasses only, no
+  Pydantic"; "errors raise, never return None"; "all datetimes UTC")
+  and load-bearing in turns 9, 11, 21, 24, and 27. If compaction
+  summarizes turn 3 incorrectly the agent will violate one of these
+  rules late in the session, and the final pytest run reports a
+  lower pass count — exposing the failure mode in `quality` rather
+  than `cost`.
+
+  Final turn runs pytest and prints `PASS N/M` for the
+  `test_pass_count_ratio` partial-credit rubric
+  (`evaluator.md §5.4 v1.2`).
+suite_version: 1
+
+# Not designed to discriminate model choice (haiku and sonnet should
+# both pass the rule-following test; the lever this workload measures
+# is compaction, not routing). `marginal` keeps it out of the default
+# v2 model-discrimination suite per `benchmark.md §4.1`; explicit
+# `--workload long-session-compaction` bypasses the filter so the
+# Wave 19a-5 measurement reproduces.
+signal_strength: marginal
+
+turns:
+  # ---- Turns 1-3: Orientation + the three pinned design rules -----------
+  - prompt: >-
+      What's in this codebase? Read every file in the workspace and give
+      me a 2-3 sentence summary of the architecture.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 12
+      contains_substring: TaskStore
+  - prompt: >-
+      Which subcommands does the CLI support today? List them with a
+      one-line description of each.
+    expect:
+      min_tool_calls: 0
+      max_tool_calls: 4
+      contains_substring: add
+  - prompt: >-
+      We're building this into a small task manager over roughly 30 turns.
+      Three rules apply throughout — please commit them to memory:
+
+      1. **Dataclasses only.** No Pydantic. Plain `@dataclass` records
+         everywhere a model is needed.
+      2. **Errors raise.** Never return `None` to signal failure; raise
+         a specific exception (define new ones in the relevant module).
+      3. **UTC everywhere.** Every datetime is timezone-aware UTC.
+         Use `datetime.now(UTC)`, not the deprecated `datetime.utcnow()`.
+
+      Echo the rules back so I know you've got them, then we'll move on.
+    expect:
+      min_tool_calls: 0
+      max_tool_calls: 2
+      contains_substring: dataclass
+
+  # ---- Turns 4-8: Priority field ----------------------------------------
+  - prompt: >-
+      Add a `priority` field to `Task`. Values: 1 (high), 2 (medium),
+      3 (low). Default is 2.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add two tests to `test_tasks.py`: one that asserts the default
+      priority is 2, one that asserts priorities sort numerically.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a `list_by_priority()` method to `TaskStore` that returns tasks
+      sorted highest-priority-first (priority 1 before priority 3).
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a test for `list_by_priority` in `test_store.py`. Cover the
+      sort order across all three priority values.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a `--priority` flag to the CLI `add` command. Default 2.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+
+  # ---- Turns 9-13: Due dates --------------------------------------------
+  - prompt: >-
+      Add an optional `due_at` field to `Task`. Type is
+      `datetime | None`, default `None`. Remember the design rules
+      from earlier.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a test that `due_at` defaults to `None` and that you can
+      construct a `Task` with a `due_at` set to a tz-aware datetime.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a `due_soon(now)` method to `TaskStore` that takes a
+      reference `now: datetime` and returns the tasks whose `due_at` is
+      within 24 hours of `now`. (Taking `now` as a parameter keeps the
+      method testable without freezegun.)
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a test for `due_soon`. Include a task due in 1 hour (should
+      appear), a task due in 48 hours (should NOT appear), and a task
+      with no due_at (should NOT appear).
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a `--due` flag to the CLI `add` command. It accepts an ISO
+      8601 datetime string and parses it into the `due_at` field.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+
+  # ---- Turns 14-18: Tags ------------------------------------------------
+  - prompt: >-
+      Add a `tags` field to `Task`. Type is `frozenset[str]`, default
+      empty `frozenset()`.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add two tests: one that the default `tags` is empty, one that
+      you can construct a `Task` with `tags=frozenset({"home", "errand"})`.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a `with_tag(name)` method to `TaskStore` returning tasks
+      whose `tags` contains `name`.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a test for `with_tag`. Cover a task that has the tag, a task
+      that doesn't, and a query for a tag no task carries.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a `--tag` flag to the CLI `add` command. It should be
+      repeatable (the user can pass it multiple times).
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+
+  # ---- Turns 19-23: Search + a design dialogue --------------------------
+  - prompt: >-
+      Add a `search(query)` method to `TaskStore`. Case-insensitive
+      substring match against `title`. Returns a list.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add three tests for `search`: exact match, case-insensitive match,
+      and "no match returns empty list."
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a `search` subcommand to the CLI. Takes one positional
+      argument (the query string).
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Question, not an edit: what's the right behavior for
+      `store.search("")` — return all tasks, or return no tasks? Give
+      me a one-sentence argument for each, then I'll pick.
+    expect:
+      min_tool_calls: 0
+      max_tool_calls: 2
+  - prompt: >-
+      Let's go with "empty query returns no tasks" (matches the
+      semantic "you searched for nothing"). Add a test asserting
+      `store.search("")` returns an empty list.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+
+  # ---- Turns 24-28: Persistence (load-bearing on turn 3's rules) --------
+  - prompt: >-
+      Time to add persistence. Create a new module `persist.py` with
+      two functions: `save_to_file(store, path)` (writes a JSON
+      representation of the store) and `load_from_file(path) -> TaskStore`
+      (reads it back). Datetimes serialize as ISO 8601 strings; remember
+      the design rules from earlier.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 10
+  - prompt: >-
+      Add a test for the save → load round-trip. Use pytest's
+      `tmp_path` fixture so we don't litter the filesystem.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a test that round-trip preserves `priority`, `tags`, and
+      `due_at`. Two tasks with non-default values for each.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add a test that `load_from_file("/nonexistent.json")` does the
+      right thing per our design rules from earlier in the session.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 8
+  - prompt: >-
+      Add `--save FILE` and `--load FILE` flags to the CLI. `--load`
+      runs at startup, `--save` runs at exit. Keep it simple.
+    expect:
+      min_tool_calls: 2
+      max_tool_calls: 10
+
+  # ---- Turns 29-30: Final test pass -------------------------------------
+  - prompt: >-
+      Run `python -m pytest -v` from the workspace root and report the
+      result. Tell me the total test count and the passed count.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 4
+  - prompt: >-
+      If any tests are failing, fix them and re-run. When everything
+      passes, print exactly `PASS N/N` where N is the total test count
+      (e.g. `PASS 27/27`). If pytest still has failures after one
+      fix-up round, print `FAIL <passed>/<total>` honestly — don't
+      paper over it.
+    expect:
+      min_tool_calls: 1
+      max_tool_calls: 10
+      contains_substring: "PASS"
+
+evaluate:
+  rubric: heuristic
+  # Partial credit on the final-turn `PASS N/M` token. A perfect run
+  # produces `PASS 27/27` (or similar); a partial run produces
+  # `PASS 24/27` and scores ~0.89; a hard failure produces
+  # `FAIL 18/27` and scores ~0.67. Compaction-induced rule violations
+  # (e.g. Pydantic creeping in at turn 24, or `utcnow()` slipping in
+  # at turn 11) cause downstream test failures and the rubric exposes
+  # them in the score, not just in the diff.
+  partial_credit:
+    enabled: true
+    criterion: test_pass_count_ratio
+    map: linear
+
+expect:
+  # Generous budget — 30 turns × maybe $0.01-0.02 per turn against
+  # haiku-rate with prompt caching = $0.30-0.60 expected. Set 1.50
+  # so we don't false-alarm on the first run; tighten after the
+  # first §Wave-19a-5 measurement lands in RESULTS.md.
+  max_total_cost_usd: 1.50
+  min_llm_calls: 30
+  max_hard_failures: 0
