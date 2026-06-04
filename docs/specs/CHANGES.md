@@ -86,6 +86,20 @@ When changing a spec, the dependent specs (right column whose left column is the
 
 ## Change log
 
+### 2026-06-03 — evaluator.md §6.2.1: `metis evaluate --batch-mode` / `--collect-batches` (Wave 18a-2)
+
+- **Spec:** [`evaluator.md`](evaluator.md) — new §6.2.1 under §6.2 documenting the two batch-submission flags and the two-pass workflow. This `CHANGES.md` entry.
+- **Change:** Lands the first consumer of [`provider-adapter-contract.md §4.6`](provider-adapter-contract.md) shipped in Wave 18a-1. Two new flags on `metis evaluate`: `--batch-mode` walks the trace store for in-window subjects, builds one LLM-judge `CanonicalRequest` per subject (chunked into 5,000-request batches well under the Anthropic 100k / 256MB caps), submits via `adapter.submit_batch(requests)`, persists each `BatchHandle` row to a new `evaluator_batch_handles` table on the existing trace DB, and exits without waiting (Anthropic 24h SLA is incompatible with blocking). `--collect-batches` polls every pending handle, fetches completed results, parses each via the LLM judge's existing `_parse_response` + `_llm_rubric_for` helpers (so verdict shape matches sync mode byte-for-byte), and emits `eval.completed` events with `signals.pricing_mode='batch'` so `/analytics/cost?group_by=pricing_mode` partitions cleanly. Idempotent: a second `--collect-batches` invocation reads `WHERE status='pending'` and skips already-ingested rows.
+- **Type:** additive. `TRACE_SCHEMA_VERSION` is unchanged — the new `evaluator_batch_handles` table is created via `CREATE TABLE IF NOT EXISTS` so existing trace DBs pick it up on next open. No event payload changes — the `pricing_mode='batch'` flag lands in the existing `EvalCompleted.signals: dict` field (the typed payload doesn't carry a top-level `pricing_mode` field). Existing `metis evaluate` callers without the new flags are byte-identical. The default sync path still defaults to `HeuristicJudge`; `--batch-mode` implicitly uses `LLMJudge` against the default `anthropic:claude-haiku-4-5` judge model.
+- **References to verify:**
+  - `provider-adapter-contract.md §4.6` — first end-to-end consumer of `submit_batch` / `poll_batch` / `fetch_batch`. The 2026-06-03 drift-fix PR (just above) brought the spec text to match the shipped Protocol signatures the consumer uses. ✓
+  - `event-bus-and-trace-catalog.md` — no event-catalog change. The `pricing_mode='batch'` marker lives in `EvalCompleted.signals`, not a new payload field. ✓
+  - `benchmark.md` — sibling Wave 18a-3 (`scripts/benchmark.py --batch-mode`) consumes the same adapter surface; the two consumers are independent. No edit required from this change. ✓
+- **Status:** pending review — once Wave 18a-3 (benchmark batch-mode) merges, both §4.6 consumers will be live; this entry returns to `verified` then.
+- **Pre-existing fix (Wave 18a-1 collateral):** `canonical/__init__.py` pre-imports `metis.core.adapters` before `canonical.batch` so the `canonical.batch` ↔ `adapters.protocol` import cycle resolves regardless of caller order. The cycle was order-dependent on `main` after Wave 18a-1 (test ordering hid the failure); the eval-test conftest's first-import of `TraceStore` triggered it. Minimally-invasive nudge — no public-API change.
+
+---
+
 ### 2026-06-03 — provider-adapter-contract.md §4.6 + wave-18-agent-dispatch.md: drift corrections from Wave 18a-1 landing
 
 - **Specs:** [`provider-adapter-contract.md`](provider-adapter-contract.md) §4.6.2 + §4.6.6. [`docs/design/wave-18-agent-dispatch.md`](../design/wave-18-agent-dispatch.md) (Agent A section + "Common preamble" + all five completion blocks).
@@ -95,7 +109,7 @@ When changing a spec, the dependent specs (right column whose left column is the
   - `provider-adapter-contract.md §4.6.7` — already lists `metis evaluate` + `scripts/benchmark.py` as the consumer surfaces; unchanged. ✓
   - `canonical-message-format.md §4.3` — `Usage.pricing_mode` mention; unchanged. ✓
   - `event-bus-and-trace-catalog.md §6.3` — `llm.call_completed.pricing_mode` mention; unchanged. ✓
-- **Status:** pending review — once merged, the existing 2026-05-22 `§4.6` change-log entry's `Status` can be re-read with these corrections in mind. Spec text now matches `packages/metis/src/metis/core/adapters/protocol.py` line-for-line on the three batch method signatures.
+- **Status:** verified — landed via [PR #45](https://github.com/david-2814/metis/pull/45). Spec text now matches `packages/metis/src/metis/core/adapters/protocol.py` line-for-line on the three batch method signatures.
 
 ---
 

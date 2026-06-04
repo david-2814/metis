@@ -669,6 +669,58 @@ Re-evaluation is **bounded** by the same per-day and per-session
 `judge_cost_usd` caps ([§7](#7-budget-and-safety)) as online evaluation —
 the cap is across both modes.
 
+#### 6.2.1 Batch submission mode (`--batch-mode` / `--collect-batches`)
+
+For offline re-evaluation runs over a wide window, the evaluator opts
+in to the provider's batch API at a flat 50% discount per
+[`provider-adapter-contract.md §4.6`](provider-adapter-contract.md).
+The CLI exposes two complementary flags on `metis evaluate`:
+
+  * `--batch-mode` — walks the trace store for in-window subjects,
+    builds an LLM-judge `CanonicalRequest` per subject, bundles them
+    into one call to `adapter.submit_batch(requests)`, persists the
+    returned `BatchHandle` rows to a small `evaluator_batch_handles`
+    table on the trace DB, and **exits without waiting**. Anthropic's
+    SLA is best-effort 24h, so blocking is incompatible with operator
+    workflow. STDOUT prints the submitted `batch_id`(s) + request count
+    for the operator's log.
+
+  * `--collect-batches` — reads pending `evaluator_batch_handles` rows,
+    polls each via `adapter.poll_batch`, and for completed batches
+    calls `adapter.fetch_batch`. Each result row is parsed into an
+    `EvalVerdict` via the LLM judge's `_parse_response` helper and
+    emitted as an `eval.completed` event with
+    `signals.pricing_mode='batch'` so the savings dashboard's
+    `group_by=pricing_mode` partition lights up. The handle row
+    transitions to `status='ingested'` with `ingested_at_ms` stamped.
+    Idempotent — a second invocation skips ingested rows and emits no
+    duplicate events.
+
+Two-pass workflow:
+
+```bash
+# Tuesday afternoon: kick off the backfill, walk away.
+metis evaluate --db-path ~/.metis/metis.db --subject turn \
+    --since 2026-05-01T00:00:00Z --batch-mode
+
+# Wednesday morning: ingest whatever's ready (idempotent).
+metis evaluate --db-path ~/.metis/metis.db --collect-batches
+```
+
+The persisted handle table is `evaluator_batch_handles` on the existing
+trace DB (additive; `TRACE_SCHEMA_VERSION` unchanged because
+`CREATE TABLE IF NOT EXISTS` makes the migration a no-op on existing
+DBs). Schema: one row per `custom_id` (== canonical request_id),
+carrying `batch_id`, `provider`, `submitted_at_ms`, `subject_kind`,
+`subject_id`, `session_id`, `turn_id`, `judge_model`, `status`
+(`pending`|`ingested`), and `ingested_at_ms`.
+
+Per-request failures inside a successfully-completed batch surface as
+`eval.failed` events, NOT as exceptions — same posture as the sync LLM
+judge's bounded retry. Batch-level failures (entire batch expired or
+aborted before any results were produced) raise `AdapterError`; the
+handle row stays `pending` so a later `--collect-batches` re-tries.
+
 ### 6.3 No mid-turn evaluation
 
 Per [§2.2.2](#22-non-goals). The evaluator never reads in-flight state.
