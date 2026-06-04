@@ -29,6 +29,7 @@ def test_shipped_workloads_load_clean():
         "architectural-explanation-without-hallucination",
         "fix-a-bug-small",
         "intentionally-failing-task",
+        "long-session-compaction",
         "multi-file-refactor-with-shared-types",
         "multi-step-with-delegation",
         "multi-turn-refactor",
