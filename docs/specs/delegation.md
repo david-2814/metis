@@ -755,7 +755,7 @@ different tier on the next `delegate()` call; the dashboard surfaces
 the disagreement.
 
 This is the worker-mode analogue of
-[`routing-engine.md §5.6`](routing-engine.md) (rule beats pattern
+[`routing-engine.md §5.7`](routing-engine.md) (rule beats pattern
 recommendation by default). The decision log records the rationale
 (§15).
 

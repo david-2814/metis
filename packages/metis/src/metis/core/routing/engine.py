@@ -64,6 +64,13 @@ class _Candidate:
     reason_when_not_applicable: str = ""
     confidence: float | None = None
     pattern_alternatives: list[PatternAlternative] | None = None
+    # LLM_ROUTER slot meta-call accounting (routing-engine.md §4.6.7).
+    # Surfaced on the PolicyEvaluation regardless of verdict so a failed
+    # router call that still spent tokens is accountable. `None` for every
+    # other slot.
+    meta_cost_usd: float | None = None
+    meta_tokens_input: int | None = None
+    meta_tokens_output: int | None = None
 
 
 class RoutingError(Exception):
@@ -140,6 +147,9 @@ class RoutingEngine:
                         rule_name=candidate.rule_name,
                         confidence=candidate.confidence,
                         pattern_alternatives=candidate.pattern_alternatives,
+                        meta_cost_usd=candidate.meta_cost_usd,
+                        meta_tokens_input=candidate.meta_tokens_input,
+                        meta_tokens_output=candidate.meta_tokens_output,
                     )
                 )
                 continue
@@ -154,6 +164,9 @@ class RoutingEngine:
                         rule_name=candidate.rule_name,
                         confidence=candidate.confidence,
                         pattern_alternatives=candidate.pattern_alternatives,
+                        meta_cost_usd=candidate.meta_cost_usd,
+                        meta_tokens_input=candidate.meta_tokens_input,
+                        meta_tokens_output=candidate.meta_tokens_output,
                     )
                 )
                 winner_index = index
@@ -169,6 +182,9 @@ class RoutingEngine:
                     confidence=candidate.confidence,
                     pattern_alternatives=candidate.pattern_alternatives,
                     validation_failure=failure,  # type: ignore[arg-type]
+                    meta_cost_usd=candidate.meta_cost_usd,
+                    meta_tokens_input=candidate.meta_tokens_input,
+                    meta_tokens_output=candidate.meta_tokens_output,
                 )
             )
 
@@ -222,6 +238,7 @@ class RoutingEngine:
             ),
             rule_candidate,
             self._evaluate_pattern(ctx, workspace_scope),
+            self._evaluate_llm_router(ctx, workspace_scope),
             _Candidate(
                 policy="delegate_request",
                 model=ctx.worker_tier_model,
@@ -356,6 +373,67 @@ class RoutingEngine:
         if workspace_scope is not None and workspace_scope.pattern is not None:
             return workspace_scope.pattern
         return self._policy.pattern
+
+    def _evaluate_llm_router(self, ctx: TurnContext, workspace_scope) -> _Candidate:
+        """Slot 5. Reads the pre-computed `ctx.llm_router_result`.
+
+        The engine is synchronous; the caller (SessionManager / harness)
+        is responsible for awaiting `LLMRouter.decide()` before invoking
+        `engine.decide(ctx)` and stuffing the result onto the context.
+        Without a pre-computed result we treat the slot as disabled so
+        the chain still produces a definite winner.
+
+        Worker re-entry always defers (§4.6.4) — the planner's explicit
+        `tier=` choice must not be second-guessed.
+        """
+        if ctx.worker_tier_model is not None:
+            return _Candidate(
+                policy="llm_router",
+                model=None,
+                reason_when_not_applicable="delegate_request_in_flight",
+            )
+        # Effective config: workspace overrides global (§5.6 / §5.5 pattern).
+        effective = (
+            workspace_scope.llm_router
+            if workspace_scope is not None and workspace_scope.llm_router is not None
+            else self._policy.llm_router
+        )
+        if not effective.enabled:
+            return _Candidate(
+                policy="llm_router",
+                model=None,
+                reason_when_not_applicable="llm_router disabled",
+            )
+        result = ctx.llm_router_result
+        if result is None:
+            # Policy says enabled but the caller didn't pre-compute. Defensive:
+            # don't fail the turn; record the gap and fall through.
+            return _Candidate(
+                policy="llm_router",
+                model=None,
+                reason_when_not_applicable="llm_router not pre-computed",
+            )
+        meta_cost = float(result.meta_cost_usd) if result.meta_cost_usd else 0.0
+        if result.chosen_model is None:
+            return _Candidate(
+                policy="llm_router",
+                model=None,
+                reason_when_not_applicable=result.failure_reason or "unknown_failure",
+                meta_cost_usd=meta_cost,
+                meta_tokens_input=result.meta_tokens_input,
+                meta_tokens_output=result.meta_tokens_output,
+            )
+        return _Candidate(
+            policy="llm_router",
+            model=result.chosen_model,
+            reason_when_applicable=(
+                f"LLM_ROUTER picked {result.chosen_model}"
+                + (f": {result.reason_text}" if result.reason_text else "")
+            ),
+            meta_cost_usd=meta_cost,
+            meta_tokens_input=result.meta_tokens_input,
+            meta_tokens_output=result.meta_tokens_output,
+        )
 
     def _attach_cached_embedding(
         self,

@@ -38,6 +38,7 @@ from metis.core.routing.policy import (
     FileExtensionsInContext,
     HasImages,
     HasToolCallsInHistory,
+    LLMRouterConfig,
     MessageContainsAny,
     MessageMatches,
     Not,
@@ -130,6 +131,7 @@ def parse_policy(
 
     tiers = _parse_tiers(raw.get("tiers"), "tiers", registry, errors, allow_partial=False)
     pattern = _parse_pattern(raw.get("pattern"), "pattern", errors)
+    llm_router = _parse_llm_router(raw.get("llm_router"), "llm_router", errors)
     rules = _parse_rules(raw.get("rules") or [], scope="global", registry=registry, errors=errors)
     workspaces = _parse_workspaces(raw.get("workspaces") or {}, registry=registry, errors=errors)
 
@@ -143,6 +145,7 @@ def parse_policy(
         pattern=pattern,
         rules=tuple(rules),
         workspaces=tuple(workspaces),
+        llm_router=llm_router,
         source_path=source_path,
         version=version,
     )
@@ -239,6 +242,50 @@ def _parse_pattern(raw: Any, field: str, errors: list[str]) -> PatternConfig:
     )
 
 
+def _parse_llm_router(raw: Any, field: str, errors: list[str]) -> LLMRouterConfig:
+    """Parse the `llm_router:` block (routing-engine §5.6).
+
+    Absent / malformed block → default `LLMRouterConfig()` (enabled=False).
+    A malformed block records errors per §5.6.3 but the loader still
+    yields a usable disabled config rather than failing the whole load.
+    """
+    if raw is None:
+        return LLMRouterConfig()
+    if not isinstance(raw, dict):
+        errors.append(f"{field}: must be a mapping")
+        return LLMRouterConfig()
+    defaults = LLMRouterConfig()
+    enabled = raw.get("enabled", defaults.enabled)
+    model = raw.get("model", defaults.model)
+    per_session = raw.get("per_session_budget_usd", defaults.per_session_budget_usd)
+    per_day = raw.get("per_day_budget_usd", defaults.per_day_budget_usd)
+    timeout = raw.get("timeout_seconds", defaults.timeout_seconds)
+    if not isinstance(enabled, bool):
+        errors.append(f"{field}.enabled must be a boolean (got {enabled!r})")
+        enabled = bool(enabled) if enabled is not None else False
+    if not isinstance(model, str) or not model:
+        errors.append(f"{field}.model must be a non-empty string (got {model!r})")
+        model = defaults.model
+    if not isinstance(per_session, int | float) or per_session < 0:
+        errors.append(
+            f"{field}.per_session_budget_usd must be a non-negative number (got {per_session!r})"
+        )
+        per_session = defaults.per_session_budget_usd
+    if not isinstance(per_day, int | float) or per_day < 0:
+        errors.append(f"{field}.per_day_budget_usd must be a non-negative number (got {per_day!r})")
+        per_day = defaults.per_day_budget_usd
+    if not isinstance(timeout, int | float) or timeout <= 0:
+        errors.append(f"{field}.timeout_seconds must be a positive number (got {timeout!r})")
+        timeout = defaults.timeout_seconds
+    return LLMRouterConfig(
+        enabled=bool(enabled),
+        model=model,
+        per_session_budget_usd=float(per_session),
+        per_day_budget_usd=float(per_day),
+        timeout_seconds=float(timeout),
+    )
+
+
 def _parse_rules(
     raw: Any,
     *,
@@ -320,6 +367,12 @@ def _parse_workspaces(
             parsed_pattern = _parse_pattern(pattern, f"workspaces.{path}.pattern", errors)
         else:
             parsed_pattern = None
+        llm_router_raw = cfg.get("llm_router")
+        parsed_llm_router = (
+            _parse_llm_router(llm_router_raw, f"workspaces.{path}.llm_router", errors)
+            if llm_router_raw is not None
+            else None
+        )
         rules = _parse_rules(
             cfg.get("rules") or [],
             scope=f"workspaces.{path}",
@@ -335,6 +388,7 @@ def _parse_workspaces(
                 default=default,
                 tiers=tiers,
                 pattern=parsed_pattern,
+                llm_router=parsed_llm_router,
                 rules=tuple(rules),
             )
         )

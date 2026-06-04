@@ -1,9 +1,37 @@
 # Routing Engine Specification
 
-**Status:** v3.3 — shipped; this revision re-syncs the spec to the Wave-16 implementation
-**Last updated:** 2026-05-20
+**Status:** v3.4 — proposed; LLM_ROUTER slot added (Wave 19, opt-in)
+**Last updated:** 2026-06-03
 **Owner:** _your name_
 
+> **v3.4 changes (2026-06-03 — Wave 19, LLM router):** New chain slot
+> `LLM_ROUTER` inserted at position 5, between `PATTERN_RECOMMENDATION` and
+> the renumbered `DELEGATE_REQUEST` (now position 6). When enabled, the slot
+> asks a small auxiliary LLM ("router model"; default
+> `openrouter:qwen/qwen-plus`, configurable) to pick the model for the turn
+> from the registered, capability-valid, available candidates. The router
+> returns its pick via a single `choose_model(model_id, reason)` tool call;
+> the pick passes through the standard §4.4 validation gate. Off by default
+> (chain shape unchanged for existing deployments — slot 5 reports
+> `not_applicable, reason="llm_router disabled"`). Enabled per workspace
+> via the new `llm_router:` block in `routing.yaml` (§5.6) or interactively
+> with `/router llm on|off|model <id>|status` in `metis dev`. The slot
+> shares the evaluator's `BudgetTracker` primitive with independent
+> per-session / per-day caps; over-budget → `not_applicable,
+> reason="budget_exhausted"`. Failure modes (timeout, invalid model id,
+> network error, no candidates) all degrade to `not_applicable` with the
+> reason recorded on `route.decided.chain`. In worker re-entry the slot
+> defers with `reason="delegate_request_in_flight"` so the planner's
+> explicit `tier=` choice is never second-guessed (matches PATTERN slot 4
+> behavior under delegation, see `delegation.md §11`). Catalog event
+> `route.decided` is extended additively — `PolicyEvaluation` gains
+> `meta_cost_usd` / `meta_tokens_input` / `meta_tokens_output` fields
+> (`None` for every slot other than `llm_router`); the
+> `RoutingPolicyName` literal gains `"llm_router"`. Slot 4 still uses the
+> Wave-15 pattern store. Renumbering shifts `DELEGATE_REQUEST` 5→6,
+> `WORKSPACE_DEFAULT` 6→7, `GLOBAL_DEFAULT` 7→8 — slot names (the keys the
+> implementation uses) are unchanged, only the numeric ordinals shift.
+>
 > **v3.3 changes (2026-05-20 — implementation sync):** Spec re-synced to the
 > shipped routing engine. Slots 4 (`PATTERN_RECOMMENDATION`) and 5
 > (`DELEGATE_REQUEST`) are wired, not stubs — §4.1/§4.2 corrected (slot 5 is
@@ -34,7 +62,7 @@
 > `skills_matching_message_includes` (§5.3). Cost-efficiency divide-by-zero defined
 > (§5.5). `insufficient_context` schema specified (§6.6). Worker memory/skill/visibility
 > rules added (§6.2.1). Tier upgrade exhaustion behavior stated (§6.9). Workspace tiers
-> require all three slots (§5.7). Mid-turn multiple swaps last-write-wins (§3.3).
+> require all three slots (§5.8). Mid-turn multiple swaps last-write-wins (§3.3).
 > Various nits.
 >
 > *Throughout: the per-workspace routing config lives at
@@ -140,26 +168,30 @@ For each turn, at turn start, the engine runs policies in fixed order. The first
 2. MANUAL_STICKY          — session.active_model set explicitly via /model
 3. CONFIGURED_RULES       — first-match-wins over the rules list
 4. PATTERN_RECOMMENDATION — pattern store result with confidence ≥ threshold
-5. DELEGATE_REQUEST       — resolved tier model on a delegation re-entry; see §6
-6. WORKSPACE_DEFAULT      — workspace-scoped default
-7. GLOBAL_DEFAULT         — hardcoded fallback
+5. LLM_ROUTER             — auxiliary LLM picks model from validated candidates; opt-in, see §4.6
+6. DELEGATE_REQUEST       — resolved tier model on a delegation re-entry; see §6
+7. WORKSPACE_DEFAULT      — workspace-scoped default
+8. GLOBAL_DEFAULT         — hardcoded fallback
 ```
 
-All seven slots are evaluated in this fixed order on every turn — the chain
-shape does not change between turn types. Slot 5 (`DELEGATE_REQUEST`) only
-*proposes a candidate* inside a worker session's re-entry into the chain
-(§6.9); on a normal top-level turn it reports `not_applicable` (it is not
-skipped). Likewise slots 3 and 4 propose a candidate only when a rule
-matches / the pattern store returns a confident recommendation, and report
+All eight slots are evaluated in this fixed order on every turn — the chain
+shape does not change between turn types. Slot 5 (`LLM_ROUTER`) is opt-in
+per workspace (§5.6); when disabled or absent it reports `not_applicable,
+reason="llm_router disabled"` and the chain proceeds. Slot 6
+(`DELEGATE_REQUEST`) only *proposes a candidate* inside a worker session's
+re-entry into the chain (§6.9); on a normal top-level turn it reports
+`not_applicable` (it is not skipped). Likewise slots 3, 4, and 5 propose a
+candidate only when a rule matches / the pattern store returns a confident
+recommendation / the router LLM returns a validated pick, and report
 `not_applicable` otherwise. The `route.decided.chain` trace (§7) is the
 prefix of slots evaluated up to and including the winner, so a turn won by
-slot 3 records three entries and a turn won by slot 7 records all seven.
+slot 3 records three entries and a turn won by slot 8 records all eight.
 
 ### 4.2 Why this order
 
-User intent dominates. (1) is the most local user signal — "just this message." (2) is the session-level user signal. (3) is pre-declared user policy. (4) is system inference, ranked below user-set things by design. (5) handles delegation. (6) and (7) are floors.
+User intent dominates. (1) is the most local user signal — "just this message." (2) is the session-level user signal. (3) is pre-declared user policy. (4) is system inference from accumulated empirical data, ranked below user-set things by design. (5) is system inference from an inference-time LLM, ranked below (4) because patterns are cheaper, faster, deterministic for a given fingerprint, and grounded in observed outcomes — the LLM router is the inference-time fallback when patterns are cold or below the confidence gate. (6) handles delegation. (7) and (8) are floors.
 
-This order is deliberate and stable. Reordering it (e.g., putting pattern recommendations above rules) would let learned behavior silently override user choices — the failure mode that destroys trust.
+This order is deliberate and stable. Reordering it (e.g., putting pattern recommendations above rules, or putting the LLM router above patterns) would let probabilistic inference silently override user-set or empirically-validated choices — the failure mode that destroys trust.
 
 ### 4.3 `MANUAL_STICKY` is opt-in
 
@@ -264,7 +296,85 @@ anthropic provider currently unavailable. Routing fell through to openai:gpt-5 (
 
 Banners clear when the corresponding state returns to Healthy.
 
-### 4.6 No per-rule fallback lists
+### 4.6 The `LLM_ROUTER` slot
+
+The `LLM_ROUTER` slot (chain position 5) asks a small auxiliary LLM to pick the model for the turn from the set of registered, capability-valid, available candidates. It is off by default, opt-in per workspace via the `llm_router:` block in `routing.yaml` (§5.6) or interactively via `/router llm on` in `metis dev`.
+
+When disabled, the slot returns `not_applicable, reason="llm_router disabled"` and the chain proceeds to slot 6.
+
+#### 4.6.1 Why this slot exists
+
+Slot 4 (`PATTERN_RECOMMENDATION`) returns confident picks only after the pattern store has accumulated enough verdicts in the K-NN cluster around the current turn's fingerprint. In a fresh workspace, or on a workload the store hasn't seen, slot 4 returns `not_applicable` and routing falls through to the workspace / global default. The default is by construction a single fixed model — it ignores per-turn task character.
+
+`LLM_ROUTER` is the inference-time complement to the pattern store: when accumulated data is absent, an LLM that has been trained on text describing many models' strengths can produce a per-turn pick that is at least correlated with task character. It does *not* replace patterns — once the pattern store has data, slot 4 wins first (cheaper, deterministic, grounded in observed outcomes). The LLM router fires on the cold-start tail.
+
+#### 4.6.2 What the router LLM sees
+
+The router LLM is called once per turn (when enabled) with:
+
+1. **System prompt** (stable across turns in a workspace, so provider-side prompt cache applies): the closed instruction to call `choose_model` exactly once; a catalog of every candidate model with `model_id`, capability summary (vision / tools / system / structured output / context window), and per-MTok price tier (`fast` / `mid` / `deep`).
+2. **User prompt** (the turn's new user message text, snapshot per §5.3.1). No prior turn history; no tool definitions of the *outer* session; no skills.
+3. **One tool**: `choose_model(model_id: string, reason: string)`. Tool-use is required (forced via `tool_choice: choose_model` on providers that support it; JSON-mode fallback otherwise).
+
+The router LLM does NOT see the workspace contents, `MEMORY.md`, prior turn assistant text, or any other context. This is by design — the meta-call must stay cheap and bounded, and we want to avoid leaking conversation content into the meta-decision.
+
+The candidate set is built from the model registry filtered by §4.4 (capability + per-(provider, model) availability). A candidate that fails validation is omitted from the prompt entirely — the router can't choose a model that wouldn't pass validation anyway.
+
+#### 4.6.3 Validation of the router's pick
+
+The model id returned by the router LLM passes through the standard §4.4 validation gate. If validation rejects the pick (capability mismatch, provider Unavailable, model not registered), the slot reports `rejected` with the validation failure recorded, and the chain falls through to slot 6 — exactly like a rejected pattern recommendation or rule.
+
+If the router returns a `model_id` that is not in the candidate set (e.g. hallucinated, or the model was removed between the prompt and the tool call), the slot reports `not_applicable, reason="invalid_model_id: <name>"` and the chain proceeds.
+
+#### 4.6.4 Worker re-entry
+
+When the engine is invoked for a worker session (the planner emitted `delegate(tier=...)`), the `LLM_ROUTER` slot defers with `verdict: not_applicable, reason: "delegate_request_in_flight"`. The planner's explicit `tier=` choice must not be second-guessed by an LLM. This matches the slot 4 (pattern) behavior under delegation — see `delegation.md §11`.
+
+#### 4.6.5 Budget
+
+The slot shares the `BudgetTracker` primitive from the evaluator (`evaluator.md §4.3`) with **independent caps**. Defaults:
+
+- `per_session_budget_usd: 0.10`
+- `per_day_budget_usd: 1.00`
+
+Both are configurable in the `llm_router:` block (§5.6). When the meta-call would push the running total past either cap, the slot reports `not_applicable, reason="budget_exhausted"` and the chain proceeds without making the LLM call. The evaluator and router each see their own running totals — sharing the primitive means we don't ship two implementations of token-budget bookkeeping, not that the two budgets sum into one cap.
+
+#### 4.6.6 Failure modes
+
+All failure modes degrade to `not_applicable` with a documented `reason`, so the chain always reaches a definite winner from slots 6-8. Failures are recorded on `route.decided.chain` so dashboards can attribute them.
+
+| Failure                                          | `reason` recorded                                  |
+| ------------------------------------------------ | -------------------------------------------------- |
+| LLM call timed out (default 8s)                  | `timeout`                                          |
+| LLM call raised a network / 5xx error            | `network_error: <error_class>`                     |
+| LLM returned a model id not in the candidate set | `invalid_model_id: <name>`                         |
+| LLM returned no tool call                        | `no_tool_call`                                     |
+| Provider rejected the request (e.g. AUTH)        | `provider_error: <error_class>`                    |
+| Budget exhausted (per-session or per-day)        | `budget_exhausted`                                 |
+| No candidate models passed §4.4 validation       | `no_candidates`                                    |
+| `llm_router:` block missing or `enabled: false`  | `llm_router disabled`                              |
+| Worker re-entry                                  | `delegate_request_in_flight`                       |
+
+The slot **never** raises an exception that escapes the engine. The chain is allowed to fall through; routing's no-model-available hard failure (§4.8) still requires every slot to come up empty.
+
+#### 4.6.7 Cost trace
+
+The meta-call lands in the trace store as a normal `llm.call_completed` event stamped with a new `Actor.ROUTER` (`canonical/actors.py`), so dashboards can attribute meta-spend separately from the planner's spend. The cost is also surfaced on the `LLM_ROUTER` slot's `PolicyEvaluation` via three new fields (`meta_cost_usd`, `meta_tokens_input`, `meta_tokens_output`), `None` for every other slot. The slot's meta-cost does **not** count against the session's `turn.completed.usage.cost_usd` (which measures only planner-side LLM tokens, consistent with the worker convention in `delegation.md §8`).
+
+The meta-call's `route.decided` invariant still holds: routing produces exactly one `route.decided` event per turn. The router's `llm.call_completed` is a separate event, ordered before `route.decided` because the router's response is read first.
+
+#### 4.6.8 Caching
+
+The router's system prompt is stable for the lifetime of a workspace's candidate set (changes only when the registry changes or `llm_router.model` changes). Provider-side prompt caching (Anthropic `cache_control`, OpenAI implicit, OpenRouter where supported) applies automatically via the existing context-assembler pathway. The router does NOT maintain its own decision cache in v1 — the same user prompt going through the router twice will make two meta-calls. Adding a per-workspace decision cache is a deferred follow-on (§11.x).
+
+#### 4.6.9 What the router is not
+
+- **Not a model committee.** Single LLM, single tool call, single pick. Multi-model voting / ensemble is out of scope.
+- **Not a delegator.** The router cannot return `delegate()` — it picks a single model that handles the turn. Routing-level delegation remains the planner's job via the `delegate()` tool (`delegation.md`).
+- **Not a self-trainer.** The router does not write back to the pattern store. Decisions made by slot 5 are recorded in the trace and contribute to evaluation, but the K-NN cluster the pattern store uses is built from turn outcomes, not from router picks.
+- **Not above the user.** Slots 1-4 always win first. A user with `/model haiku` set sticks with haiku; a user typing `@sonnet` in a message wins; a YAML rule that matches wins. The router fires only when accumulated user intent and empirical data are both silent.
+
+### 4.7 No per-rule fallback lists
 
 Rules do *not* carry fallback lists (`fallback: [model_a, model_b]`). All fallback is handled by chain fallthrough.
 
@@ -284,7 +394,7 @@ rules:
 
 The second rule fires only if the first's model is unavailable (validation rejects it, chain continues, second rule's predicate matches).
 
-### 4.7 Hard failure
+### 4.8 Hard failure
 
 If every policy in the chain returns `None` or fails validation, the engine raises a hard error to the session manager. The TUI surfaces:
 
@@ -296,7 +406,7 @@ No model available for this turn.
 
 The turn is not started. The user must intervene (set a sticky, fix config, wait for provider recovery). Silently using a model the user didn't authorize is never acceptable.
 
-### 4.8 Hot reload
+### 4.9 Hot reload
 
 The configured policy file is read fresh at the start of every turn. Cost: a yaml parse and validation pass, ~1ms for a typical file. The router caches the parsed structure keyed by file mtime to avoid re-parsing when nothing changed.
 
@@ -309,7 +419,7 @@ If the file is invalid (yaml syntax error, unknown predicate, unknown model), th
 ### 5.1 File location and shape
 
 The per-workspace routing config lives at `<workspace>/.metis/routing.yaml`.
-It is read fresh at the start of every turn (§4.8); a missing file is
+It is read fresh at the start of every turn (§4.9); a missing file is
 equivalent to an empty policy (the chain falls straight through to the
 defaults).
 
@@ -333,6 +443,17 @@ pattern:
   # fingerprint_version: v2                            # opt in to the hybrid embedding fingerprint
   # embedding_provider: openai:text-embedding-3-small  # required when v2
   # embedding_alpha: 0.6                               # cosine/jaccard blend (pattern-store.md §16)
+
+# LLM-router slot (§4.6 + §5.6). Off by default. When enabled, slot 5
+# asks the configured router model to pick the turn's model from the
+# candidate set. Falls through on any failure mode.
+llm_router:
+  enabled: false                           # default false; chain shape unchanged when disabled
+  model: openrouter:qwen/qwen-plus         # cheap default; cost-effective model TBD per §5.6 research note
+  per_session_budget_usd: 0.10             # shared BudgetTracker primitive with evaluator (independent caps)
+  per_day_budget_usd: 1.00
+  timeout_seconds: 8                       # meta-call wall-clock cap
+  # tool_choice: required                  # always forced; not user-tunable in v1
 
 rules:
   - name: "fast for commits"
@@ -505,7 +626,68 @@ The default was lowered again from 0.1 → 0.05 on 2026-05-15 after the §A3-rev
 
 The `min_confidence` default was lowered from 0.3 → 0.05 in the 2026-05-14 wave after the §A3-rev2 benchmark run. The two knobs are coupled: confidence is `(top_score - runner_up_score) / top_score`, and `score` itself is `(1 - cost_weight) * success + cost_weight * cost_efficiency`. Under the legacy `cost_weight=0.3`, the cost-efficiency term alone — independent of any quality delta — produced ~0.35 confidence on tied-quality clusters where the two models had different costs, so `min_confidence=0.3` acted as a noise gate without suppressing genuine signal. Under `cost_weight=0.1` the same tied-quality clusters produce ~0.10 confidence, and the legacy `0.3` gate suppresses real cluster inversions: §A3-rev2 Pass C turn 2 on `write-a-doc-from-notes` aggregated `sonnet=0.900` ahead of `haiku=0.842` (the first cluster-level inversion in any A3 series) with confidence `0.064`, and slot 4 emitted `not_applicable`. At `0.05` the gate scales down with the cost-weight reduction so real inversions can fire; cluster-empty / zero-score / fewer-than-K-cluster cases still gate off in `aggregation.py`. Workspaces that depended on the prior tighter gate restate `min_confidence: 0.3` in their `routing.yaml`. The 2026-05-15 `cost_weight 0.1 → 0.05` migration leaves `min_confidence=0.05` unchanged: under the new `cost_weight=0.05` the cost-floor effect on confidence drops further (~0.05 max contribution from cost_efficiency saturation alone), and the §A3-rev2 inversion-friendly ratio still clears the `0.05` gate.
 
-### 5.6 Tie-breaking against configured rules
+### 5.6 The `llm_router:` config block
+
+Workspace-scoped (top-level `llm_router:` applies globally; `workspaces.<path>.llm_router:` overrides per workspace, matching the §5.5 `pattern:` pattern). All fields optional; absent block ≡ `enabled: false`.
+
+```yaml
+llm_router:
+  enabled: true
+  model: openrouter:qwen/qwen-plus
+  per_session_budget_usd: 0.10
+  per_day_budget_usd: 1.00
+  timeout_seconds: 8
+```
+
+| Field                    | Type    | Default                          | Notes                                                                                              |
+| ------------------------ | ------- | -------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `enabled`                | bool    | `false`                          | Master switch. False → slot 5 returns `not_applicable, reason="llm_router disabled"`.              |
+| `model`                  | str     | `openrouter:qwen/qwen-plus`      | Router model id (registered in `ModelRegistry`, capability-validated like any other model).        |
+| `per_session_budget_usd` | float   | `0.10`                           | Per-session cap; shares `BudgetTracker` primitive with evaluator (independent caps).               |
+| `per_day_budget_usd`     | float   | `1.00`                           | Per-day cap; ditto.                                                                                |
+| `timeout_seconds`        | float   | `8.0`                            | Wall-clock cap on the meta-call. Timeout → `not_applicable, reason="timeout"`.                     |
+
+#### 5.6.1 Default router model
+
+`openrouter:qwen/qwen-plus` is the v1 default — chosen for cost (≪ `haiku-4-5`) over latency. **This default is not load-bearing** — the cost-effective router model question is genuinely open and should be benchmarked against the standard suite once we have signal on router-pick quality across `qwen-plus`, `haiku-4-5`, `gpt-4o-mini`, and other sub-$0.50/MTok candidates. The router model selection benchmark is a deferred follow-on (§11.x).
+
+Workspaces with no `openrouter` API key configured should set `model:` explicitly to an `anthropic:` or `openai:` candidate that resolves under their existing credentials. The `metis auth doctor` output lists which providers have credentials.
+
+#### 5.6.2 The router's tool prompt
+
+The router is called with one tool:
+
+```json
+{
+  "name": "choose_model",
+  "description": "Pick the model best suited to handle the user task. Return one of the registered candidates.",
+  "input_schema": {
+    "type": "object",
+    "required": ["model_id", "reason"],
+    "properties": {
+      "model_id": {"type": "string", "enum": ["<candidate_1>", "<candidate_2>", ...]},
+      "reason":   {"type": "string", "maxLength": 200}
+    }
+  }
+}
+```
+
+The `model_id` enum is constructed from the candidate set at call time (post §4.4 validation). The router cannot return a model not on the enum; if a provider's tool-use implementation doesn't enforce enums strictly, an off-enum response triggers `invalid_model_id` per §4.6.6.
+
+The system prompt is built from a stable template + the candidate catalog (model_id, capability summary, price tier per MTok). The system prompt is constant across consecutive turns in a workspace, so provider-side prompt caching applies (Anthropic `cache_control`, OpenAI implicit, OpenRouter where the upstream supports it per `provider-adapter-contract.md §4.5`).
+
+#### 5.6.3 Validation
+
+The `llm_router:` block is validated at load time:
+
+- `enabled` is a bool.
+- `model` is a non-empty string. The model id is NOT required to be currently registered (the registry can change at runtime); resolution happens per turn, and an unregistered model results in `no_candidates` or a validation rejection.
+- `per_session_budget_usd` and `per_day_budget_usd` are non-negative floats. `0.0` is allowed (disables the router via budget exhaustion on every turn).
+- `timeout_seconds` is a positive float; values < 1.0 are clamped to 1.0 with a `routing.policy_invalid`-style WARN.
+
+A malformed `llm_router:` block is treated as if absent (slot reports `not_applicable, reason="llm_router disabled"`), and a `routing.policy_invalid` event is emitted with the validation errors. The rest of the policy file continues to load (the rule slot stays functional).
+
+### 5.7 Tie-breaking against configured rules
 
 When both a rule and a pattern recommendation are available, the rule wins (per §4.1). The pattern recommendation is *not* discarded — it's recorded in the `route.decided` event as a deferred policy with its own evaluation.
 
@@ -536,7 +718,7 @@ When enabled and a pattern recommendation disagrees with the chosen rule above t
 
 The user's choice is itself an event (`route.overridden` for accept, `pattern.override_dismissed` for ignore), feeding back into pattern learning. See `event-bus-and-trace-catalog.md` §6.5b for payloads.
 
-### 5.7 Validation
+### 5.8 Validation
 
 At load time, the router validates:
 
@@ -553,7 +735,7 @@ At load time, the router validates:
 
 A failure in any of these causes the file to be rejected as a whole — last-known-good is used. `/rules check` prints validation errors.
 
-### 5.8 What rules cannot do
+### 5.9 What rules cannot do
 
 By design, rules cannot:
 
@@ -582,9 +764,11 @@ These constraints are how the engine stays predictable. Users wanting richer log
 > `event-bus-and-trace-catalog.md`, so the numbering is kept stable even
 > though the canonical text now lives in `delegation.md`.
 >
-> The routing chain's `DELEGATE_REQUEST` slot (§4.1, position 5) existed from
-> Phase 1 as a stub returning `not_applicable`; delegation v1 filled in the
-> stub. The slot still reports `not_applicable` on every non-worker turn.
+> The routing chain's `DELEGATE_REQUEST` slot (§4.1, position 6 as of v3.4;
+> position 5 in v3.3 and earlier — see §4 changelog header for the
+> renumbering rationale) existed from Phase 1 as a stub returning
+> `not_applicable`; delegation v1 filled in the stub. The slot still
+> reports `not_applicable` on every non-worker turn.
 
 ### 6.1 Tool signature
 
@@ -681,14 +865,15 @@ and no worker session is created — this case never reaches the routing engine.
 
 Otherwise a worker `Session` is created, and its first turn enters the policy
 chain with the resolved model carried on `TurnContext.worker_tier_model`. The
-chain runs end-to-end (§6.9.1); slots 1–4 typically report `not_applicable`,
-and slot 5 (`DELEGATE_REQUEST`) proposes the resolved tier model as its
-candidate.
+chain runs end-to-end (§6.9.1); slots 1–5 typically report `not_applicable`
+(slot 5 `LLM_ROUTER` defers with `reason="delegate_request_in_flight"` per
+§4.6.4), and slot 6 (`DELEGATE_REQUEST`) proposes the resolved tier model as
+its candidate.
 
 The resolved tier model is **validated like any other candidate** (§4.4 —
-capability and availability). If it passes, slot 5 wins. If it fails — e.g.
+capability and availability). If it passes, slot 6 wins. If it fails — e.g.
 the worker's task carries images and the resolved `fast` model is text-only,
-or the model's provider is Unavailable — slot 5 is `rejected` and the chain
+or the model's provider is Unavailable — slot 6 is `rejected` and the chain
 **falls through** to `WORKSPACE_DEFAULT` / `GLOBAL_DEFAULT`, exactly as for
 any other rejected candidate. There is **no** automatic `fast → balanced →
 deep` upgrade inside the engine in v1 (earlier drafts of this spec described
@@ -793,7 +978,7 @@ class Verdict(StrEnum):
 > evaluated and do not appear in `chain`. So `chain` is always the prefix of
 > slots up to and including the `chose` entry, and a policy outranked by an
 > earlier winner simply never runs. The `deferred` verdict is reserved for
-> the opt-in pattern-disagreement feature (§5.6), which would deliberately
+> the opt-in pattern-disagreement feature (§5.7), which would deliberately
 > evaluate and record the pattern slot even when a rule wins; until that
 > ships, every chain entry is `not_applicable`, `rejected`, or `chose`.
 
@@ -813,8 +998,8 @@ These remain separate events because they describe distinct user actions or work
 
 | Event type                       | When                                                          | Status |
 |----------------------------------|---------------------------------------------------------------|--------|
-| `route.overridden`               | User chose `/route override` (turn re-dispatched on pattern's choice). | **Not implemented** — depends on the §5.6 pattern-disagreement feature; no payload in the catalog. |
-| `pattern.override_dismissed`     | User chose `/route ignore` (turn proceeds with original choice). | **Not implemented** — see §5.6. |
+| `route.overridden`               | User chose `/route override` (turn re-dispatched on pattern's choice). | **Not implemented** — depends on the §5.7 pattern-disagreement feature; no payload in the catalog. |
+| `pattern.override_dismissed`     | User chose `/route ignore` (turn proceeds with original choice). | **Not implemented** — see §5.7. |
 | `delegate.started`               | A `delegate` tool call began. Includes worker_session_id.     | Shipped (Wave 10). |
 | `delegate.completed`             | The worker session ended.                                     | Shipped (Wave 10). |
 | `delegate.failed`                | The worker session failed; includes failure mode (§6.6).      | Shipped (Wave 10). |
@@ -838,12 +1023,13 @@ Chain:
   [3] rule                   rejected        rule "deep for architecture" matched →
                                              anthropic:claude-opus-4-7 (provider_unavailable)
   [4] pattern                not_applicable  no high-confidence recommendation
-  [5] delegate_request       not_applicable  not a delegation re-entry
-  [6] workspace_default      chose           anthropic:claude-sonnet-4-6
+  [5] llm_router             not_applicable  llm_router disabled
+  [6] delegate_request       not_applicable  not a delegation re-entry
+  [7] workspace_default      chose           anthropic:claude-sonnet-4-6
 ```
 
-The chain stops at the first `chose` entry (here slot 6), so `global_default`
-(slot 7) does not appear. The TUI's `/model show` command prints the same
+The chain stops at the first `chose` entry (here slot 7), so `global_default`
+(slot 8) does not appear. The TUI's `/model show` command prints the same
 trace inline.
 
 ---
@@ -898,6 +1084,50 @@ Chain:
   MANUAL_STICKY          not_applicable
   CONFIGURED_RULES       not_applicable  (no rules match)
   PATTERN_RECOMMENDATION chose → anthropic:claude-sonnet-4-6 (confidence 0.78, 12 samples)
+```
+
+### 8.4a LLM_ROUTER picks for a cold-start workspace
+
+```
+session.active_model = None
+rules: []
+pattern store: empty (cold start)
+llm_router: enabled=true, model=openrouter:qwen/qwen-plus
+
+User: "Refactor the get_user helper to accept a Session argument; preserve the call sites."
+
+Router meta-call:
+  → input: system prompt + candidate catalog + user message
+  → choose_model(model_id="anthropic:claude-sonnet-4-6",
+                 reason="multi-file refactor with contract preservation needs balanced tier")
+  → meta_cost_usd=$0.00021, meta_tokens_input=1840, meta_tokens_output=72
+
+Chain:
+  PER_MESSAGE_OVERRIDE   not_applicable
+  MANUAL_STICKY          not_applicable
+  CONFIGURED_RULES       not_applicable  (no rules match)
+  PATTERN_RECOMMENDATION not_applicable  (no high-confidence recommendation, sample size 0)
+  LLM_ROUTER             chose → anthropic:claude-sonnet-4-6  (meta_cost $0.00021)
+```
+
+### 8.4b LLM_ROUTER timeout falls through
+
+```
+session.active_model = None
+rules: []
+pattern store: empty
+llm_router: enabled=true, model=openrouter:qwen/qwen-plus, timeout_seconds=8
+workspace_default: anthropic:claude-haiku-4-5
+(router meta-call times out at 8.0s)
+
+Chain:
+  PER_MESSAGE_OVERRIDE   not_applicable
+  MANUAL_STICKY          not_applicable
+  CONFIGURED_RULES       not_applicable
+  PATTERN_RECOMMENDATION not_applicable
+  LLM_ROUTER             not_applicable  (timeout)
+  DELEGATE_REQUEST       not_applicable  (not a delegation re-entry)
+  WORKSPACE_DEFAULT      chose → anthropic:claude-haiku-4-5
 ```
 
 ### 8.5 Model-specific outage causes chain fallthrough
@@ -966,7 +1196,7 @@ Chain:
 ### 8.8 Rule wins, pattern recommendation deferred (and surfaced)
 
 > **Not yet implemented.** This example illustrates the opt-in
-> pattern-disagreement feature (§5.6), which is specified but unbuilt as of
+> pattern-disagreement feature (§5.7), which is specified but unbuilt as of
 > Wave 16. With the feature off — the current behavior — the chain
 > short-circuits when the rule wins (slot 3 `chose`), the pattern slot is
 > never evaluated, and no `route.decided` entry, TUI prompt, or `deferred`
@@ -1089,13 +1319,17 @@ Now:
 | `/rules check`                | Validate the routing.yaml file; print errors or "ok".               |
 | `/rules show`                 | Print the active rule list (post-validation, with synthetic names). |
 | `/rules reload`               | Force re-read of routing.yaml (normally automatic).                 |
+| `/router llm on\|off`         | Enable/disable the LLM_ROUTER slot for the active workspace (persists to routing.yaml). |
+| `/router llm model <id>`      | Set the router model id (persists to routing.yaml).                 |
+| `/router llm status`          | Print the current `llm_router:` config + running budget totals.     |
 | `/cost`                       | Print this session's cost broken down by model and role.            |
 
 > **Implementation note.** `/route override` and `/route ignore` depend on
-> the pattern-disagreement surfacing feature (§5.6) and are **not implemented**
+> the pattern-disagreement surfacing feature (§5.7) and are **not implemented**
 > as of Wave 16. The shipped CLI surface is `/model`, `/cost`, `/models`,
 > `/help` plus the per-message `@alias` override; see `AGENTS.md` for the
-> authoritative list.
+> authoritative list. `/router llm on|off|model|status` ships in v3.4
+> (Wave 19) alongside the `LLM_ROUTER` slot itself.
 
 ### 9.2 Per-message override syntax
 
@@ -1188,6 +1422,9 @@ Tracked here, deferred to later revisions:
 7. **Provider availability state machine.** v1 is binary (Healthy / Unavailable). The Degraded state is sketched but unused; refinement deferred.
 8. **`/rules check` shadow detection.** v1 prints rules; v2 may detect when one rule strictly shadows another and warn.
 9. **Tier config source.** The `routing.yaml` `tiers:` block (§5.1, §5.2) is parsed and validated but **not consumed** — delegation resolves tiers via the model registry's `delegation_tier` field (§6.10). v2 should either wire `SessionManager.spawn_worker` to consult the workspace-scoped `TierMap`, or drop the `routing.yaml` block in favor of registry config. Until then, per-workspace tier overrides written in `routing.yaml` have no effect.
+10. **Cost-effective router model.** §5.6 defaults to `openrouter:qwen/qwen-plus`; the genuinely best model for the LLM_ROUTER meta-call is open. Benchmark `qwen-plus`, `haiku-4-5`, `gpt-4o-mini`, and other sub-$0.50/MTok candidates against the standard suite (cost per router decision, pick quality vs. workspace-default baseline). Default may change once data is in.
+11. **Router decision cache.** v1 makes the meta-call on every turn when enabled; provider-side prompt caching helps the system prompt but the user message changes per turn. A per-workspace decision cache keyed by normalized prompt hash could skip the meta-call for repeated tasks. Deferred until v1 produces traffic and we can measure repeat-prompt rate.
+12. **LLM_ROUTER for delegation.** v1 does not let the router invoke `delegate()` — it picks a single concrete model. Allowing the router to return `delegate(tier=…)` would let it split tasks across tiers but breaks the §4.6.4 "router does not second-guess explicit delegate calls" invariant on worker re-entry. Deferred.
 
 ---
 
@@ -1229,6 +1466,12 @@ Tracked here, deferred to later revisions:
 | 2026-05-20 | Spec re-synced to the Wave-16 implementation (v3.3)                   | Draft v3.2 had drifted from shipped code: slots 4/5 are wired, `team_budget_remaining_lt` was added to the closed predicate set, and §6 was superseded by `delegation.md`. |
 | 2026-05-20 | §6 trimmed; `delegation.md` is the canonical `delegate()` contract    | Delegation v1 shipped Wave 10 with its own spec; routing-engine.md §6 keeps only the routing-owned surface (slot 5, tier resolution), §6.1–§6.8 as cross-reference stubs. |
 | 2026-05-20 | Automatic `fast → balanced → deep` tier upgrade dropped from the spec | Never implemented. The shipped engine falls a rejected worker-tier candidate through the chain like any other rejection (§6.9). Supersedes the 2026-05-08 "Tier upgrade exhausts at deep" row. |
+| 2026-06-03 | LLM_ROUTER slot added at position 5; opt-in per workspace             | Pattern store covers the warm-cluster case; defaults are coarse. An auxiliary LLM that sees the user prompt + candidate catalog is the cold-start complement. Off by default preserves byte-identical behavior for existing deployments. |
+| 2026-06-03 | LLM_ROUTER ranked below PATTERN (slot 5 below slot 4)                 | Patterns are cheaper, faster, deterministic per fingerprint, and grounded in observed outcomes. The router fires when patterns are silent. Reversing the order would let probabilistic inference override empirical data. |
+| 2026-06-03 | LLM_ROUTER defers in worker re-entry                                  | Planner's explicit `tier=` choice must not be second-guessed; matches slot 4 pattern behavior under delegation (`delegation.md §11`). |
+| 2026-06-03 | LLM_ROUTER all failures degrade to `not_applicable`                   | Routing must remain resilient; a flaky router model cannot fail turns. Hard failure still requires every slot to come up empty (§4.8). |
+| 2026-06-03 | LLM_ROUTER shares BudgetTracker primitive with evaluator              | Avoids shipping two implementations of token-budget bookkeeping. Caps are independent — the two budgets don't sum into one shared bucket. |
+| 2026-06-03 | LLM_ROUTER returns picks via `choose_model(model_id, reason)` tool    | Forces a typed response; model_id enum is built from the candidate set at call time so the router cannot hallucinate a non-existent candidate (provider tool-use enum enforcement permitting). |
 
 ---
 

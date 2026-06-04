@@ -9,8 +9,11 @@ import asyncio
 import logging
 import sys
 import threading
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
+
+import yaml
 
 from metis.cli.models_display import (
     format_models_lines,
@@ -26,9 +29,9 @@ from metis.core.adapters.streaming import (
     TextDelta,
     ToolUseStart,
 )
-from metis.core.pricing.table import PriceTable
 from metis.core.routing import ModelRegistry
 from metis.core.routing.engine import RoutingError
+from metis.core.routing.policy import LLMRouterConfig
 from metis.core.sessions import (
     AmbiguousModelError,
     SessionManager,
@@ -105,7 +108,7 @@ async def run_chat(
             if text in ("exit", "quit"):
                 break
             if text.startswith("/"):
-                handled = await _handle_slash(text, manager, session, registry, runtime.pricing)
+                handled = await _handle_slash(text, manager, session, registry, runtime)
                 if handled == "quit":
                     break
                 continue
@@ -182,8 +185,9 @@ async def _handle_slash(
     manager: SessionManager,
     session,
     registry: ModelRegistry,
-    pricing: PriceTable,
+    runtime,
 ) -> str | None:
+    pricing = runtime.pricing
     parts = text.split(maxsplit=1)
     cmd = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -197,11 +201,17 @@ async def _handle_slash(
             "  /models               list primary (latest) models\n"
             "  /models all           list every registered model\n"
             "  /models <pattern>     filter by substring (e.g. /models opus)\n"
+            "  /router llm on|off    enable/disable the LLM_ROUTER slot (routing-engine §4.6)\n"
+            "  /router llm model <id>   set the router model id\n"
+            "  /router llm status    print the current llm_router config + spend\n"
             "  /share                include the last slash output in the next message\n"
             "  /cost                 session cost so far\n"
             "  /help, /?             this list\n"
             "  exit, quit, ^D        leave"
         )
+        return None
+    if cmd == "/router":
+        _handle_router_subcommand(arg, session, runtime)
         return None
     if cmd == "/model":
         if not arg or arg == "show":
@@ -271,6 +281,119 @@ async def _handle_slash(
         return None
     print(f"unknown command: {cmd}. /help for the list.", file=sys.stderr)
     return None
+
+
+def _handle_router_subcommand(arg: str, session, runtime) -> None:
+    """Backs the `/router llm ...` family (routing-engine §9.1).
+
+    Mutates the in-memory `RoutingPolicy` (effective on the next turn) and
+    persists the change back to the active routing.yaml path.
+    """
+    parts = arg.split(maxsplit=2) if arg else []
+    if not parts or parts[0] != "llm":
+        print("usage: /router llm on|off|model <id>|status", file=sys.stderr)
+        return
+    if len(parts) == 1:
+        print("usage: /router llm on|off|model <id>|status", file=sys.stderr)
+        return
+    sub = parts[1].lower()
+    rest = parts[2] if len(parts) > 2 else ""
+
+    routing = runtime.routing
+    current_cfg = routing.policy.llm_router
+    if sub == "status":
+        budget = runtime.manager._llm_router.budget if runtime.manager._llm_router else None
+        print(
+            "llm_router status:\n"
+            f"  enabled:                 {current_cfg.enabled}\n"
+            f"  model:                   {current_cfg.model}\n"
+            f"  per_session_budget_usd:  ${current_cfg.per_session_budget_usd:.4f}\n"
+            f"  per_day_budget_usd:      ${current_cfg.per_day_budget_usd:.4f}\n"
+            f"  timeout_seconds:         {current_cfg.timeout_seconds}\n"
+            f"  session spend so far:    "
+            f"${(budget.session_spend(session.id) if budget else 0):.4f}\n"
+            f"  daily spend so far:      ${(budget.daily_spend() if budget else 0):.4f}\n"
+            f"  source:                  {routing.policy.source_path or '(in-memory)'}"
+        )
+        return
+    if sub == "on":
+        new_cfg = replace(current_cfg, enabled=True)
+    elif sub == "off":
+        new_cfg = replace(current_cfg, enabled=False)
+    elif sub == "model":
+        if not rest:
+            print("usage: /router llm model <id>", file=sys.stderr)
+            return
+        new_cfg = replace(current_cfg, model=rest)
+    else:
+        print(
+            f"unknown /router llm subcommand: {sub} (use: on, off, model <id>, status)",
+            file=sys.stderr,
+        )
+        return
+
+    new_policy = replace(routing.policy, llm_router=new_cfg)
+    routing.set_policy(new_policy)
+    # Hot-swap the runtime LLMRouter so the live config matches the new policy.
+    if runtime.manager._llm_router is not None:
+        runtime.manager._llm_router._config = new_cfg
+
+    persisted_to = _persist_llm_router_config(new_cfg, routing.policy.source_path, session)
+    if persisted_to is not None:
+        print(
+            f"llm_router updated: enabled={new_cfg.enabled} model={new_cfg.model} "
+            f"(persisted to {persisted_to})"
+        )
+    else:
+        print(
+            f"llm_router updated: enabled={new_cfg.enabled} model={new_cfg.model} "
+            "(in-memory only; could not persist to routing.yaml)"
+        )
+
+
+def _persist_llm_router_config(
+    cfg: LLMRouterConfig,
+    source_path: str | None,
+    session,
+) -> Path | None:
+    """Write the new `llm_router:` block back to routing.yaml.
+
+    Prefers the policy's source path (the file we loaded the policy from);
+    falls back to `<workspace>/.metis/routing.yaml` if the session has a
+    workspace, else `~/.metis/routing.yaml`.
+
+    Atomic write-temp-then-rename. Returns the path written or None on
+    persistence failure (the in-memory swap still took effect).
+    """
+    target: Path | None = None
+    if source_path:
+        target = Path(source_path)
+    elif session.workspace_path:
+        target = Path(session.workspace_path) / ".metis" / "routing.yaml"
+    else:
+        target = Path.home() / ".metis" / "routing.yaml"
+    try:
+        existing: dict = {}
+        if target.exists():
+            text = target.read_text(encoding="utf-8")
+            parsed = yaml.safe_load(text) if text.strip() else {}
+            if isinstance(parsed, dict):
+                existing = parsed
+        existing["llm_router"] = {
+            "enabled": cfg.enabled,
+            "model": cfg.model,
+            "per_session_budget_usd": cfg.per_session_budget_usd,
+            "per_day_budget_usd": cfg.per_day_budget_usd,
+            "timeout_seconds": cfg.timeout_seconds,
+        }
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+        tmp.replace(target)
+        return target
+    except OSError as exc:
+        logger.warning("could not persist llm_router config to %s: %s", target, exc)
+        return None
 
 
 class _LiveRenderer:

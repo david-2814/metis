@@ -11,6 +11,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from metis.core.events.payloads import PolicyEvaluation
+from metis.core.routing.llm_router import LLMRouterResult
 
 
 @dataclass
@@ -53,11 +54,20 @@ class TurnContext:
 
     # Delegation re-entry (delegation.md §7). When this turn is the first
     # turn of a worker session, the session manager populates
-    # `worker_tier_model` with the resolved tier model so slot 5
+    # `worker_tier_model` with the resolved tier model so slot 6
     # (`DELEGATE_REQUEST`) emits `chose: <model>` instead of the default
     # `not_applicable: "not a delegation re-entry"`. Non-worker turns leave
-    # it `None` and slot 5 keeps its top-level behavior.
+    # it `None` and slot 6 keeps its top-level behavior.
     worker_tier_model: str | None = None
+
+    # LLM_ROUTER slot pre-computed outcome (routing-engine.md §4.6). The
+    # engine is synchronous; the session manager / gateway harness awaits
+    # `LLMRouter.decide()` BEFORE invoking `RoutingEngine.decide(ctx)` and
+    # stuffs the result here. `None` means the caller never invoked the
+    # router (e.g. policy has `llm_router.enabled=False`, or the caller
+    # is the gateway harness which doesn't wire the slot in v1); slot 5
+    # then reports `not_applicable, reason="llm_router disabled"`.
+    llm_router_result: LLMRouterResult | None = None
 
     # For tracing
     parent_event_id: str | None = None  # typically the turn.started event id

@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 from metis.core.adapters.anthropic import AnthropicAdapter
@@ -22,6 +23,7 @@ from metis.core.credentials import (
     DefaultCredentialResolver,
 )
 from metis.core.eval import Evaluator, register_evaluator
+from metis.core.eval.budget import BudgetTracker
 from metis.core.events.bus import EventBus
 from metis.core.events.envelope import Actor
 from metis.core.events.payloads import RoutingPolicyInvalid, make_event
@@ -42,6 +44,7 @@ from metis.core.routing import (
     load_policy_file,
     standard_profile_for,
 )
+from metis.core.routing.llm_router import LLMRouter
 from metis.core.sessions import (
     SessionManager,
     SqliteSessionStore,
@@ -329,6 +332,22 @@ async def setup_runtime(
                     )
         pattern_subscriber.set_fingerprint_inputs(turn_id, inputs)
 
+    # LLM_ROUTER slot pre-computer (routing-engine.md §4.6). Constructed
+    # whether or not `llm_router.enabled` is set so a `/router llm on`
+    # mid-session can flip the policy without a SessionManager restart;
+    # the runtime budget tracker is fresh per process.
+    llm_router_budget = BudgetTracker(
+        per_session_max_usd=Decimal(str(policy.llm_router.per_session_budget_usd)),
+        per_day_max_usd=Decimal(str(policy.llm_router.per_day_budget_usd)),
+    )
+    llm_router_runtime = LLMRouter(
+        config=policy.llm_router,
+        registry=registry,
+        availability=routing.availability,
+        price_table=pricing_table,
+        budget_tracker=llm_router_budget,
+    )
+
     manager = SessionManager(
         registry=registry,
         routing=routing,
@@ -340,6 +359,7 @@ async def setup_runtime(
         memory_factory=lambda ws: MemoryStore(ws),
         skill_store_factory=_build_skill_store,
         fingerprint_inputs_hook=_on_turn_fingerprint_inputs,
+        llm_router=llm_router_runtime,
     )
 
     evaluator, _ = register_evaluator(bus, trace)

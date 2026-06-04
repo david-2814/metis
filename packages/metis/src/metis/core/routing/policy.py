@@ -90,6 +90,49 @@ class PatternConfig:
             )
 
 
+@dataclass(frozen=True)
+class LLMRouterConfig:
+    """LLM_ROUTER slot config (routing-engine §4.6 + §5.6).
+
+    `enabled` is the master switch. When False (default) the slot returns
+    `not_applicable, reason="llm_router disabled"` and the chain proceeds
+    to slot 6 without any side effects.
+
+    `model` is the router model id. The default is intentionally cheap;
+    the cost-effective choice is genuinely open (§11.10). The id is NOT
+    validated against the registry at parse time — the registry can
+    change at runtime. Per-turn resolution happens in `llm_router.py`.
+
+    `per_session_budget_usd` and `per_day_budget_usd` cap meta-call spend
+    via the evaluator's `BudgetTracker` primitive (independent caps).
+    Over-budget → slot reports `not_applicable, reason="budget_exhausted"`.
+
+    `timeout_seconds` is a wall-clock cap on the meta-call. Values < 1.0
+    are clamped to 1.0 at construction time with no error (matches §5.6.3).
+    """
+
+    enabled: bool = False
+    model: str = "openrouter:qwen/qwen-plus"
+    per_session_budget_usd: float = 0.10
+    per_day_budget_usd: float = 1.00
+    timeout_seconds: float = 8.0
+
+    def __post_init__(self) -> None:
+        if self.per_session_budget_usd < 0:
+            raise ValueError(
+                f"LLMRouterConfig: per_session_budget_usd must be >= 0 (got {self.per_session_budget_usd})"
+            )
+        if self.per_day_budget_usd < 0:
+            raise ValueError(
+                f"LLMRouterConfig: per_day_budget_usd must be >= 0 (got {self.per_day_budget_usd})"
+            )
+        if not self.model:
+            raise ValueError("LLMRouterConfig: model must be a non-empty string")
+        if self.timeout_seconds < 1.0:
+            # Clamp to 1.0 per §5.6.3 — frozen dataclass requires object.__setattr__.
+            object.__setattr__(self, "timeout_seconds", 1.0)
+
+
 # ---- Predicates ------------------------------------------------------------
 #
 # We model predicates as a tagged union. A predicate is a callable in spirit
@@ -260,6 +303,7 @@ class WorkspaceScope:
     default: str | None = None
     tiers: TierMap | None = None
     pattern: PatternConfig | None = None
+    llm_router: LLMRouterConfig | None = None
     rules: tuple[Rule, ...] = field(default_factory=tuple)
 
 
@@ -273,6 +317,10 @@ class RoutingPolicy:
     pattern: PatternConfig
     rules: tuple[Rule, ...]
     workspaces: tuple[WorkspaceScope, ...]
+    # Defaulted so test fixtures and pre-v3.4 callers that omit it still construct
+    # an off-by-default LLMRouterConfig (slot 5 reports `not_applicable, reason=
+    # "llm_router disabled"`). See routing-engine.md §5.6.
+    llm_router: LLMRouterConfig = field(default_factory=LLMRouterConfig)
     source_path: str | None = None  # for /rules check display; None for in-memory
     # Opaque per-load identifier surfaced by `GET /sessions/{id}` so the SPA
     # / clients can label "rules vN" and notice when the active policy
@@ -299,6 +347,7 @@ EMPTY_POLICY = RoutingPolicy(
     global_default=None,
     tiers=None,
     pattern=PatternConfig(),
+    llm_router=LLMRouterConfig(),
     rules=(),
     workspaces=(),
 )

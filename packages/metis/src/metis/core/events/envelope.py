@@ -19,6 +19,7 @@ class Actor(StrEnum):
     SYSTEM = "system"
     TOOL = "tool"
     WORKER = "worker"
+    ROUTER = "router"  # LLM_ROUTER slot meta-call; routing-engine.md §4.6.7
 
 
 class Sensitivity(StrEnum):

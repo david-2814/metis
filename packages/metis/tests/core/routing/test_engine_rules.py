@@ -114,7 +114,7 @@ async def test_no_rule_match_falls_through_to_default(bus, event_log, registry):
     await bus.drain()
     await bus.stop()
     assert decision.chosen_model == "anthropic:claude-sonnet-4-6"  # global default
-    assert decision.winner_index == 6  # global_default slot
+    assert decision.winner_index == 7  # global_default slot (v3.4)
     rule_eval = decision.chain[2]
     assert rule_eval.verdict == "not_applicable"
     assert "no rule matched" in rule_eval.reason
@@ -285,9 +285,9 @@ async def test_workspace_default_overrides_global(bus, event_log, registry):
     decision = engine.decide(ctx)
     await bus.drain()
     await bus.stop()
-    # Workspace default takes the `workspace_default` slot (index 5).
+    # Workspace default takes the `workspace_default` slot (index 6 as of v3.4).
     assert decision.chosen_model == "anthropic:claude-opus-4-7"
-    assert decision.winner_index == 5
+    assert decision.winner_index == 6
 
 
 async def test_policy_global_default_overrides_turn_context(bus, event_log, registry):

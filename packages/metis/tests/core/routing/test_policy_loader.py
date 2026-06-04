@@ -431,6 +431,70 @@ def test_empty_yaml_is_valid_empty_policy(registry):
     assert policy.global_default is None
 
 
+# ---- LLM_ROUTER block (§5.6) ---------------------------------------------
+
+
+def test_llm_router_default_when_block_absent(registry):
+    """Missing `llm_router:` block → default LLMRouterConfig (enabled=False)."""
+    policy = parse_policy_text("schema_version: 1\n", registry)
+    assert policy.llm_router.enabled is False
+    assert policy.llm_router.model == "openrouter:qwen/qwen-plus"
+    assert policy.llm_router.per_session_budget_usd == 0.10
+    assert policy.llm_router.per_day_budget_usd == 1.00
+    assert policy.llm_router.timeout_seconds == 8.0
+
+
+def test_llm_router_parses_full_block(registry):
+    raw = """
+schema_version: 1
+llm_router:
+  enabled: true
+  model: anthropic:claude-haiku-4-5
+  per_session_budget_usd: 0.25
+  per_day_budget_usd: 5.0
+  timeout_seconds: 12
+"""
+    policy = parse_policy_text(raw, registry)
+    cfg = policy.llm_router
+    assert cfg.enabled is True
+    assert cfg.model == "anthropic:claude-haiku-4-5"
+    assert cfg.per_session_budget_usd == 0.25
+    assert cfg.per_day_budget_usd == 5.0
+    assert cfg.timeout_seconds == 12
+
+
+def test_llm_router_rejects_negative_budget(registry):
+    raw = """
+schema_version: 1
+llm_router:
+  enabled: true
+  per_session_budget_usd: -1.0
+"""
+    _expect_error(raw, registry, match="per_session_budget_usd must be a non-negative")
+
+
+def test_llm_router_workspace_scope_override(registry):
+    raw = """
+schema_version: 1
+llm_router:
+  enabled: false
+workspaces:
+  /tmp/special:
+    llm_router:
+      enabled: true
+      model: anthropic:claude-haiku-4-5
+"""
+    policy = parse_policy_text(raw, registry)
+    # Global block parsed but disabled.
+    assert policy.llm_router.enabled is False
+    # Workspace override carries its own block.
+    ws = policy.workspace_for("/tmp/special")
+    assert ws is not None
+    assert ws.llm_router is not None
+    assert ws.llm_router.enabled is True
+    assert ws.llm_router.model == "anthropic:claude-haiku-4-5"
+
+
 # ---- load_policy_file -----------------------------------------------------
 
 
