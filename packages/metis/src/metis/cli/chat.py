@@ -433,7 +433,44 @@ def _print_result_tag(result) -> None:
         f"{result.llm_call_count} LLM / {result.tool_call_count} tool]"
     )
     print(tag)
+    router_line = _format_router_summary(result)
+    if router_line:
+        print(router_line)
     print()
+
+
+def _format_router_summary(result) -> str | None:
+    """One-line LLM_ROUTER slot summary, or None when the slot was a no-op.
+
+    Quiet by design: returns None when the slot wasn't enabled (or was
+    deferred for worker re-entry / "not pre-computed"), so the result tag
+    is unchanged when nobody's opted in. When the slot DID something —
+    chose, rejected, or any documented failure reason — the line surfaces
+    what happened so the user doesn't have to query the trace store.
+    """
+    chain = getattr(result, "route_chain", None) or ()
+    slot = next((entry for entry in chain if entry.policy == "llm_router"), None)
+    if slot is None:
+        return None
+    quiet_reasons = {
+        "llm_router disabled",
+        "llm_router not pre-computed",
+        "delegate_request_in_flight",
+    }
+    if slot.verdict == "not_applicable" and slot.reason in quiet_reasons:
+        return None
+    meta_bits: list[str] = []
+    if slot.meta_cost_usd is not None:
+        meta_bits.append(f"meta ${slot.meta_cost_usd:.4f}")
+    if slot.meta_tokens_input is not None and slot.meta_tokens_output is not None:
+        meta_bits.append(f"{slot.meta_tokens_input} in / {slot.meta_tokens_output} out")
+    meta = f"  ({', '.join(meta_bits)})" if meta_bits else ""
+    if slot.verdict == "chose":
+        return f"  router → {slot.candidate_model}{meta}"
+    if slot.verdict == "rejected":
+        failure = slot.validation_failure or "rejected"
+        return f"  router → {slot.candidate_model} but rejected ({failure}){meta}"
+    return f"  router → {slot.reason}{meta}"
 
 
 # Backwards-compatibility export — pyproject "metis = metis.cli.main:main".
