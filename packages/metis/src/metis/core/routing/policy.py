@@ -98,10 +98,14 @@ class LLMRouterConfig:
     `not_applicable, reason="llm_router disabled"` and the chain proceeds
     to slot 6 without any side effects.
 
-    `model` is the router model id. The default is intentionally cheap;
-    the cost-effective choice is genuinely open (§11.10). The id is NOT
-    validated against the registry at parse time — the registry can
-    change at runtime. Per-turn resolution happens in `llm_router.py`.
+    `model` is the router model id. Default `anthropic:claude-haiku-4-5`
+    chosen for reliable forced tool-use; earlier v3.4 drafts defaulted to
+    `openrouter:qwen/qwen-plus` but field-tested with `no_tool_call` on
+    the first user turn (qwen-plus generated prose instead of calling
+    `choose_model`). The cost-effective choice remains genuinely open
+    (§11.10). The id is NOT validated against the registry at parse
+    time — the registry can change at runtime. Per-turn resolution
+    happens in `llm_router.py`.
 
     `per_session_budget_usd` and `per_day_budget_usd` cap meta-call spend
     via the evaluator's `BudgetTracker` primitive (independent caps).
@@ -112,7 +116,7 @@ class LLMRouterConfig:
     """
 
     enabled: bool = False
-    model: str = "openrouter:qwen/qwen-plus"
+    model: str = "anthropic:claude-haiku-4-5"
     per_session_budget_usd: float = 0.10
     per_day_budget_usd: float = 1.00
     timeout_seconds: float = 8.0
