@@ -46,8 +46,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from metis.core.adapters.protocol import CanonicalRequest, CanonicalResponse
+from metis.core.adapters.tool_id_map import ToolIdMap
 from metis.core.analytics import AnalyticsStore
 from metis.core.analytics.windows import TimeWindow
+from metis.core.canonical.batch import BatchError, BatchHandle
+from metis.core.canonical.content import TextBlock
+from metis.core.canonical.ids import next_monotonic_ulid
+from metis.core.canonical.messages import Message, MessageMetadata, Role
 from metis.core.eval import (
     DEFAULT_ESCALATION_THRESHOLD,
     HeuristicJudge,
@@ -809,6 +815,476 @@ def _format_stats_table(stats: list[WorkloadStats]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Batch mode (benchmark.md §3.4 / provider-adapter-contract.md §4.6)
+# ---------------------------------------------------------------------------
+#
+# `--batch-mode` submits the workload's turn prompts to the provider's
+# async batch endpoint (at the documented 50% discount) and exits.
+# `--collect-batch <run_id>` polls handles, ingests results, and writes
+# the standard JSON artifact + a trace DB populated with
+# `llm.call_completed` events whose `cost_usd` reflects the batch rate.
+#
+# Trade-off vs sync mode (called out in benchmark.md §3.4):
+#   - Batch mode runs each turn prompt as a single-shot LLM call (no
+#     tool cycle, no prior-turn assistant text fed into the next turn).
+#     The turns are independent batch entries; tool-using workloads
+#     therefore land here as cost-comparison probes rather than
+#     end-to-end agent runs. The pricing-discount measurement is the
+#     point; the per-workload quality numbers from sync mode remain
+#     the canonical "did the agent do the task" signal.
+#   - The standard sync harness still produces the headline savings_pct
+#     (haiku-vs-sonnet repriced counterfactual). Batch mode is the
+#     orthogonal "actual_repriced_usd drops ~50% under the same model"
+#     measurement against the same workload.
+
+BATCH_RUN_ID_PREFIX = "batch"
+
+
+@dataclass
+class BatchTurnHandle:
+    """JSONL row written under `benchmarks/.runs/<run_id>/batch-handles.jsonl`.
+
+    One row per submitted batch (a workload = one batch). `custom_ids` maps
+    `requests[i] -> custom_ids[i]`; the same tuple is preserved on the
+    server-side `BatchHandle`. `status` advances `submitted -> ingested`
+    across `--batch-mode` and `--collect-batch` invocations.
+    """
+
+    custom_ids: list[str]
+    batch_id: str
+    provider: str
+    submitted_at_ms: int
+    workload: str
+    model: str
+    status: str  # "submitted" | "ingested" | "failed"
+    request_count: int
+    ingested_at_ms: int | None = None
+
+
+def _batch_handles_path(run_dir: Path) -> Path:
+    return run_dir / "batch-handles.jsonl"
+
+
+def _batch_results_path(run_dir: Path) -> Path:
+    return run_dir / "results.json"
+
+
+def _batch_trace_db_path(run_dir: Path) -> Path:
+    return run_dir / "trace.db"
+
+
+def _write_batch_handles(run_dir: Path, handles: list[BatchTurnHandle]) -> None:
+    """Write handles to JSONL atomically (write-temp + rename).
+
+    The JSONL is the source of truth for `--collect-batch`. Atomic write
+    matters because `--batch-mode` can be interrupted mid-submission and
+    we'd rather see no JSONL than a half-written one.
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = _batch_handles_path(run_dir)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        for h in handles:
+            fh.write(json.dumps(asdict(h), sort_keys=True) + "\n")
+    tmp.replace(path)
+
+
+def _read_batch_handles(run_dir: Path) -> list[BatchTurnHandle]:
+    path = _batch_handles_path(run_dir)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"no batch handles at {path}; either the run id is wrong or "
+            "this run was not submitted with --batch-mode"
+        )
+    handles: list[BatchTurnHandle] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        raw = json.loads(line)
+        handles.append(BatchTurnHandle(**raw))
+    return handles
+
+
+def _build_canonical_request_for_turn(
+    *,
+    request_id: str,
+    workload: Workload,
+    turn: TurnSpec,
+    model: str,
+    temperature: float | None,
+    max_output_tokens: int = 1024,
+) -> CanonicalRequest:
+    """Build a single-shot `CanonicalRequest` for one workload turn.
+
+    The batch surface intentionally drops the multi-turn / tool-cycle
+    shape. Each turn becomes one independent batch entry carrying only
+    the user prompt. This is the cleanest path to "demonstrate the 50%
+    batch discount on a representative workload" without forcing the
+    batch API into a sequential conversation it was not designed for.
+    See benchmark.md §3.4.
+    """
+    user_message = Message(
+        id=str(next_monotonic_ulid()),
+        session_id=f"batch-{workload.name}",
+        role=Role.USER,
+        content=[TextBlock(text=turn.prompt)],
+        created_at=datetime.now(UTC),
+        metadata=MessageMetadata(),
+    )
+    return CanonicalRequest(
+        request_id=request_id,
+        messages=[user_message],
+        tools=[],
+        system_prompt=None,
+        model=model,
+        max_output_tokens=max_output_tokens,
+        temperature=temperature,
+        tool_id_map=ToolIdMap(),
+    )
+
+
+def _shorten_for_custom_id(name: str, *, max_len: int = 40) -> str:
+    """Sanitize a workload name into a custom_id-safe slug.
+
+    The Anthropic Batches API requires `^[a-zA-Z0-9_-]{1,64}$` on each
+    `custom_id`. Workload names use kebab-case (`fix-a-bug-small`) so we
+    only need to bound the length — pre-existing characters already
+    satisfy the charset. We also strip non-allowed characters defensively
+    so future workload names (e.g. with `/` or `.`) don't break submission.
+    """
+    allowed = {c for c in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"}
+    sanitized = "".join(c if c in allowed else "-" for c in name)
+    return sanitized[:max_len]
+
+
+def _resolve_anthropic_adapter(runtime: Any) -> Any:
+    """Return the registered Anthropic adapter or raise a clear error.
+
+    Batch mode is Anthropic-only in v1 (the only adapter that declares
+    `supports_batch_api=True` is `metis.core.adapters.anthropic`). The
+    OpenAI / OpenRouter adapters inherit the base Protocol default that
+    raises `NotImplementedError`.
+    """
+    for adapter in runtime.adapters:
+        if type(adapter).__name__ == "AnthropicAdapter":
+            return adapter
+    raise RuntimeError(
+        "--batch-mode requires an Anthropic adapter (the only adapter with "
+        "supports_batch_api=True in v1). Set ANTHROPIC_API_KEY and retry."
+    )
+
+
+async def submit_batch_for_workloads(
+    workloads: list[Workload],
+    *,
+    run_dir: Path,
+    model: str,
+    temperature: float | None,
+) -> list[BatchTurnHandle]:
+    """Submit one batch per workload to the Anthropic Batches API.
+
+    Returns the list of `BatchTurnHandle`s (one per workload) after
+    persisting them to `<run_dir>/batch-handles.jsonl`. The caller
+    is expected to exit immediately after this — the batch endpoint's
+    target turnaround is "best-effort 24h", so polling lives in a
+    separate `--collect-batch` invocation.
+    """
+    from metis.cli.runtime import setup_runtime, shutdown_runtime
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # We open a runtime once for the model-registry / adapter lookup; the
+    # workspace path is irrelevant for batch submission because no agent
+    # loop runs. Use the first workload's workspace for ergonomics so the
+    # registry / pricing-overlay are populated as in the sync path.
+    first_workspace = workloads[0].source_path.parent / "workspace"
+    runtime = await setup_runtime(
+        workspace_path=str(first_workspace),
+        db_path=str(_batch_trace_db_path(run_dir)),
+        global_default_model=model,
+    )
+    try:
+        actual_resolved = runtime.registry.resolve_alias(model) or model
+        if actual_resolved not in runtime.registry:
+            raise RuntimeError(f"model {model!r} is not configured in the registry")
+        adapter = _resolve_anthropic_adapter(runtime)
+        caps = adapter.capabilities_for(actual_resolved)
+        if not getattr(caps, "supports_batch_api", False):
+            raise RuntimeError(
+                f"model {actual_resolved!r} does not declare supports_batch_api=True; "
+                "pick an Anthropic Claude-4.x model"
+            )
+
+        handles: list[BatchTurnHandle] = []
+        for workload in workloads:
+            requests = []
+            custom_ids = []
+            for turn_idx, turn in enumerate(workload.turns):
+                # `custom_id` must be unique within a batch AND match
+                # `^[a-zA-Z0-9_-]{1,64}$` per the Anthropic Batches API.
+                # We sanitize the workload name (dashes only), append the
+                # turn index, and tack on a ULID suffix for uniqueness.
+                short_wl = _shorten_for_custom_id(workload.name)
+                ulid_suffix = str(next_monotonic_ulid())[-12:]
+                custom_id = f"{short_wl}-t{turn_idx}-{ulid_suffix}"
+                custom_ids.append(custom_id)
+                req = _build_canonical_request_for_turn(
+                    request_id=custom_id,
+                    workload=workload,
+                    turn=turn,
+                    model=actual_resolved,
+                    temperature=temperature,
+                )
+                requests.append(req)
+            batch_handle: BatchHandle = await adapter.submit_batch(requests)
+            row = BatchTurnHandle(
+                custom_ids=list(batch_handle.custom_ids),
+                batch_id=batch_handle.batch_id,
+                provider=batch_handle.provider,
+                submitted_at_ms=batch_handle.submitted_at_ms,
+                workload=workload.name,
+                model=actual_resolved,
+                status="submitted",
+                request_count=batch_handle.request_count,
+            )
+            handles.append(row)
+            print(
+                f"  [{workload.name}] submitted batch {batch_handle.batch_id} "
+                f"with {batch_handle.request_count} entries"
+            )
+
+        _write_batch_handles(run_dir, handles)
+        return handles
+    finally:
+        await shutdown_runtime(runtime)
+
+
+async def collect_batch_for_run(
+    run_dir: Path,
+    *,
+    poll_interval_seconds: float = 30.0,
+    max_wait_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Poll `<run_dir>/batch-handles.jsonl`, ingest completed batches.
+
+    Idempotent: rows already at `status=ingested` are skipped on re-runs,
+    so a second invocation of `--collect-batch` on the same `run_dir`
+    is a no-op modulo printing the existing artifact.
+
+    Returns a summary dict (per-workload cost / pricing_mode / row counts)
+    that the caller writes to `<run_dir>/results.json`.
+    """
+    from metis.cli.runtime import setup_runtime, shutdown_runtime
+    from metis.core.events.bus import EventBus
+    from metis.core.events.envelope import Actor
+    from metis.core.events.payloads import LLMCallCompleted, make_event
+    from metis.core.pricing import DEFAULT_PRICE_TABLE
+    from metis.core.trace.store import TraceStore
+
+    handles = _read_batch_handles(run_dir)
+    if not handles:
+        raise RuntimeError(f"empty handles file at {_batch_handles_path(run_dir)}")
+
+    # Use the first handle's workload to ground the runtime (workspace
+    # path matters only for the adapter resolution; the workloads must
+    # exist on disk).
+    workloads_by_name = {w.name: w for w in discover_workloads(include_marginal=True)}
+    first_workload = workloads_by_name.get(handles[0].workload)
+    if first_workload is None:
+        raise RuntimeError(
+            f"workload {handles[0].workload!r} no longer exists on disk; "
+            "cannot resolve its workspace for adapter setup"
+        )
+    first_workspace = first_workload.source_path.parent / "workspace"
+    trace_db_path = _batch_trace_db_path(run_dir)
+
+    runtime = await setup_runtime(
+        workspace_path=str(first_workspace),
+        db_path=str(trace_db_path),
+        global_default_model=handles[0].model,
+    )
+    pricing = runtime.pricing
+    try:
+        adapter = _resolve_anthropic_adapter(runtime)
+
+        # Trace bus: write `llm.call_completed` rows directly. The
+        # benchmark trace DB is single-writer in this path so a fresh
+        # bus + TraceStore.attach_to() is sufficient.
+        bus = EventBus()
+        bus.start()
+        trace = TraceStore(trace_db_path)
+        trace_handle = trace.attach_to(bus, name="trace-store-batch-collect")
+
+        # Per-workload accumulators for the JSON artifact.
+        per_workload: dict[str, dict[str, Any]] = {}
+        try:
+            for handle_row in handles:
+                if handle_row.status == "ingested":
+                    print(
+                        f"  [{handle_row.workload}] batch {handle_row.batch_id} "
+                        "already ingested; skipping"
+                    )
+                    continue
+
+                bh = BatchHandle(
+                    provider=handle_row.provider,
+                    batch_id=handle_row.batch_id,
+                    submitted_at_ms=handle_row.submitted_at_ms,
+                    request_count=handle_row.request_count,
+                    custom_ids=tuple(handle_row.custom_ids),
+                )
+
+                # Poll until the batch is done.
+                waited = 0.0
+                while True:
+                    status = await adapter.poll_batch(bh)
+                    if status in ("completed", "expired", "failed"):
+                        break
+                    if max_wait_seconds is not None and waited >= max_wait_seconds:
+                        raise TimeoutError(
+                            f"batch {handle_row.batch_id} still {status!r} after "
+                            f"{waited:.0f}s; re-run --collect-batch later"
+                        )
+                    print(
+                        f"  [{handle_row.workload}] batch {handle_row.batch_id} "
+                        f"status={status}; sleeping {poll_interval_seconds:.0f}s"
+                    )
+                    await asyncio.sleep(poll_interval_seconds)
+                    waited += poll_interval_seconds
+
+                results = await adapter.fetch_batch(bh)
+                workload_acc = per_workload.setdefault(
+                    handle_row.workload,
+                    {
+                        "rows_total": 0,
+                        "rows_failed": 0,
+                        "rows_missing_from_price_table": 0,
+                        "actual_repriced_usd": Decimal("0"),
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "model": handle_row.model,
+                    },
+                )
+                for custom_id, result in zip(handle_row.custom_ids, results, strict=True):
+                    workload_acc["rows_total"] += 1
+                    if isinstance(result, BatchError):
+                        workload_acc["rows_failed"] += 1
+                        print(
+                            f"  [{handle_row.workload}] custom_id={custom_id} "
+                            f"FAILED: {result.error_class.value}: {result.error_message}"
+                        )
+                        continue
+                    # Compute cost via the price table — the adapter
+                    # already stamped pricing_mode='batch' on the usage.
+                    if not isinstance(result, CanonicalResponse):
+                        # Defensive — Protocol return is the union.
+                        raise RuntimeError(
+                            f"unexpected fetch_batch row type: {type(result).__name__}"
+                        )
+                    # Anthropic's batch results echo back the dated wire
+                    # model (e.g. `claude-haiku-4-5-20251001`) which isn't
+                    # in the canonical price table. Fall back to the
+                    # originally-requested model from the handle row when
+                    # the price-table lookup fails on the echoed id.
+                    pricing_model = result.model
+                    try:
+                        cost = pricing.compute_cost(pricing_model, result.usage)
+                    except Exception:
+                        try:
+                            pricing_model = handle_row.model
+                            cost = pricing.compute_cost(pricing_model, result.usage)
+                        except Exception:
+                            workload_acc["rows_missing_from_price_table"] += 1
+                            cost = DEFAULT_PRICE_TABLE.compute_cost(handle_row.model, result.usage)
+                            pricing_model = handle_row.model
+                    workload_acc["actual_repriced_usd"] += cost
+                    workload_acc["input_tokens"] += result.usage.input_tokens
+                    workload_acc["output_tokens"] += result.usage.output_tokens
+
+                    # Emit `llm.call_completed` to the trace DB so
+                    # downstream analytics see the same shape as sync mode.
+                    bus.emit(
+                        make_event(
+                            type="llm.call_completed",
+                            session_id=f"batch-{handle_row.workload}",
+                            actor=Actor.AGENT,
+                            payload=LLMCallCompleted(
+                                model=pricing_model,
+                                provider=result.provider,
+                                input_tokens=result.usage.input_tokens,
+                                output_tokens=result.usage.output_tokens,
+                                cached_input_tokens=result.usage.cached_input_tokens,
+                                cache_creation_input_tokens=(
+                                    result.usage.cache_creation_input_tokens
+                                ),
+                                cost_usd=float(cost),
+                                pricing_version=pricing.version,
+                                latency_ms=result.latency_ms,
+                                stop_reason="end_turn",
+                                produced_tool_calls=0,
+                                produced_thinking_blocks=0,
+                            ),
+                            timestamp=datetime.now(UTC),
+                        )
+                    )
+                handle_row.status = "ingested"
+                handle_row.ingested_at_ms = int(datetime.now(UTC).timestamp() * 1000)
+                print(
+                    f"  [{handle_row.workload}] ingested {workload_acc['rows_total']} "
+                    f"rows (failed={workload_acc['rows_failed']}, "
+                    f"actual_repriced_usd=${workload_acc['actual_repriced_usd']:.6f})"
+                )
+
+            await bus.drain()
+        finally:
+            bus.unsubscribe(trace_handle)
+            await bus.stop()
+            trace.close()
+
+        # Persist the updated handles file (status transitions).
+        _write_batch_handles(run_dir, handles)
+
+        # Build a deterministic summary suitable for the results.json
+        # artifact + RESULTS.md write-up. `pricing_mode` is stamped at
+        # the run level since every row in this path was batch-billed.
+        summary = {
+            "pricing_mode": "batch",
+            "run_id": run_dir.name,
+            "pricing_version": pricing.version,
+            "trace_db_path": str(trace_db_path),
+            "workloads": {
+                name: {
+                    "model": acc["model"],
+                    "rows_total": acc["rows_total"],
+                    "rows_failed": acc["rows_failed"],
+                    "rows_missing_from_price_table": acc["rows_missing_from_price_table"],
+                    "actual_repriced_usd": float(acc["actual_repriced_usd"]),
+                    "input_tokens": acc["input_tokens"],
+                    "output_tokens": acc["output_tokens"],
+                }
+                for name, acc in per_workload.items()
+            },
+            "totals": {
+                "rows_total": sum(a["rows_total"] for a in per_workload.values()),
+                "rows_failed": sum(a["rows_failed"] for a in per_workload.values()),
+                "actual_repriced_usd": float(
+                    sum(
+                        (a["actual_repriced_usd"] for a in per_workload.values()),
+                        start=Decimal("0"),
+                    )
+                ),
+                "input_tokens": sum(a["input_tokens"] for a in per_workload.values()),
+                "output_tokens": sum(a["output_tokens"] for a in per_workload.values()),
+            },
+        }
+        _batch_results_path(run_dir).write_text(json.dumps(summary, indent=2, sort_keys=True))
+        return summary
+    finally:
+        await shutdown_runtime(runtime)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -957,9 +1433,54 @@ async def amain() -> int:
         "N=5 for cluster-tightening A/B work. Cost scales linearly with N — "
         "see benchmark.md §6.4.",
     )
+    parser.add_argument(
+        "--batch-mode",
+        action="store_true",
+        help="Submit the selected workload(s) to the provider's async batch "
+        "endpoint at the documented 50%% discount (provider-adapter-contract.md "
+        "§4.6) and exit without waiting for results. Each turn prompt becomes "
+        "one batch entry; per-workload handles are persisted to "
+        "benchmarks/.runs/<run_id>/batch-handles.jsonl. Use "
+        "`--collect-batch <run_id>` later to poll + ingest the results. "
+        "Anthropic-only in v1 (Anthropic adapter is the only one declaring "
+        "supports_batch_api=True). See benchmark.md §3.4.",
+    )
+    parser.add_argument(
+        "--collect-batch",
+        default=None,
+        metavar="RUN_ID",
+        help="Poll the handles persisted by a prior `--batch-mode` invocation "
+        "and ingest completed results. RUN_ID is the directory name under "
+        "benchmarks/.runs/ that the prior --batch-mode invocation printed. "
+        "Idempotent: re-running on a fully-ingested run is a no-op. "
+        "Writes results.json to the same run directory.",
+    )
+    parser.add_argument(
+        "--collect-poll-interval",
+        type=float,
+        default=30.0,
+        help="Seconds to wait between batch poll attempts when --collect-batch "
+        "is set (default 30s). Lower for tighter feedback loops; raise to be "
+        "kind to the provider quota.",
+    )
+    parser.add_argument(
+        "--collect-max-wait",
+        type=float,
+        default=None,
+        help="If set, --collect-batch gives up after this many seconds of "
+        "waiting on a single not-yet-completed batch (re-run later to resume). "
+        "Default: wait indefinitely until each batch reaches a terminal state.",
+    )
     args = parser.parse_args()
     if args.seed_passes < 1:
         print("--seed-passes must be >= 1", file=sys.stderr)
+        return 2
+    if args.batch_mode and args.collect_batch is not None:
+        print(
+            "--batch-mode and --collect-batch are mutually exclusive; "
+            "submit and collect are two separate invocations.",
+            file=sys.stderr,
+        )
         return 2
 
     _load_dotenv(REPO_ROOT / ".env")
@@ -967,6 +1488,31 @@ async def amain() -> int:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
     db_path = Path(args.db_path) if args.db_path else RUNS_DIR / f"benchmark-{ts}.db"
+
+    # --collect-batch: poll prior submission, ingest, write results.json, exit.
+    if args.collect_batch is not None:
+        run_dir = RUNS_DIR / args.collect_batch
+        if not run_dir.is_dir():
+            print(
+                f"--collect-batch: no run directory at {run_dir}; "
+                "check the run id printed by --batch-mode",
+                file=sys.stderr,
+            )
+            return 2
+        summary = await collect_batch_for_run(
+            run_dir,
+            poll_interval_seconds=args.collect_poll_interval,
+            max_wait_seconds=args.collect_max_wait,
+        )
+        print()
+        print(f"=== Batch collection complete (run_id={run_dir.name}) ===")
+        print(f"  pricing_mode:                {summary['pricing_mode']}")
+        print(f"  trace_db_path:               {summary['trace_db_path']}")
+        print(f"  totals.rows_total:           {summary['totals']['rows_total']}")
+        print(f"  totals.rows_failed:          {summary['totals']['rows_failed']}")
+        print(f"  totals.actual_repriced_usd:  ${summary['totals']['actual_repriced_usd']:.6f}")
+        print(f"  results.json:                {_batch_results_path(run_dir)}")
+        return 0
 
     if args.workload:
         # Explicit --workload bypasses the signal_strength filter so a
@@ -996,6 +1542,32 @@ async def amain() -> int:
     if not workloads:
         print("no workloads found under benchmarks/workloads/", file=sys.stderr)
         return 2
+
+    # --batch-mode: submit selected workloads + exit. Polling and ingest is
+    # `--collect-batch <run_id>`, a separate invocation. See benchmark.md §3.4.
+    if args.batch_mode:
+        run_id = f"{BATCH_RUN_ID_PREFIX}-{ts}"
+        run_dir = RUNS_DIR / run_id
+        if run_dir.exists():
+            print(
+                f"--batch-mode: run directory {run_dir} already exists; rerun in a fresh second.",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"=== Submitting batches (run_id={run_id}) ===")
+        print(f"  model:        {args.model}")
+        print(f"  workloads:    {[w.name for w in workloads]}")
+        print(f"  run_dir:      {run_dir}")
+        handles = await submit_batch_for_workloads(
+            workloads,
+            run_dir=run_dir,
+            model=args.model,
+            temperature=args.temperature,
+        )
+        print()
+        print(f"Submitted {len(handles)} batch(es). Resume with:")
+        print(f"  uv run python scripts/benchmark.py --collect-batch {run_id}")
+        return 0
 
     if args.skip_execute:
         if not db_path.is_file():

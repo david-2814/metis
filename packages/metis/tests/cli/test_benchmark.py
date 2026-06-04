@@ -611,3 +611,188 @@ async def test_seed_passes_loop_invokes_run_workload_n_times(
         )
     finally:
         inspect.close()
+
+
+# ---------------------------------------------------------------------------
+# Batch-mode handles + collect path (wave 18a-3 / provider-adapter §4.6)
+# ---------------------------------------------------------------------------
+
+
+def _make_handle(
+    *,
+    workload: str = "fix-a-bug-small",
+    batch_id: str = "batch_abc",
+    status: str = "submitted",
+    custom_ids: list[str] | None = None,
+) -> benchmark.BatchTurnHandle:
+    ids = custom_ids if custom_ids is not None else [f"{workload}/t0-id", f"{workload}/t1-id"]
+    return benchmark.BatchTurnHandle(
+        custom_ids=ids,
+        batch_id=batch_id,
+        provider="anthropic",
+        submitted_at_ms=1_700_000_000_000,
+        workload=workload,
+        model="anthropic:claude-haiku-4-5",
+        status=status,
+        request_count=len(ids),
+    )
+
+
+def test_batch_handles_round_trip_jsonl(tmp_path: Path):
+    """`_write_batch_handles` + `_read_batch_handles` round-trip preserves
+    every field, including the `custom_ids` list and the `status` literal.
+    This is the load-bearing JSONL contract — `--collect-batch` relies on
+    it to resume a prior `--batch-mode` invocation."""
+    run_dir = tmp_path / "batch-2026"
+    handles_in = [
+        _make_handle(workload="fix-a-bug-small", batch_id="b1"),
+        _make_handle(
+            workload="write-a-doc-from-notes",
+            batch_id="b2",
+            custom_ids=["write-a-doc-from-notes/t0-x"],
+        ),
+    ]
+    benchmark._write_batch_handles(run_dir, handles_in)
+    handles_out = benchmark._read_batch_handles(run_dir)
+    assert len(handles_out) == 2
+    # Order is preserved (the JSONL is line-ordered).
+    assert handles_out[0].workload == "fix-a-bug-small"
+    assert handles_out[0].batch_id == "b1"
+    assert handles_out[0].custom_ids == handles_in[0].custom_ids
+    assert handles_out[0].status == "submitted"
+    assert handles_out[0].request_count == 2
+    assert handles_out[1].workload == "write-a-doc-from-notes"
+    assert handles_out[1].request_count == 1
+
+
+def test_read_batch_handles_raises_for_missing_file(tmp_path: Path):
+    """Trying to `--collect-batch` an empty / missing run is a clear error,
+    not a silent no-op (one of the easiest ways to get confused otherwise)."""
+    with pytest.raises(FileNotFoundError, match="no batch handles"):
+        benchmark._read_batch_handles(tmp_path / "does-not-exist")
+
+
+def test_write_batch_handles_is_atomic(tmp_path: Path):
+    """The temp-file + rename pattern leaves no half-written JSONL in the
+    failure case. Smoke: the temp suffix file does not exist after success."""
+    run_dir = tmp_path / "batch-atomic"
+    benchmark._write_batch_handles(run_dir, [_make_handle()])
+    assert (run_dir / "batch-handles.jsonl").is_file()
+    assert not (run_dir / "batch-handles.jsonl.tmp").exists()
+
+
+def test_build_canonical_request_for_turn_shape():
+    """The per-turn `CanonicalRequest` carries the prompt verbatim, no tools,
+    no system prompt, and the configured model. Tool-cycle and multi-turn
+    state are intentionally NOT included — see benchmark.md §3.4 (batch is
+    a cost-comparison probe, not an end-to-end agent run)."""
+    workload = benchmark.Workload(
+        name="probe",
+        description="x",
+        suite_version=1,
+        turns=[benchmark.TurnSpec(prompt="please summarize")],
+    )
+    req = benchmark._build_canonical_request_for_turn(
+        request_id="probe/t0-AAA",
+        workload=workload,
+        turn=workload.turns[0],
+        model="anthropic:claude-haiku-4-5",
+        temperature=0.0,
+    )
+    assert req.request_id == "probe/t0-AAA"
+    assert req.model == "anthropic:claude-haiku-4-5"
+    assert req.tools == []
+    assert req.system_prompt is None
+    assert req.temperature == 0.0
+    assert len(req.messages) == 1
+    # The prompt text lands as a TextBlock on the user message.
+    from metis.core.canonical.content import TextBlock
+
+    assert any(
+        isinstance(b, TextBlock) and b.text == "please summarize" for b in req.messages[0].content
+    )
+
+
+@pytest.mark.asyncio
+async def test_collect_batch_is_idempotent_on_already_ingested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A second `--collect-batch` against the same run dir does not re-poll,
+    re-fetch, or double-emit events. The idempotency is the load-bearing
+    contract: a network blip during the first collect must not produce
+    duplicate `llm.call_completed` rows on retry."""
+    run_dir = tmp_path / "batch-idempotent"
+    # Seed handles already marked `ingested` — simulates the second
+    # invocation after a successful first collect.
+    pre = [
+        _make_handle(workload="fix-a-bug-small", batch_id="b-ing", status="ingested"),
+    ]
+    pre[0].ingested_at_ms = 1_700_000_000_500
+    benchmark._write_batch_handles(run_dir, pre)
+
+    # Stub out the runtime + adapter — we want to fail loudly if they get
+    # called at all, since an ingested row should short-circuit.
+    poll_calls: list[str] = []
+    fetch_calls: list[str] = []
+
+    class _FailIfCalledAdapter:
+        async def poll_batch(self, handle):
+            poll_calls.append(handle.batch_id)
+            raise AssertionError("poll_batch should not be called on an ingested row")
+
+        async def fetch_batch(self, handle):
+            fetch_calls.append(handle.batch_id)
+            raise AssertionError("fetch_batch should not be called on an ingested row")
+
+    class _StubPricing:
+        version = "test-v0"
+
+        @staticmethod
+        def compute_cost(model, usage):
+            return 0.0
+
+    class _StubRuntime:
+        def __init__(self) -> None:
+            self.adapters = [_FailIfCalledAdapter()]
+            self.pricing = _StubPricing()
+
+    async def _fake_setup_runtime(**_kwargs):
+        return _StubRuntime()
+
+    async def _fake_shutdown_runtime(_runtime):
+        return None
+
+    monkeypatch.setattr(benchmark, "setup_runtime", _fake_setup_runtime, raising=False)
+    monkeypatch.setattr(benchmark, "shutdown_runtime", _fake_shutdown_runtime, raising=False)
+
+    def _fake_resolve_anthropic_adapter(runtime):
+        return runtime.adapters[0]
+
+    monkeypatch.setattr(benchmark, "_resolve_anthropic_adapter", _fake_resolve_anthropic_adapter)
+
+    # Avoid the real workloads-dir lookup — the test handle references
+    # `fix-a-bug-small`, which exists on disk in this repo; if it ever
+    # gets removed, this monkeypatch keeps the test hermetic.
+    sentinel_workload = benchmark.Workload(
+        name="fix-a-bug-small",
+        description="x",
+        suite_version=1,
+        turns=[benchmark.TurnSpec(prompt="probe")],
+        source_path=tmp_path / "fix-a-bug-small" / "workload.yaml",
+    )
+    (tmp_path / "fix-a-bug-small" / "workspace").mkdir(parents=True)
+    monkeypatch.setattr(
+        benchmark, "discover_workloads", lambda include_marginal=False: [sentinel_workload]
+    )
+
+    summary = await benchmark.collect_batch_for_run(run_dir)
+    # No-op short-circuit — pollers should not have been touched.
+    assert poll_calls == []
+    assert fetch_calls == []
+    # Results file is written even for an empty collect, so a downstream
+    # tool can read a deterministic shape regardless of when the user
+    # ran --collect-batch.
+    assert summary["pricing_mode"] == "batch"
+    assert summary["run_id"] == "batch-idempotent"
+    assert summary["totals"]["rows_total"] == 0
+    assert (run_dir / "results.json").is_file()
