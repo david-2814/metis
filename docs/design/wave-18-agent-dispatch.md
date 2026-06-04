@@ -24,8 +24,8 @@ Every agent prompt below assumes the agent will:
 2. **Run the full test suite + ruff** before opening the PR:
    ```bash
    uv run pytest
-   uv run ruff check packages apps scripts
-   uv run ruff format packages apps scripts
+   uv run ruff check packages scripts
+   uv run ruff format packages scripts
    ```
 3. **Halt at PR** — do NOT auto-merge, do NOT start any other
    sub-item, do NOT modify files outside the assigned partition.
@@ -66,15 +66,15 @@ Every agent prompt below assumes the agent will:
 **Create:**
 
 - `packages/metis/src/metis/core/canonical/batch.py` (new file) — house the new types: `BatchHandle`, `BatchStatus` (literal), `BatchResult` (union), `BatchError`. Keep them in `msgspec.Struct(frozen=True)` style consistent with the rest of `canonical/`. Re-export from `canonical/__init__.py`.
-- `packages/metis/tests/core/adapters/test_anthropic_batch.py` (new file) — cassette-driven round-trip. Cassette lives at `packages/metis/tests/cassettes/anthropic_batch_*.yaml` (or similar — match whatever cassette convention `test_anthropic_adapter.py` uses).
+- `packages/metis/tests/core/adapters/test_anthropic_batch.py` (new file) — SDK-mock-driven round-trip (`SimpleNamespace`-based mocks of the `anthropic` SDK's `messages.batches.{create,retrieve,results}`, matching the repo convention in `test_anthropic_adapter.py`). No VCR cassettes.
 
 ### Acceptance criteria
 
-- [ ] A cassette test submits 3 `CanonicalRequest`s, polls `poll_batch` until `BatchStatus="completed"`, fetches via `fetch_batch`. The returned list is same length and same order as the input, with `custom_ids` preserved.
+- [ ] An SDK-mock test submits 3 `CanonicalRequest`s, polls `poll_batch` until `BatchStatus="completed"`, fetches via `fetch_batch`. The returned list is same length and same order as the input, with `custom_ids` preserved.
 - [ ] At least one `anthropic:*` model row in the registry declares `supports_batch_api=True`.
 - [ ] `Usage.pricing_mode="batch"` is stamped on every successful result.
 - [ ] `Usage.cost_usd` matches `ModelPricing.batch_rates` (50% of sync) when present; when absent, the adapter logs a single WARN line and falls back to sync rates (correctness preserved, savings lost).
-- [ ] Expired batches (24h elapsed) surface as `BatchError(error_class=ErrorClass.PROVIDER_TRANSIENT, retryable=True)` per `custom_id`.
+- [ ] Expired batches (24h elapsed) surface as `BatchError(error_class=ErrorClass.SERVER_ERROR, retryable=True)` per `custom_id`. (`ErrorClass` is a closed enum; `SERVER_ERROR` is the retryable bucket — there is no `PROVIDER_TRANSIENT` value.)
 - [ ] All existing adapter tests in `packages/metis/tests/core/adapters/` pass unchanged.
 - [ ] `uv run mypy packages/metis/src/metis/core` clean.
 - [ ] Test-count target: **+20 ± 5** new tests in `test_anthropic_batch.py`.
@@ -82,7 +82,7 @@ Every agent prompt below assumes the agent will:
 ### Implementation gotchas
 
 - **Do NOT use `BaseHTTPMiddleware`-style wrappers.** Batch adapter code goes through the standard `httpx.AsyncClient` path; no middleware involved.
-- **Cassette recording.** Use a $0.50-budget real batch against `claude-haiku-4-5` once, then check the cassette in. Don't record live API in CI.
+- **SDK mocks, not VCR.** Repo convention is `SimpleNamespace`-shaped mocks of the `anthropic` SDK surface (see `test_anthropic_adapter.py`); do not introduce VCR cassettes.
 - **`Usage.pricing_mode` is Optional.** Pre-§4.6 trace rows have `NULL`; analytics consumers (out of scope for 18a-1) will treat `NULL` as `"sync"`. Your job is to stamp `"batch"` correctly; don't worry about back-compat queries.
 - **Failed entries inside a successful batch surface as `BatchError`, not raises.** The list returned by `fetch_batch` is `list[BatchResult]` where `BatchResult = CanonicalResponse | BatchError`. Only batch-level failures (entire batch failed before any results) raise `AdapterError`.
 - **Don't wire CLI yet.** `metis evaluate --batch-mode` (18a-2) and `scripts/benchmark.py --batch-mode` (18a-3) consume your adapter additions in Phase 2 — they are out of scope for this PR.
@@ -92,8 +92,8 @@ Every agent prompt below assumes the agent will:
 
 ```bash
 uv run pytest                                                # full suite passes
-uv run ruff check packages apps scripts                      # lint clean
-uv run ruff format packages apps scripts                     # auto-format
+uv run ruff check packages scripts                      # lint clean
+uv run ruff format packages scripts                     # auto-format
 git add -A
 git commit -m "feat(adapters): Anthropic batch submission (Wave 18a-1)
 
@@ -174,8 +174,8 @@ HALT — do not start any other sub-item.
 ```bash
 uv run pytest packages/metis/tests/core/sessions/ -x
 uv run pytest                                                # full suite
-uv run ruff check packages apps scripts
-uv run ruff format packages apps scripts
+uv run ruff check packages scripts
+uv run ruff format packages scripts
 git add -A
 git commit -m "feat(sessions): CompactionCache SQLite store (Wave 18a-4)
 
@@ -245,8 +245,8 @@ HALT — do not start any other sub-item.
 ```bash
 uv run pytest packages/metis/tests/core/events/ -x
 uv run pytest                                                # full suite
-uv run ruff check packages apps scripts
-uv run ruff format packages apps scripts
+uv run ruff check packages scripts
+uv run ruff format packages scripts
 git add -A
 git commit -m "feat(events): session.compaction_* in catalog (Wave 18a-5)
 
@@ -347,8 +347,8 @@ HALT — do not start any other sub-item.
 
 ```bash
 uv run pytest                                                # full suite
-uv run ruff check packages apps scripts
-uv run ruff format packages apps scripts
+uv run ruff check packages scripts
+uv run ruff format packages scripts
 git add -A
 git commit -m "feat(eval): metis evaluate --batch-mode (Wave 18a-2)
 
@@ -420,8 +420,8 @@ HALT — do not start any other sub-item.
 
 ```bash
 uv run pytest                                                # full suite
-uv run ruff check packages apps scripts
-uv run ruff format packages apps scripts
+uv run ruff check packages scripts
+uv run ruff format packages scripts
 # Live API spend on a small workload to populate RESULTS.md:
 uv run python scripts/benchmark.py --batch-mode --workload fix-a-bug-small
 # wait, then:

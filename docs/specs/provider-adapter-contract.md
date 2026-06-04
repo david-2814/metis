@@ -454,32 +454,32 @@ This subsection specifies an additive adapter capability and protocol surface th
 
 #### 4.6.2 Adapter protocol additions
 
-Two new methods on the `ProviderAdapter` Protocol (§3.1):
+Three new methods on the `ProviderAdapter` Protocol (§3.1) — signatures mirror the existing `complete(request)` / single-argument shape:
 
 ```python
 async def submit_batch(
     self,
     requests: list[CanonicalRequest],
-    *,
-    ctx: AdapterContext,
 ) -> BatchHandle: ...
+
+async def poll_batch(
+    self,
+    handle: BatchHandle,
+) -> BatchStatus: ...
 
 async def fetch_batch(
     self,
     handle: BatchHandle,
-    *,
-    ctx: AdapterContext,
-) -> list[BatchResult]: ...
+) -> list[CanonicalResponse | BatchError]: ...
 ```
 
 Where:
 
 - `BatchHandle` is a `msgspec.Struct(frozen=True)` carrying `{provider, batch_id, submitted_at_ms, request_count, custom_ids: list[str]}`. `custom_ids` preserves the caller's mapping from `requests[i]` to result rows.
-- `BatchResult = CanonicalResponse | BatchError`, where `BatchError` carries `{custom_id, error_class: ErrorClass, error_message, retryable: bool}`. The list returned by `fetch_batch` is the *same length and order* as the `requests` list that produced the handle; failed entries surface as `BatchError`, successful entries as `CanonicalResponse`.
+- `BatchStatus = Literal["queued", "in_progress", "completed", "expired", "failed"]`.
+- `BatchError` carries `{custom_id, error_class: ErrorClass, error_message, retryable: bool}`. The list returned by `fetch_batch` is the *same length and order* as the `requests` list that produced the handle; failed entries surface as `BatchError`, successful entries as `CanonicalResponse`.
 
-Default implementation in the base `ProviderAdapter` raises `NotImplementedError`. Adapters that declare `supports_batch_api=True` MUST implement both methods.
-
-A third helper, `async def poll_batch(self, handle, *, ctx) -> BatchStatus`, returns `Literal["queued", "in_progress", "completed", "expired", "failed"]`. Callers SHOULD poll this before `fetch_batch`; calling `fetch_batch` on an unfinished batch is permitted but blocks until completion (with the same timeout the adapter uses for sync calls).
+Default implementation in the base `ProviderAdapter` raises `NotImplementedError`. Adapters that declare `supports_batch_api=True` MUST implement all three methods. Callers SHOULD `poll_batch` before `fetch_batch`; calling `fetch_batch` on an unfinished batch is permitted but blocks until completion (with the same timeout the adapter uses for sync calls).
 
 #### 4.6.3 Wire mapping per provider
 
@@ -515,7 +515,7 @@ No adapter-side persistence is required. Adapters that *want* to surface "pendin
 
 Batch-level errors (entire batch expired, batch failed before any results were produced) are raised as `AdapterError` with the appropriate `ErrorClass` from §6.1. Per-request errors inside a successfully-completed batch surface as `BatchError` entries in the result list — they do not raise.
 
-`expired` batches (24h elapsed without completion) MUST surface a `BatchError` for every `custom_id` with `error_class=ErrorClass.PROVIDER_TRANSIENT` and `retryable=True`. The caller decides whether to re-submit.
+`expired` batches (24h elapsed without completion) MUST surface a `BatchError` for every `custom_id` with `error_class=ErrorClass.SERVER_ERROR` and `retryable=True`. The caller decides whether to re-submit. (`ErrorClass` is a closed enum — `SERVER_ERROR` is the documented retryable bucket; there is no `PROVIDER_TRANSIENT` value.)
 
 #### 4.6.7 Who uses this
 
