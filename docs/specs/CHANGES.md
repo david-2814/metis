@@ -86,6 +86,19 @@ When changing a spec, the dependent specs (right column whose left column is the
 
 ## Change log
 
+### 2026-06-03 — provider-adapter-contract.md §4.6 + wave-18-agent-dispatch.md: drift corrections from Wave 18a-1 landing
+
+- **Specs:** [`provider-adapter-contract.md`](provider-adapter-contract.md) §4.6.2 + §4.6.6. [`docs/design/wave-18-agent-dispatch.md`](../design/wave-18-agent-dispatch.md) (Agent A section + "Common preamble" + all five completion blocks).
+- **Change:** Aligns the §4.6 spec text and the dispatch doc with what actually shipped in [PR #43 (Wave 18a-1)](https://github.com/david-2814/metis/pull/43). Four corrections, all text-only: (1) **§4.6.2 Protocol signatures** drop the fictional `*, ctx: AdapterContext` keyword-only argument — the shipped Protocol methods take `(self, requests)` / `(self, handle)` mirroring the existing `complete(request)` shape, because no `AdapterContext` type exists in the codebase. The third method `poll_batch` is also now listed alongside `submit_batch` + `fetch_batch` (spec previously buried it in a paragraph below the code block). (2) **§4.6.6 expired-batch error class** `ErrorClass.PROVIDER_TRANSIENT` → `ErrorClass.SERVER_ERROR`. `ErrorClass` is a closed enum with no `PROVIDER_TRANSIENT` value; `SERVER_ERROR` is the documented retryable bucket and is what the shipped Anthropic batch adapter uses. (3) **Dispatch doc cassette wording** "cassette-driven" → "SDK-mock-driven (`SimpleNamespace`)" — the repo convention (see `test_anthropic_adapter.py`) is `SimpleNamespace`-shaped mocks of the `anthropic` SDK, not VCR cassettes. Agent A correctly read the repo and used the SDK-mock pattern, but the dispatch doc said cassettes; both Phase-1 agents noted the `apps/` problem. (4) **Dispatch doc ruff path** `uv run ruff check packages apps scripts` → `packages scripts` (the `apps/` directory does not exist — the four-package shape was consolidated into a single `packages/metis/` on 2026-05-19 per AGENTS.md). 10 occurrences fixed across the dispatch doc.
+- **Type:** additive / corrective. Spec-only — no code touched. The shipped Wave 18a-1 code is unchanged; this PR brings the documentation to match it. The previously-pending review item from the 2026-05-22 §4.6 entry can now move toward `verified` once Phase 2 (18a-2 + 18a-3) lands.
+- **References to verify:**
+  - `provider-adapter-contract.md §4.6.7` — already lists `metis evaluate` + `scripts/benchmark.py` as the consumer surfaces; unchanged. ✓
+  - `canonical-message-format.md §4.3` — `Usage.pricing_mode` mention; unchanged. ✓
+  - `event-bus-and-trace-catalog.md §6.3` — `llm.call_completed.pricing_mode` mention; unchanged. ✓
+- **Status:** pending review — once merged, the existing 2026-05-22 `§4.6` change-log entry's `Status` can be re-read with these corrections in mind. Spec text now matches `packages/metis/src/metis/core/adapters/protocol.py` line-for-line on the three batch method signatures.
+
+---
+
 ### 2026-05-22 — session-compaction.md v1 (new spec) + docs/design/token-reduction-strategy.md umbrella
 
 - **Specs:** [`session-compaction.md`](session-compaction.md) — new spec (rolling-summary cache for the mutating tail of long sessions). [`docs/design/token-reduction-strategy.md`](../design/token-reduction-strategy.md) — new umbrella design doc. This `CHANGES.md` — new bullet under "Specs in scope" + new row in the cross-reference map.
