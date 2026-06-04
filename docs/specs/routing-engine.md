@@ -17,6 +17,21 @@
 > without callers having to query the trace store. The echo is quiet when
 > the slot was a no-op (disabled / worker re-entry / not pre-computed).
 >
+> **v3.4 update (2026-06-04 — router-prompt quality fix):** Same-day field
+> test showed the router picking `claude-sonnet-4-6` for a one-word `test`
+> prompt at $0.045 per turn, when `haiku-4-5` was the obvious right answer.
+> Two prompt bugs identified per §5.6.2 history note: (1) the candidate
+> catalog carried capability tags + `fast`/`balanced`/`deep` task-profile
+> labels but no concrete per-MTok prices, so the LLM had nothing to
+> anchor "cheapest" against; (2) the guidance closed with "when in doubt,
+> pick a balanced mid-tier candidate" — the wrong default for short or
+> ambiguous prompts, which are exactly the case where "doubt" applies.
+> Fix: catalog lines now carry `in $X/MTok, out $Y/MTok` from the active
+> `PriceTable`; the guidance flips to "default to the cheapest candidate
+> for short, ambiguous, conversational, or low-stakes prompts" with
+> narrow escalation criteria. §5.6.2 is rewritten with the new prompt
+> shape + the dated history note explaining the failure.
+>
 > **v3.4 changes (2026-06-03 — Wave 19, LLM router):** New chain slot
 > `LLM_ROUTER` inserted at position 5, between `PATTERN_RECOMMENDATION` and
 > the renumbered `DELEGATE_REQUEST` (now position 6). When enabled, the slot
@@ -691,7 +706,25 @@ The router is called with one tool:
 
 The `model_id` enum is constructed from the candidate set at call time (post §4.4 validation). The router cannot return a model not on the enum; if a provider's tool-use implementation doesn't enforce enums strictly, an off-enum response triggers `invalid_model_id` per §4.6.6.
 
-The system prompt is built from a stable template + the candidate catalog (model_id, capability summary, price tier per MTok). The system prompt is constant across consecutive turns in a workspace, so provider-side prompt caching applies (Anthropic `cache_control`, OpenAI implicit, OpenRouter where the upstream supports it per `provider-adapter-contract.md §4.5`).
+The system prompt is built from a stable template + the candidate catalog and is constant across consecutive turns in a workspace, so provider-side prompt caching applies (Anthropic `cache_control`, OpenAI implicit, OpenRouter where the upstream supports it per `provider-adapter-contract.md §4.5`).
+
+Each catalog line carries: `model_id`, capability summary (`tools` / `vision` / `thinking`), context-window size, and **per-MTok input + output rates** from the active `PriceTable`. The price is concrete dollar amounts, not a relative tier label — without absolute numbers the router LLM can't anchor "cheapest" against the alternatives. A candidate whose model is not in the `PriceTable` is rendered with a `price unknown` marker rather than being dropped.
+
+```
+- anthropic:claude-haiku-4-5    [fast; tools; 200k ctx; in $0.8/MTok, out $4/MTok]
+- anthropic:claude-sonnet-4-6   [balanced; tools; vision; thinking; 200k ctx; in $3/MTok, out $15/MTok]
+- anthropic:claude-opus-4-7     [deep; tools; vision; thinking; 200k ctx; in $15/MTok, out $75/MTok]
+```
+
+The guidance block at the bottom of the system prompt explicitly biases the router toward the cheapest viable candidate and enumerates the (narrow) escalation criteria. The phrasing is **load-bearing**: an earlier draft ended with "when in doubt, pick a balanced mid-tier candidate" which qwen-plus interpreted as license to pick `claude-sonnet-4-6` for a one-word prompt (`test`) on 2026-06-04, paying a ~$0.045 turn cost when haiku would have produced the same response for under $0.005. The shipped guidance instead reads:
+
+> Bias hard toward the cheapest viable model.
+> - **Default to the cheapest candidate** for short, ambiguous, conversational, or low-stakes prompts.
+> - Escalate to a mid-tier model **only when** the task explicitly calls for multi-step reasoning, code synthesis across multiple files, careful refactoring, or non-trivial debugging.
+> - Escalate to the deep tier **only for** architecture design, security review, multi-document synthesis, or tasks that explicitly request extended reasoning. "test" / "hi" / "continue" / single-sentence questions are NOT in this category.
+> - A 4× more expensive model that gives a 5% better answer on a trivial task is the wrong pick.
+
+The catalog-line price + biased-cheap guidance combination is the v3.4 fix for the 2026-06-04 sonnet-for-`test` failure; the §11.10 "genuinely best router model" open question is independent of this fix.
 
 #### 5.6.3 Validation
 

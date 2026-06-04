@@ -171,7 +171,7 @@ class LLMRouter:
                 failure_reason="router_model_unavailable",
             )
 
-        system_prompt = _build_system_prompt(self._registry, candidates)
+        system_prompt = _build_system_prompt(self._registry, candidates, self._price_table)
         tool = _build_choose_model_tool(candidates)
         request = CanonicalRequest(
             request_id=str(next_monotonic_ulid()),
@@ -357,9 +357,20 @@ def _capabilities_satisfy(caps: AdapterCapabilities, req: _CtxRequirements) -> b
     return True
 
 
-def _build_system_prompt(registry: ModelRegistry, candidates: list[str]) -> str:
+def _build_system_prompt(
+    registry: ModelRegistry,
+    candidates: list[str],
+    price_table: PriceTable,
+) -> str:
     """Stable across turns for a given candidate set → provider prompt
-    caching applies (§4.6.8)."""
+    caching applies (§4.6.8).
+
+    The catalog line includes per-MTok input + output rates so the router
+    has concrete numbers to anchor "cheapest" against. Without prices the
+    router can only compare on task-profile tags like `fast` / `balanced`,
+    which led qwen-plus to pick `claude-sonnet-4-6` for a one-word "test"
+    prompt on 2026-06-04 (routing-engine.md §5.6.2 history note).
+    """
     lines = [
         "You are Metis's model router. Your job is to choose the best model "
         "from the candidate list below for a single coding / dev task the "
@@ -368,7 +379,7 @@ def _build_system_prompt(registry: ModelRegistry, candidates: list[str]) -> str:
         "You MUST call the `choose_model` tool exactly once with your pick. "
         "Do not write any other text.",
         "",
-        "Candidates:",
+        "Candidates (price = per-million-token rate; lower = cheaper):",
     ]
     for model_id in candidates:
         try:
@@ -386,20 +397,42 @@ def _build_system_prompt(registry: ModelRegistry, candidates: list[str]) -> str:
         if caps.supports_thinking:
             bits.append("thinking")
         bits.append(f"{caps.max_context_tokens // 1000}k ctx")
+        try:
+            pricing = price_table.pricing_for(model_id)
+            bits.append(
+                f"in ${_format_price(pricing.input_per_mtok)}/MTok, "
+                f"out ${_format_price(pricing.output_per_mtok)}/MTok"
+            )
+        except UnknownPricingModelError:
+            bits.append("price unknown")
         lines.append(f"- {model_id}  [{'; '.join(bits)}]")
     lines.extend(
         [
             "",
-            "Guidance:",
-            "- Prefer the cheapest candidate that meets the task's complexity.",
-            "- Reserve the deepest / most expensive candidate for architecture, "
-            "design review, multi-document synthesis, or extended reasoning.",
-            "- Use the fastest candidate for trivial edits, commit messages, "
-            "and single-line fixes.",
-            "- When in doubt, pick a balanced mid-tier candidate.",
+            "Guidance — bias hard toward the cheapest viable model:",
+            "- **Default to the cheapest candidate** for short, ambiguous, "
+            "conversational, or low-stakes prompts. A one-line user "
+            "message is almost never worth a deep model.",
+            "- Escalate to a mid-tier model ONLY when the task explicitly "
+            "calls for multi-step reasoning, code synthesis across "
+            "multiple files, careful refactoring, or non-trivial debugging.",
+            "- Escalate to the most expensive (deep) tier ONLY for "
+            "architecture design, security review, multi-document "
+            "synthesis, or tasks that explicitly request extended "
+            'reasoning. "Test", "hi", "continue", or any '
+            "single-sentence question is NOT in this category.",
+            "- Cost matters. A 4x more expensive model that gives a 5% "
+            "better answer on a trivial task is the wrong pick.",
         ]
     )
     return "\n".join(lines)
+
+
+def _format_price(rate: Decimal) -> str:
+    """Render a per-MTok price compactly. Drops trailing zeros."""
+    # Strip trailing zeros without losing precision: "0.80" -> "0.8".
+    text = f"{rate:.4f}".rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def _build_choose_model_tool(candidates: list[str]) -> ToolDefinition:
