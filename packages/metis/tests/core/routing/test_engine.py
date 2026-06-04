@@ -87,7 +87,8 @@ async def test_workspace_default_wins_over_global(engine, bus, event_log):
     await bus.drain()
     await bus.stop()
     assert decision.chosen_model == "anthropic:claude-sonnet-4-6"
-    assert decision.winner_index == 5
+    # Slot 6 (workspace_default) after the v3.4 LLM_ROUTER insertion at index 4.
+    assert decision.winner_index == 6
 
 
 async def test_global_default_is_last_resort(engine, bus, event_log):
@@ -96,7 +97,8 @@ async def test_global_default_is_last_resort(engine, bus, event_log):
     await bus.drain()
     await bus.stop()
     assert decision.chosen_model == "anthropic:claude-haiku-4-5"
-    assert decision.winner_index == 6
+    # Slot 7 (global_default) after the v3.4 LLM_ROUTER insertion at index 4.
+    assert decision.winner_index == 7
 
 
 async def test_phase1_stub_policies_always_not_applicable(engine, bus, event_log):
@@ -104,7 +106,7 @@ async def test_phase1_stub_policies_always_not_applicable(engine, bus, event_log
     decision = engine.decide(ctx)
     await bus.drain()
     await bus.stop()
-    stub_policies = {"rule", "pattern", "delegate_request"}
+    stub_policies = {"rule", "pattern", "llm_router", "delegate_request"}
     for entry in decision.chain:
         if entry.policy in stub_policies:
             assert entry.verdict == "not_applicable"
@@ -201,11 +203,11 @@ async def test_hard_failure_when_chain_exhausted(engine, bus, event_log):
     await bus.stop()
     # Even on hard failure, route.decided is emitted.
     assert any(e.type == "route.decided" for e in event_log)
-    # Chain is full (7 entries), winner_index is -1 in the payload.
+    # Chain is full (8 entries as of v3.4), winner_index is -1 in the payload.
     decided = next(e for e in event_log if e.type == "route.decided")
     assert decided.payload["winner_index"] == -1
     assert decided.payload["chosen_model"] == ""
-    assert len(exc.value.chain) == 7
+    assert len(exc.value.chain) == 8
 
 
 # ---- Event emission ----------------------------------------------------
@@ -239,13 +241,15 @@ async def test_route_decided_chain_payload_shape(engine, bus, event_log):
         "manual_sticky",
         "rule",
         "pattern",
+        "llm_router",
         "delegate_request",
         "workspace_default",
         "global_default",
     ]
     assert chain[-1]["verdict"] == "chose"
     assert decided.payload["chosen_model"] == "anthropic:claude-sonnet-4-6"
-    assert decided.payload["winner_index"] == 6
+    # Slot 7 (global_default) after the v3.4 LLM_ROUTER insertion at index 4.
+    assert decided.payload["winner_index"] == 7
     assert decided.payload["elapsed_ms"] >= 0
 
 

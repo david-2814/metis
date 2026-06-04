@@ -733,7 +733,7 @@ the clarification in routing-engine.md §5.5 in the next sweep.
 | All candidate models have identical `avg_cost`     | Cost-efficiency term zeros per `routing-engine.md §5.5`; score falls to pure quality |
 | Store file is corrupted (SQLite read error)        | Log at WARN; return empty recommendation; do not crash |
 
-The chain-fallthrough invariant from `routing-engine.md §4.6` means a
+The chain-fallthrough invariant from `routing-engine.md §4.7` means a
 `None` return is always safe — the next policy in the chain runs.
 
 ---
@@ -758,7 +758,7 @@ this; it just returns the recommendation.
 
 ### 9.2 Disagreement surfacing
 
-`routing-engine.md §5.6` describes an opt-in Phase 3 feature where a
+`routing-engine.md §5.7` describes an opt-in Phase 3 feature where a
 high-confidence pattern recommendation that disagrees with the chosen
 rule is surfaced to the user. The pattern store itself doesn't drive
 this — the routing engine and the TUI do. The store is queried the same

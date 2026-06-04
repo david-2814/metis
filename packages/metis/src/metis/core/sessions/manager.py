@@ -73,6 +73,12 @@ from metis.core.routing import (
     parse_per_message_override,
 )
 from metis.core.routing.engine import RoutingError
+from metis.core.routing.llm_router import (
+    LLMRouter,
+    LLMRouterResult,
+    deferred_for_delegate,
+    requirements_from_ctx,
+)
 from metis.core.sessions.store import Session, SessionStore
 from metis.core.skills.activation import SkillActivationRegistry
 from metis.core.tools.dispatcher import ToolDispatcher
@@ -759,6 +765,7 @@ class SessionManager:
         fingerprint_inputs_hook: Callable[[str, TurnContext], Awaitable[None] | None] | None = None,
         max_concurrent_workers: int = 4,
         worker_timeout_seconds: float = 300.0,
+        llm_router: LLMRouter | None = None,
     ) -> None:
         if max_concurrent_workers < 1:
             raise ValueError("max_concurrent_workers must be >= 1")
@@ -770,6 +777,10 @@ class SessionManager:
         self._bus = bus
         self._store = store
         self._pricing = pricing
+        # LLM_ROUTER slot pre-computer (routing-engine.md §4.6). Optional —
+        # if `None`, the slot reports `not_applicable, reason="llm_router
+        # not pre-computed"` whenever the policy enables it.
+        self._llm_router = llm_router
         self._system_prompt = system_prompt
         self._global_default_model = global_default_model
         self._workspace_default_model = workspace_default_model
@@ -1403,6 +1414,15 @@ class SessionManager:
             ctx=ctx,
         )
 
+        # 3.5 LLM_ROUTER pre-computation (routing-engine.md §4.6). The engine
+        # is synchronous; we await the meta-call here and stuff the outcome
+        # on `ctx.llm_router_result` so slot 5's evaluator can read it as
+        # plain data. Skipped when:
+        #   - worker re-entry (slot 5 defers per §4.6.4)
+        #   - no LLMRouter instance was injected (slot 5 reports "not pre-computed")
+        #   - the effective `llm_router:` block has enabled=False
+        ctx.llm_router_result = await self._maybe_run_llm_router(ctx)
+
         # 4. Route. Hard-failure here propagates without any LLM/tool events.
         try:
             decision = self._routing.decide(ctx)
@@ -1693,6 +1713,44 @@ class SessionManager:
         )
 
     # ---- Helpers ------------------------------------------------------
+
+    async def _maybe_run_llm_router(self, ctx: TurnContext) -> LLMRouterResult | None:
+        """Pre-compute slot 5's outcome (routing-engine.md §4.6).
+
+        Returns `None` when the slot isn't active (no router instance, or
+        policy disabled), letting the engine's slot 5 evaluator report the
+        appropriate `not_applicable` reason. Returns `deferred_for_delegate()`
+        sentinel on worker re-entry so the slot's reason is uniform.
+        """
+        if ctx.worker_tier_model is not None:
+            return deferred_for_delegate()
+        if self._llm_router is None:
+            return None
+        policy = self._routing.policy
+        workspace_scope = policy.workspace_for(ctx.workspace_path) if ctx.workspace_path else None
+        effective = (
+            workspace_scope.llm_router
+            if workspace_scope is not None and workspace_scope.llm_router is not None
+            else policy.llm_router
+        )
+        if not effective.enabled:
+            return None
+        # The LLMRouter's own config may differ from the active policy's
+        # block if the runtime built it from a stale snapshot — guard by
+        # checking the live policy's enabled flag (above), then call the
+        # router with the *live* requirements snapshot.
+        requirements = requirements_from_ctx(
+            estimated_input_tokens=ctx.estimated_input_tokens,
+            has_images=ctx.has_images,
+            has_tool_definitions=ctx.has_tool_definitions,
+            has_system_prompt=ctx.has_system_prompt,
+            requires_structured_output=ctx.requires_structured_output,
+        )
+        return await self._llm_router.decide(
+            user_prompt=ctx.user_message_text,
+            session_id=ctx.session_id,
+            ctx_requirements=requirements,
+        )
 
     def _build_turn_context(
         self,

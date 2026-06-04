@@ -309,6 +309,7 @@ RoutingPolicyName = Literal[
     "manual_sticky",
     "rule",
     "pattern",
+    "llm_router",
     "delegate_request",
     "workspace_default",
     "global_default",
@@ -342,6 +343,11 @@ class PolicyEvaluation(msgspec.Struct, frozen=True):
     confidence: float | None = None
     pattern_alternatives: list[PatternAlternative] | None = None
     validation_failure: ValidationFailure | None = None
+    # LLM_ROUTER slot meta-call accounting; None for every other slot.
+    # See routing-engine.md §4.6.7.
+    meta_cost_usd: float | None = None
+    meta_tokens_input: int | None = None
+    meta_tokens_output: int | None = None
 
 
 class RouteDecided(msgspec.Struct, frozen=True):
