@@ -526,6 +526,172 @@ async def test_system_prompt_handles_missing_pricing_gracefully():
     assert "price unknown" in system
 
 
+async def test_emits_llm_call_events_stamped_actor_router():
+    """routing-engine.md §4.6.7: the meta-call must land in the trace store
+    as `llm.call_started` + `llm.call_completed` stamped Actor.ROUTER so
+    analytics can attribute meta-spend separately from planner traffic."""
+    from metis.core.events.bus import EventBus, EventFilter, Subscription
+    from metis.core.events.envelope import Actor
+
+    caps = {
+        "openrouter:qwen/qwen-plus": _caps(),
+        "anthropic:claude-haiku-4-5": _caps(),
+    }
+    adapter = _ScriptedAdapter(
+        caps_map=caps,
+        responses=[(_tool_use_response("anthropic:claude-haiku-4-5", reason="quick"), _usage())],
+    )
+    registry = _registry_with(adapter, ["openrouter:qwen/qwen-plus", "anthropic:claude-haiku-4-5"])
+    bus = EventBus()
+    bus.start()
+    captured = []
+
+    async def handler(event):
+        captured.append(event)
+
+    bus.subscribe(Subscription(filter=EventFilter(), handler=handler, name="t", fast_path=True))
+
+    router = LLMRouter(
+        config=LLMRouterConfig(enabled=True, model="openrouter:qwen/qwen-plus"),
+        registry=registry,
+        availability=ProviderAvailability(),
+        price_table=_price_table(),
+        budget_tracker=BudgetTracker(),
+        bus=bus,
+    )
+    result = await router.decide(user_prompt="refactor this", session_id="s1")
+    await bus.drain()
+    await bus.stop()
+
+    assert result.chosen_model == "anthropic:claude-haiku-4-5"
+    starts = [e for e in captured if e.type == "llm.call_started"]
+    completes = [e for e in captured if e.type == "llm.call_completed"]
+    assert len(starts) == 1
+    assert len(completes) == 1
+    assert starts[0].actor == Actor.ROUTER
+    assert completes[0].actor == Actor.ROUTER
+    assert starts[0].payload["model"] == "openrouter:qwen/qwen-plus"
+    assert completes[0].payload["model"] == "openrouter:qwen/qwen-plus"
+    assert completes[0].payload["produced_tool_calls"] == 1
+    # Happy path produced only a ToolUseBlock — no text preview to capture.
+    assert completes[0].payload["response_text_preview"] is None
+
+
+async def test_no_tool_call_populates_response_text_preview():
+    """The motivating case: when the router writes prose instead of a tool
+    call, the trace store should carry the prose so the failure is
+    inspectable post-hoc. Discarding it left users blind on 2026-06-04
+    when qwen3.6-27b failed `no_tool_call` against a 17K-token catalog."""
+    from metis.core.events.bus import EventBus, EventFilter, Subscription
+
+    caps = {
+        "openrouter:qwen/qwen-plus": _caps(),
+        "anthropic:claude-haiku-4-5": _caps(),
+    }
+    failure_prose = (
+        "Looking at the candidates, the best balanced choice would be "
+        "claude-sonnet-4-6 given the strong reasoning capabilities."
+    )
+    adapter = _ScriptedAdapter(
+        caps_map=caps,
+        responses=[([TextBlock(text=failure_prose)], _usage())],
+    )
+    registry = _registry_with(adapter, ["openrouter:qwen/qwen-plus", "anthropic:claude-haiku-4-5"])
+    bus = EventBus()
+    bus.start()
+    captured = []
+
+    async def handler(event):
+        captured.append(event)
+
+    bus.subscribe(Subscription(filter=EventFilter(), handler=handler, name="t", fast_path=True))
+
+    router = LLMRouter(
+        config=LLMRouterConfig(enabled=True, model="openrouter:qwen/qwen-plus"),
+        registry=registry,
+        availability=ProviderAvailability(),
+        price_table=_price_table(),
+        budget_tracker=BudgetTracker(),
+        bus=bus,
+    )
+    result = await router.decide(user_prompt="hi", session_id="s1")
+    await bus.drain()
+    await bus.stop()
+
+    assert result.failure_reason == "no_tool_call"
+    completes = [e for e in captured if e.type == "llm.call_completed"]
+    assert len(completes) == 1
+    # The router's prose is captured on the completed event so a SQLite
+    # query like `SELECT json_extract(payload_json, '$.response_text_preview')
+    # FROM events WHERE type='llm.call_completed' AND actor='router'` can
+    # debug `no_tool_call` failures post-hoc.
+    assert completes[0].payload["response_text_preview"] == failure_prose
+    assert completes[0].payload["produced_tool_calls"] == 0
+
+
+async def test_response_text_preview_truncates_long_prose():
+    """A router that writes a 5K-token essay shouldn't bloat every event row."""
+    from metis.core.events.bus import EventBus, EventFilter, Subscription
+
+    caps = {
+        "openrouter:qwen/qwen-plus": _caps(),
+        "anthropic:claude-haiku-4-5": _caps(),
+    }
+    long_prose = "x" * 5000
+    adapter = _ScriptedAdapter(
+        caps_map=caps,
+        responses=[([TextBlock(text=long_prose)], _usage())],
+    )
+    registry = _registry_with(adapter, ["openrouter:qwen/qwen-plus", "anthropic:claude-haiku-4-5"])
+    bus = EventBus()
+    bus.start()
+    captured = []
+
+    async def handler(event):
+        captured.append(event)
+
+    bus.subscribe(Subscription(filter=EventFilter(), handler=handler, name="t", fast_path=True))
+
+    router = LLMRouter(
+        config=LLMRouterConfig(enabled=True, model="openrouter:qwen/qwen-plus"),
+        registry=registry,
+        availability=ProviderAvailability(),
+        price_table=_price_table(),
+        budget_tracker=BudgetTracker(),
+        bus=bus,
+    )
+    await router.decide(user_prompt="hi", session_id="s1")
+    await bus.drain()
+    await bus.stop()
+
+    completes = [e for e in captured if e.type == "llm.call_completed"]
+    preview = completes[0].payload["response_text_preview"]
+    assert preview is not None
+    assert len(preview) <= 500  # _RESPONSE_PREVIEW_MAX_CHARS upstream cap
+    assert preview.endswith("…")  # ellipsis marker on truncation
+
+
+async def test_emits_no_events_when_bus_not_injected():
+    """The bus arg is optional so tests that don't care about the trace
+    can construct an LLMRouter without one. Verify no crashes."""
+    caps = {"openrouter:qwen/qwen-plus": _caps(), "anthropic:claude-haiku-4-5": _caps()}
+    adapter = _ScriptedAdapter(
+        caps_map=caps,
+        responses=[(_tool_use_response("anthropic:claude-haiku-4-5"), _usage())],
+    )
+    registry = _registry_with(adapter, ["openrouter:qwen/qwen-plus", "anthropic:claude-haiku-4-5"])
+    router = LLMRouter(
+        config=LLMRouterConfig(enabled=True, model="openrouter:qwen/qwen-plus"),
+        registry=registry,
+        availability=ProviderAvailability(),
+        price_table=_price_table(),
+        budget_tracker=BudgetTracker(),
+        # bus omitted
+    )
+    result = await router.decide(user_prompt="hi", session_id="s1")
+    assert result.chosen_model == "anthropic:claude-haiku-4-5"
+
+
 async def test_router_unknown_router_model_returns_failure():
     caps = {"anthropic:claude-haiku-4-5": _caps()}
     adapter = _ScriptedAdapter(caps_map=caps, responses=[])

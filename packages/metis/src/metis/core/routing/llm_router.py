@@ -26,6 +26,9 @@ from metis.core.canonical.ids import new_message_id, next_monotonic_ulid
 from metis.core.canonical.messages import Message, MessageMetadata, Role
 from metis.core.canonical.tools import SideEffects, ToolDefinition
 from metis.core.eval.budget import BudgetTracker
+from metis.core.events.bus import EventBus
+from metis.core.events.envelope import Actor
+from metis.core.events.payloads import LLMCallCompleted, LLMCallStarted, make_event
 from metis.core.pricing.table import PriceTable, UnknownPricingModelError
 from metis.core.routing.availability import AvailabilityState, ProviderAvailability
 from metis.core.routing.policy import LLMRouterConfig
@@ -40,6 +43,13 @@ _CHOOSE_MODEL_TOOL = "choose_model"
 # single tool call carrying a model id + a short reason. ~150 tokens is
 # generous; it caps cost while leaving room for thinking-prefix providers.
 _MAX_OUTPUT_TOKENS = 150
+
+# How much assistant-message text to persist on the
+# `llm.call_completed.response_text_preview` field. Truncated upstream
+# so a router that emitted prose instead of a tool call is debuggable
+# from the trace store without dragging the full output blob into
+# every event (routing-engine.md §4.6.7).
+_RESPONSE_PREVIEW_MAX_CHARS = 500
 
 
 @dataclass(frozen=True)
@@ -89,12 +99,18 @@ class LLMRouter:
         availability: ProviderAvailability,
         price_table: PriceTable,
         budget_tracker: BudgetTracker,
+        bus: EventBus | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
         self._availability = availability
         self._price_table = price_table
         self._budget = budget_tracker
+        # Optional event bus for `llm.call_started` / `llm.call_completed`
+        # emission stamped `Actor.ROUTER` (routing-engine.md §4.6.7).
+        # `None` keeps the in-test substrate working with no event-store
+        # plumbing; production runtime always passes the shared bus.
+        self._bus = bus
 
     @property
     def config(self) -> LLMRouterConfig:
@@ -173,8 +189,9 @@ class LLMRouter:
 
         system_prompt = _build_system_prompt(self._registry, candidates, self._price_table)
         tool = _build_choose_model_tool(candidates)
+        request_id = str(next_monotonic_ulid())
         request = CanonicalRequest(
-            request_id=str(next_monotonic_ulid()),
+            request_id=request_id,
             messages=[
                 Message(
                     id=new_message_id(),
@@ -190,6 +207,21 @@ class LLMRouter:
             model=router_canonical,
             max_output_tokens=_MAX_OUTPUT_TOKENS,
             temperature=0.0,  # deterministic per-prompt picks
+        )
+
+        # Emit `llm.call_started` stamped Actor.ROUTER so analytics can
+        # attribute meta-call spend separately from planner / worker
+        # traffic (routing-engine.md §4.6.7).
+        provider = self._registry.provider_of(router_canonical)
+        started_at_ms = _monotonic_ms()
+        self._emit_llm_call_started(
+            session_id=session_id,
+            request_id=request_id,
+            model=router_canonical,
+            provider=provider,
+            estimated_input_tokens=router_entry.adapter.estimate_input_tokens(
+                request.messages, request.tools, request.system_prompt
+            ),
         )
 
         try:
@@ -226,6 +258,24 @@ class LLMRouter:
         # `choose_model` call; anything else collapses to a documented
         # failure mode.
         tool_call = _find_choose_model_call(response.content)
+        text_preview = _extract_text_preview(response.content)
+
+        # Emit `llm.call_completed` with the truncated response preview
+        # so a `no_tool_call` failure is debuggable post-hoc from the
+        # trace store (the previous implementation discarded the
+        # response content entirely).
+        self._emit_llm_call_completed(
+            session_id=session_id,
+            model=router_canonical,
+            provider=provider,
+            response_usage=response.usage,
+            cost_usd=meta_cost,
+            stop_reason=str(response.stop_reason),
+            latency_ms=_monotonic_ms() - started_at_ms,
+            produced_tool_calls=1 if tool_call is not None else 0,
+            response_text_preview=text_preview,
+        )
+
         if tool_call is None:
             return LLMRouterResult(
                 chosen_model=None,
@@ -262,6 +312,82 @@ class LLMRouter:
             meta_tokens_output=tokens_out,
             reason_text=reason_text if isinstance(reason_text, str) else None,
         )
+
+    # ------------------------------------------------------------------
+    # Event emission helpers (routing-engine.md §4.6.7)
+    # ------------------------------------------------------------------
+
+    def _emit_llm_call_started(
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        model: str,
+        provider: str,
+        estimated_input_tokens: int,
+    ) -> None:
+        if self._bus is None:
+            return
+        try:
+            self._bus.emit(
+                make_event(
+                    type="llm.call_started",
+                    payload=LLMCallStarted(
+                        model=model,
+                        provider=provider,
+                        estimated_input_tokens=estimated_input_tokens,
+                        request_id=request_id,
+                        is_worker=False,
+                    ),
+                    session_id=session_id,
+                    actor=Actor.ROUTER,
+                    timestamp=datetime.now(UTC),
+                )
+            )
+        except Exception:
+            logger.exception("LLM_ROUTER failed to emit llm.call_started")
+
+    def _emit_llm_call_completed(
+        self,
+        *,
+        session_id: str,
+        model: str,
+        provider: str,
+        response_usage,
+        cost_usd: Decimal,
+        stop_reason: str,
+        latency_ms: int,
+        produced_tool_calls: int,
+        response_text_preview: str | None,
+    ) -> None:
+        if self._bus is None:
+            return
+        try:
+            self._bus.emit(
+                make_event(
+                    type="llm.call_completed",
+                    payload=LLMCallCompleted(
+                        model=model,
+                        provider=provider,
+                        input_tokens=response_usage.input_tokens,
+                        output_tokens=response_usage.output_tokens,
+                        cached_input_tokens=response_usage.cached_input_tokens,
+                        cache_creation_input_tokens=response_usage.cache_creation_input_tokens,
+                        cost_usd=float(cost_usd),
+                        pricing_version=self._price_table.version,
+                        latency_ms=latency_ms,
+                        stop_reason=_normalize_stop_reason(stop_reason),
+                        produced_tool_calls=produced_tool_calls,
+                        produced_thinking_blocks=0,
+                        response_text_preview=response_text_preview,
+                    ),
+                    session_id=session_id,
+                    actor=Actor.ROUTER,
+                    timestamp=datetime.now(UTC),
+                )
+            )
+        except Exception:
+            logger.exception("LLM_ROUTER failed to emit llm.call_completed")
 
     # ------------------------------------------------------------------
     # Internals
@@ -469,3 +595,40 @@ def _find_choose_model_call(content: list) -> ToolUseBlock | None:
         if isinstance(block, ToolUseBlock) and block.name == _CHOOSE_MODEL_TOOL:
             return block
     return None
+
+
+def _extract_text_preview(content: list) -> str | None:
+    """First TextBlock content, truncated for the trace event.
+
+    Returns None when the response has no TextBlock at all (e.g. the
+    router only emitted a ToolUseBlock — the happy path). Returns the
+    truncated text otherwise, including for the no_tool_call failure
+    mode where the router wrote prose instead of calling the tool.
+    """
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, TextBlock) and block.text:
+            parts.append(block.text)
+    if not parts:
+        return None
+    joined = "\n".join(parts)
+    if len(joined) > _RESPONSE_PREVIEW_MAX_CHARS:
+        return joined[: _RESPONSE_PREVIEW_MAX_CHARS - 1] + "…"
+    return joined
+
+
+def _normalize_stop_reason(raw: str) -> str:
+    """Map adapter `StopReason` to the LLMCallCompleted literal set."""
+    if "tool_use" in raw:
+        return "tool_use"
+    if "max_tokens" in raw:
+        return "max_tokens"
+    if "stop_sequence" in raw:
+        return "stop_sequence"
+    return "end_turn"
+
+
+def _monotonic_ms() -> int:
+    import time
+
+    return int(time.monotonic() * 1000)

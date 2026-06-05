@@ -193,6 +193,15 @@ class LLMCallCompleted(msgspec.Struct, frozen=True):
     stop_reason: Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]
     produced_tool_calls: int
     produced_thinking_blocks: int
+    # Truncated preview of the assistant response's text content for
+    # debuggability — populated only by the LLM_ROUTER slot's meta-call
+    # path (Actor.ROUTER, routing-engine.md §4.6.7) so a `no_tool_call`
+    # failure can be inspected via the trace store without re-running.
+    # Planner-loop emitters leave it None; the conversation text lives
+    # in the Message store, not the event payload. Truncated to 500
+    # chars max upstream; redaction.md treats it as USER_CONTROLLED
+    # text on export.
+    response_text_preview: str | None = None
     # Gateway dimensions (gateway.md §6). Both `None` when the call originated
     # from the in-process agent loop (CLI / TUI / `metis serve`); set when the
     # call entered through the gateway HTTP surface so analytics can roll up by

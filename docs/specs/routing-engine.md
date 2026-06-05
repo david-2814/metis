@@ -17,6 +17,22 @@
 > without callers having to query the trace store. The echo is quiet when
 > the slot was a no-op (disabled / worker re-entry / not pre-computed).
 >
+> **v3.4 update (2026-06-04 — router-call events + response inspection):**
+> §4.6.7 spec drift closed. The v3.4 first cut declared that router
+> meta-calls would land as `llm.call_completed` events stamped
+> `Actor.ROUTER` but the implementation never emitted them — only the
+> per-slot `meta_cost_usd` field on `PolicyEvaluation` was wired. A
+> live `no_tool_call` failure on 2026-06-04 made the gap concrete:
+> the response content was discarded, so operators had no way to see
+> what the router actually wrote. `LLMRouter` now takes an optional
+> `bus: EventBus` and emits paired `llm.call_started` +
+> `llm.call_completed` for every meta-call attempt that reaches the
+> adapter. `LLMCallCompleted` gains an additive optional
+> `response_text_preview: str | None` field (truncated to 500 chars;
+> populated by the router on no-tool-call failures so the prose is
+> persisted; `None` for planner-loop emitters and tool-only router
+> responses). Dashboard / query example added to §4.6.7.
+>
 > **v3.4 update (2026-06-04 — router-prompt quality fix):** Same-day field
 > test showed the router picking `claude-sonnet-4-6` for a one-word `test`
 > prompt at $0.045 per turn, when `haiku-4-5` was the obvious right answer.
@@ -387,11 +403,26 @@ All failure modes degrade to `not_applicable` with a documented `reason`, so the
 
 The slot **never** raises an exception that escapes the engine. The chain is allowed to fall through; routing's no-model-available hard failure (§4.8) still requires every slot to come up empty.
 
-#### 4.6.7 Cost trace
+#### 4.6.7 Cost trace + response inspection
 
-The meta-call lands in the trace store as a normal `llm.call_completed` event stamped with a new `Actor.ROUTER` (`canonical/actors.py`), so dashboards can attribute meta-spend separately from the planner's spend. The cost is also surfaced on the `LLM_ROUTER` slot's `PolicyEvaluation` via three new fields (`meta_cost_usd`, `meta_tokens_input`, `meta_tokens_output`), `None` for every other slot. The slot's meta-cost does **not** count against the session's `turn.completed.usage.cost_usd` (which measures only planner-side LLM tokens, consistent with the worker convention in `delegation.md §8`).
+The meta-call lands in the trace store as paired `llm.call_started` + `llm.call_completed` events stamped with the `Actor.ROUTER` actor (`events/envelope.py`), so dashboards can attribute meta-spend separately from the planner's spend. The cost is also surfaced on the `LLM_ROUTER` slot's `PolicyEvaluation` via three additive fields (`meta_cost_usd`, `meta_tokens_input`, `meta_tokens_output`), `None` for every other slot. The slot's meta-cost does **not** count against the session's `turn.completed.usage.cost_usd` (which measures only planner-side LLM tokens, consistent with the worker convention in `delegation.md §8`).
 
-The meta-call's `route.decided` invariant still holds: routing produces exactly one `route.decided` event per turn. The router's `llm.call_completed` is a separate event, ordered before `route.decided` because the router's response is read first.
+For debuggability the `llm.call_completed` payload includes an additive `response_text_preview: str | None` field — the first ~500 characters of any `TextBlock` content the router emitted, or `None` when the response was tool-only. The motivating case: a `no_tool_call` failure (the router writes prose instead of calling `choose_model`) previously discarded the response, leaving operators blind to why the router failed. With the preview persisted, a SQLite query like
+
+```sql
+SELECT
+  json_extract(payload_json, '$.model')                  AS router_model,
+  json_extract(payload_json, '$.response_text_preview')  AS prose
+FROM events
+WHERE type = 'llm.call_completed'
+  AND actor = 'router'
+  AND json_extract(payload_json, '$.produced_tool_calls') = 0
+ORDER BY id DESC LIMIT 10;
+```
+
+…surfaces every recent router-side `no_tool_call` failure with the model's actual text. Truncation cap (~500 chars upstream) keeps event rows from bloating; redaction-time treatment for the field follows `redaction.md` USER_CONTROLLED text-strip rules.
+
+The meta-call's `route.decided` invariant still holds: routing produces exactly one `route.decided` event per turn. The router's `llm.call_started` / `llm.call_completed` are separate events, ordered before `route.decided` because the router's response is read first.
 
 #### 4.6.8 Caching
 
