@@ -692,6 +692,38 @@ async def test_emits_no_events_when_bus_not_injected():
     assert result.chosen_model == "anthropic:claude-haiku-4-5"
 
 
+async def test_adapter_cancelled_classifies_as_timeout():
+    """When our `wait_for` fires its timeout, the cancellation propagates
+    into the adapter, which catches `asyncio.CancelledError` and re-raises
+    as `adapters.errors.CancelledError`. That wrapped exception escapes
+    `wait_for` (which only converts the bare asyncio variant) and would
+    otherwise be misclassified as `network_error: CancelledError`. The
+    router must instead classify it as `timeout` for accurate telemetry."""
+    from metis.core.adapters.errors import CancelledError as AdapterCancelledError
+
+    caps = {
+        "openrouter:qwen/qwen-plus": _caps(),
+        "anthropic:claude-haiku-4-5": _caps(),
+    }
+    adapter = _ScriptedAdapter(
+        caps_map=caps,
+        responses=[AdapterCancelledError("request cancelled", request_id="rq_test")],
+    )
+    registry = _registry_with(adapter, ["openrouter:qwen/qwen-plus", "anthropic:claude-haiku-4-5"])
+    router = LLMRouter(
+        config=LLMRouterConfig(enabled=True, model="openrouter:qwen/qwen-plus"),
+        registry=registry,
+        availability=ProviderAvailability(),
+        price_table=_price_table(),
+        budget_tracker=BudgetTracker(),
+    )
+    result = await router.decide(user_prompt="hi", session_id="s1")
+    assert result.chosen_model is None
+    assert result.failure_reason == "timeout"
+    # Critically NOT "network_error: CancelledError" — that's the
+    # misclassification we're guarding against.
+
+
 async def test_router_unknown_router_model_returns_failure():
     caps = {"anthropic:claude-haiku-4-5": _caps()}
     adapter = _ScriptedAdapter(caps_map=caps, responses=[])

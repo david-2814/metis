@@ -17,6 +17,19 @@
 > without callers having to query the trace store. The echo is quiet when
 > the slot was a no-op (disabled / worker re-entry / not pre-computed).
 >
+> **v3.4 update (2026-06-04 — timeout classification + default raise):**
+> Live testing surfaced `network_error: CancelledError` as a recurring
+> "failure" mode that was actually a misclassified timeout. The OpenRouter
+> and OpenAI adapters wrap `asyncio.CancelledError` as their own typed
+> `AdapterCancelledError` (provider-adapter-contract §6.1) — when our
+> `asyncio.wait_for` fires its timeout, the cancellation propagates INTO
+> the adapter and re-emerges as the wrapped error, so `wait_for` doesn't
+> recognize it and skips its TimeoutError conversion. Router now catches
+> `AdapterCancelledError` explicitly and classifies it as
+> `failure_reason="timeout"`. Default `timeout_seconds` raised `8.0 → 20.0`
+> — OpenRouter routinely dispatched Qwen meta-calls to upstream providers
+> with 10–18s first-token latency, blowing the 8s cap repeatedly.
+>
 > **v3.4 update (2026-06-04 — router-call events + response inspection):**
 > §4.6.7 spec drift closed. The v3.4 first cut declared that router
 > meta-calls would land as `llm.call_completed` events stamped
@@ -513,7 +526,7 @@ llm_router:
   model: anthropic:claude-haiku-4-5        # safe-bet default (reliable forced tool-use); cheaper models TBD per §5.6 research note
   per_session_budget_usd: 0.10             # shared BudgetTracker primitive with evaluator (independent caps)
   per_day_budget_usd: 1.00
-  timeout_seconds: 8                       # meta-call wall-clock cap
+  timeout_seconds: 20                      # meta-call wall-clock cap (raised from 8s on 2026-06-04)
   # tool_choice: required                  # always forced; not user-tunable in v1
 
 rules:
@@ -697,7 +710,7 @@ llm_router:
   model: anthropic:claude-haiku-4-5
   per_session_budget_usd: 0.10
   per_day_budget_usd: 1.00
-  timeout_seconds: 8
+  timeout_seconds: 20
 ```
 
 | Field                    | Type    | Default                          | Notes                                                                                              |
@@ -706,7 +719,7 @@ llm_router:
 | `model`                  | str     | `anthropic:claude-haiku-4-5`     | Router model id (registered in `ModelRegistry`, capability-validated like any other model).        |
 | `per_session_budget_usd` | float   | `0.10`                           | Per-session cap; shares `BudgetTracker` primitive with evaluator (independent caps).               |
 | `per_day_budget_usd`     | float   | `1.00`                           | Per-day cap; ditto.                                                                                |
-| `timeout_seconds`        | float   | `8.0`                            | Wall-clock cap on the meta-call. Timeout → `not_applicable, reason="timeout"`.                     |
+| `timeout_seconds`        | float   | `20.0`                           | Wall-clock cap on the meta-call. Timeout (including adapter-wrapped `CancelledError`) → `not_applicable, reason="timeout"`. Raised from `8.0` on 2026-06-04 — OpenRouter routing of Qwen models to various upstream providers regularly took 10–18s. |
 
 #### 5.6.1 Default router model
 
@@ -1197,7 +1210,7 @@ Chain:
 session.active_model = None
 rules: []
 pattern store: empty
-llm_router: enabled=true, model=anthropic:claude-haiku-4-5, timeout_seconds=8
+llm_router: enabled=true, model=anthropic:claude-haiku-4-5, timeout_seconds=20
 workspace_default: anthropic:claude-haiku-4-5
 (router meta-call times out at 8.0s)
 

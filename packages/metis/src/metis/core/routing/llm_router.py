@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from metis.core.adapters.errors import CancelledError as AdapterCancelledError
 from metis.core.adapters.protocol import CanonicalRequest
 from metis.core.canonical.capabilities import AdapterCapabilities
 from metis.core.canonical.content import TextBlock, ToolUseBlock
@@ -230,6 +231,17 @@ class LLMRouter:
                 timeout=self._config.timeout_seconds,
             )
         except TimeoutError:
+            return LLMRouterResult(chosen_model=None, failure_reason="timeout")
+        except AdapterCancelledError:
+            # Adapters wrap `asyncio.CancelledError` as their own typed
+            # error (provider-adapter-contract §6.1). When *our* wait_for
+            # fires its timeout, that cancellation propagates INTO the
+            # adapter and re-emerges as `AdapterCancelledError` — the
+            # adapter ate the cancellation signal, so wait_for never
+            # converts it back to TimeoutError. Classify it as timeout
+            # here for accurate per-failure-mode telemetry instead of the
+            # misleading "network_error: CancelledError" surfaced in v3.4
+            # first-cut field testing (2026-06-04).
             return LLMRouterResult(chosen_model=None, failure_reason="timeout")
         except asyncio.CancelledError:
             raise

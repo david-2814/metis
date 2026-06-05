@@ -111,15 +111,22 @@ class LLMRouterConfig:
     via the evaluator's `BudgetTracker` primitive (independent caps).
     Over-budget → slot reports `not_applicable, reason="budget_exhausted"`.
 
-    `timeout_seconds` is a wall-clock cap on the meta-call. Values < 1.0
-    are clamped to 1.0 at construction time with no error (matches §5.6.3).
+    `timeout_seconds` is a wall-clock cap on the meta-call. Default
+    `20.0` - bumped from `8.0` on 2026-06-04 after live testing on
+    OpenRouter showed Qwen models routinely taking 10-18s to first
+    response (different upstream providers per OpenRouter's routing
+    decision). 8s caused repeated timeouts that surfaced as the
+    misleading `network_error: CancelledError` (the adapter wraps
+    `asyncio.CancelledError` so wait_for's TimeoutError never fires).
+    Values < 1.0 are clamped to 1.0 at construction time with no
+    error (matches §5.6.3).
     """
 
     enabled: bool = False
     model: str = "anthropic:claude-haiku-4-5"
     per_session_budget_usd: float = 0.10
     per_day_budget_usd: float = 1.00
-    timeout_seconds: float = 8.0
+    timeout_seconds: float = 20.0
 
     def __post_init__(self) -> None:
         if self.per_session_budget_usd < 0:

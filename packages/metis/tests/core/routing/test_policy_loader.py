@@ -441,7 +441,7 @@ def test_llm_router_default_when_block_absent(registry):
     assert policy.llm_router.model == "anthropic:claude-haiku-4-5"
     assert policy.llm_router.per_session_budget_usd == 0.10
     assert policy.llm_router.per_day_budget_usd == 1.00
-    assert policy.llm_router.timeout_seconds == 8.0
+    assert policy.llm_router.timeout_seconds == 20.0
 
 
 def test_llm_router_parses_full_block(registry):
