@@ -191,6 +191,13 @@ class LLMRouter:
         system_prompt = _build_system_prompt(self._registry, candidates, self._price_table)
         tool = _build_choose_model_tool(candidates)
         request_id = str(next_monotonic_ulid())
+        # Frame the user prompt as data the planner will receive, not as a
+        # prompt directed at the router. Without this wrapper haiku-as-router
+        # answered "what's today's date" directly on 2026-06-05 instead of
+        # calling choose_model. The system prompt's "TASK FOR PLANNER"
+        # marker bookends this so the LLM treats the text as routable
+        # subject matter, not as a question to itself.
+        framed_prompt = f"--- TASK FOR PLANNER ---\n{user_prompt or ''}\n--- END TASK ---"
         request = CanonicalRequest(
             request_id=request_id,
             messages=[
@@ -198,7 +205,7 @@ class LLMRouter:
                     id=new_message_id(),
                     session_id=session_id,
                     role=Role.USER,
-                    content=[TextBlock(text=user_prompt or "")],
+                    content=[TextBlock(text=framed_prompt)],
                     created_at=datetime.now(UTC),
                     metadata=MessageMetadata(),
                 )
@@ -273,7 +280,7 @@ class LLMRouter:
         text_preview = _extract_text_preview(response.content)
 
         # Emit `llm.call_completed` with the truncated response preview
-        # so a `no_tool_call` failure is debuggable post-hoc from the
+        # so a `no_model_chosen` failure is debuggable post-hoc from the
         # trace store (the previous implementation discarded the
         # response content entirely).
         self._emit_llm_call_completed(
@@ -291,7 +298,7 @@ class LLMRouter:
         if tool_call is None:
             return LLMRouterResult(
                 chosen_model=None,
-                failure_reason="no_tool_call",
+                failure_reason="no_model_chosen",
                 meta_cost_usd=meta_cost,
                 meta_tokens_input=tokens_in,
                 meta_tokens_output=tokens_out,
@@ -302,7 +309,7 @@ class LLMRouter:
         if not isinstance(raw_model_id, str) or not raw_model_id:
             return LLMRouterResult(
                 chosen_model=None,
-                failure_reason="no_tool_call",
+                failure_reason="no_model_chosen",
                 meta_cost_usd=meta_cost,
                 meta_tokens_input=tokens_in,
                 meta_tokens_output=tokens_out,
@@ -510,12 +517,20 @@ def _build_system_prompt(
     prompt on 2026-06-04 (routing-engine.md §5.6.2 history note).
     """
     lines = [
-        "You are Metis's model router. Your job is to choose the best model "
-        "from the candidate list below for a single coding / dev task the "
-        "user is about to send.",
+        "You are Metis's model router. Your ONLY job is to choose which model "
+        "should handle a task. You are NOT the assistant responding to the "
+        "user — a separate planner model will handle the actual task once "
+        "you have picked it.",
         "",
-        "You MUST call the `choose_model` tool exactly once with your pick. "
-        "Do not write any other text.",
+        "Your response MUST be exactly one call to the `choose_model` tool. "
+        "Do not write text. Do not greet the user. Do not answer their "
+        "question. Even if the user asks for the date, the weather, or "
+        "your opinion, your reply is the tool call — the planner model "
+        "you pick will answer them afterwards.",
+        "",
+        "The message after `--- TASK FOR PLANNER ---` below is the task the "
+        "planner will receive. Read it to judge complexity, then call "
+        "`choose_model`. Do NOT reply to it directly.",
         "",
         "Candidates (price = per-million-token rate; lower = cheaper):",
     ]
@@ -614,7 +629,7 @@ def _extract_text_preview(content: list) -> str | None:
 
     Returns None when the response has no TextBlock at all (e.g. the
     router only emitted a ToolUseBlock — the happy path). Returns the
-    truncated text otherwise, including for the no_tool_call failure
+    truncated text otherwise, including for the no_model_chosen failure
     mode where the router wrote prose instead of calling the tool.
     """
     parts: list[str] = []

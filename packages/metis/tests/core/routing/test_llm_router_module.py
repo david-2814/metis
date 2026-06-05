@@ -361,7 +361,7 @@ async def test_router_invalid_model_id_returns_failure():
     assert result.meta_cost_usd > 0
 
 
-async def test_router_no_tool_call_returns_failure():
+async def test_router_no_model_chosen_returns_failure():
     caps = {
         "openrouter:qwen/qwen-plus": _caps(),
         "anthropic:claude-haiku-4-5": _caps(),
@@ -382,7 +382,7 @@ async def test_router_no_tool_call_returns_failure():
     )
     result = await router.decide(user_prompt="hi", session_id="s1")
     assert result.chosen_model is None
-    assert result.failure_reason == "no_tool_call"
+    assert result.failure_reason == "no_model_chosen"
 
 
 async def test_router_no_candidates_when_registry_empty():
@@ -577,11 +577,11 @@ async def test_emits_llm_call_events_stamped_actor_router():
     assert completes[0].payload["response_text_preview"] is None
 
 
-async def test_no_tool_call_populates_response_text_preview():
+async def test_no_model_chosen_populates_response_text_preview():
     """The motivating case: when the router writes prose instead of a tool
     call, the trace store should carry the prose so the failure is
     inspectable post-hoc. Discarding it left users blind on 2026-06-04
-    when qwen3.6-27b failed `no_tool_call` against a 17K-token catalog."""
+    when qwen3.6-27b failed `no_model_chosen` against a 17K-token catalog."""
     from metis.core.events.bus import EventBus, EventFilter, Subscription
 
     caps = {
@@ -618,13 +618,13 @@ async def test_no_tool_call_populates_response_text_preview():
     await bus.drain()
     await bus.stop()
 
-    assert result.failure_reason == "no_tool_call"
+    assert result.failure_reason == "no_model_chosen"
     completes = [e for e in captured if e.type == "llm.call_completed"]
     assert len(completes) == 1
     # The router's prose is captured on the completed event so a SQLite
     # query like `SELECT json_extract(payload_json, '$.response_text_preview')
     # FROM events WHERE type='llm.call_completed' AND actor='router'` can
-    # debug `no_tool_call` failures post-hoc.
+    # debug `no_model_chosen` failures post-hoc.
     assert completes[0].payload["response_text_preview"] == failure_prose
     assert completes[0].payload["produced_tool_calls"] == 0
 

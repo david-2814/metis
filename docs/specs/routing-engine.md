@@ -17,6 +17,24 @@
 > without callers having to query the trace store. The echo is quiet when
 > the slot was a no-op (disabled / worker re-entry / not pre-computed).
 >
+> **v3.4 update (2026-06-05 — router prompt hardening + failure renames):**
+> Live testing showed `haiku-4-5` as router answering trivial information-
+> seeking prompts (e.g. "what's today's date") directly to the user
+> instead of calling `choose_model` — role-confusion despite the explicit
+> system-prompt instruction. Two changes: (1) the router system prompt is
+> rewritten to repeatedly assert "you are NOT the assistant, the planner
+> answers the user, your reply is the tool call"; the user message is
+> wrapped in `--- TASK FOR PLANNER ---` / `--- END TASK ---` markers so
+> the LLM treats it as routable data, not as a question to itself.
+> (2) The `no_tool_call` failure-reason constant is renamed to
+> `no_model_chosen` for clarity in trace queries; the REPL renders it as
+> "didn't pick a model (router replied with text instead of a tool
+> call)". A new `_humanize_router_reason` mapping in `cli/chat.py`
+> translates other internal reasons (`budget_exhausted`, `timeout`,
+> `invalid_model_id: …`, etc.) into human-readable forms for the
+> result-tag echo; the raw constants stay in the trace store so
+> analytics queries are unaffected.
+>
 > **v3.4 update (2026-06-04 — timeout classification + default raise):**
 > Live testing surfaced `network_error: CancelledError` as a recurring
 > "failure" mode that was actually a misclassified timeout. The OpenRouter
@@ -407,7 +425,7 @@ All failure modes degrade to `not_applicable` with a documented `reason`, so the
 | LLM call timed out (default 8s)                  | `timeout`                                          |
 | LLM call raised a network / 5xx error            | `network_error: <error_class>`                     |
 | LLM returned a model id not in the candidate set | `invalid_model_id: <name>`                         |
-| LLM returned no tool call                        | `no_tool_call`                                     |
+| LLM returned no `choose_model` call              | `no_model_chosen`                                  |
 | Provider rejected the request (e.g. AUTH)        | `provider_error: <error_class>`                    |
 | Budget exhausted (per-session or per-day)        | `budget_exhausted`                                 |
 | No candidate models passed §4.4 validation       | `no_candidates`                                    |
@@ -420,7 +438,7 @@ The slot **never** raises an exception that escapes the engine. The chain is all
 
 The meta-call lands in the trace store as paired `llm.call_started` + `llm.call_completed` events stamped with the `Actor.ROUTER` actor (`events/envelope.py`), so dashboards can attribute meta-spend separately from the planner's spend. The cost is also surfaced on the `LLM_ROUTER` slot's `PolicyEvaluation` via three additive fields (`meta_cost_usd`, `meta_tokens_input`, `meta_tokens_output`), `None` for every other slot. The slot's meta-cost does **not** count against the session's `turn.completed.usage.cost_usd` (which measures only planner-side LLM tokens, consistent with the worker convention in `delegation.md §8`).
 
-For debuggability the `llm.call_completed` payload includes an additive `response_text_preview: str | None` field — the first ~500 characters of any `TextBlock` content the router emitted, or `None` when the response was tool-only. The motivating case: a `no_tool_call` failure (the router writes prose instead of calling `choose_model`) previously discarded the response, leaving operators blind to why the router failed. With the preview persisted, a SQLite query like
+For debuggability the `llm.call_completed` payload includes an additive `response_text_preview: str | None` field — the first ~500 characters of any `TextBlock` content the router emitted, or `None` when the response was tool-only. The motivating case: a `no_model_chosen` failure (the router writes prose instead of calling `choose_model`) previously discarded the response, leaving operators blind to why the router failed. With the preview persisted, a SQLite query like
 
 ```sql
 SELECT
@@ -433,7 +451,7 @@ WHERE type = 'llm.call_completed'
 ORDER BY id DESC LIMIT 10;
 ```
 
-…surfaces every recent router-side `no_tool_call` failure with the model's actual text. Truncation cap (~500 chars upstream) keeps event rows from bloating; redaction-time treatment for the field follows `redaction.md` USER_CONTROLLED text-strip rules.
+…surfaces every recent router-side `no_model_chosen` failure with the model's actual text. Truncation cap (~500 chars upstream) keeps event rows from bloating; redaction-time treatment for the field follows `redaction.md` USER_CONTROLLED text-strip rules.
 
 The meta-call's `route.decided` invariant still holds: routing produces exactly one `route.decided` event per turn. The router's `llm.call_started` / `llm.call_completed` are separate events, ordered before `route.decided` because the router's response is read first.
 

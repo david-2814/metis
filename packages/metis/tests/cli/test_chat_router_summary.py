@@ -89,14 +89,14 @@ def test_verbose_when_chose():
     assert "1840 in / 72 out" in line
 
 
-def test_verbose_when_no_tool_call():
+def test_verbose_when_no_model_chosen():
     """The motivating failure mode — surfaces verdict + meta-cost so the
     user knows the slot fired and burned tokens."""
     result = _FakeResult(
         route_chain=_chain(
             _slot(
                 verdict="not_applicable",
-                reason="no_tool_call",
+                reason="no_model_chosen",
                 meta_cost_usd=0.004168,
                 meta_tokens_input=16,
                 meta_tokens_output=150,
@@ -105,7 +105,11 @@ def test_verbose_when_no_tool_call():
     )
     line = _format_router_summary(result)
     assert line is not None
-    assert "router → no_tool_call" in line
+    # The internal reason "no_model_chosen" is humanized in the REPL echo so
+    # users don't have to know what the constant means; trace store keeps
+    # the raw constant for analytics queries.
+    assert "didn't pick a model" in line
+    assert "no_model_chosen" not in line  # raw constant stays out of the REPL
     assert "meta $0.0042" in line
 
 
@@ -136,7 +140,7 @@ def test_verbose_when_budget_exhausted_zero_cost():
     )
     line = _format_router_summary(result)
     assert line is not None
-    assert "router → budget_exhausted" in line
+    assert "router → budget exhausted" in line  # humanized phrase
     # No meta-cost when the call was skipped.
     assert "meta" not in line
 

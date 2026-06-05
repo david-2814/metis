@@ -470,7 +470,32 @@ def _format_router_summary(result) -> str | None:
     if slot.verdict == "rejected":
         failure = slot.validation_failure or "rejected"
         return f"  router → {slot.candidate_model} but rejected ({failure}){meta}"
-    return f"  router → {slot.reason}{meta}"
+    return f"  router → {_humanize_router_reason(slot.reason)}{meta}"
+
+
+def _humanize_router_reason(raw: str) -> str:
+    """Map internal failure_reason strings to short user-readable phrases.
+
+    The trace store keeps the raw constant for analytics queries; the REPL
+    surfaces the human-readable form so a user doesn't have to know what
+    `no_model_chosen` means in implementation terms.
+    """
+    mapping = {
+        "no_model_chosen": "didn't pick a model (router replied with text instead of a tool call)",
+        "timeout": "timed out",
+        "budget_exhausted": "budget exhausted",
+        "no_candidates": "no candidates passed validation",
+        "router_model_unavailable": "router model is unavailable",
+    }
+    if raw in mapping:
+        return mapping[raw]
+    if raw.startswith("invalid_model_id: "):
+        return f"router named an unknown model ({raw.split(': ', 1)[1]})"
+    if raw.startswith("invalid_router_model: "):
+        return f"router model is not registered ({raw.split(': ', 1)[1]})"
+    if raw.startswith("network_error: "):
+        return f"network error ({raw.split(': ', 1)[1]})"
+    return raw
 
 
 # Backwards-compatibility export — pyproject "metis = metis.cli.main:main".
