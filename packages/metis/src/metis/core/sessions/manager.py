@@ -56,6 +56,7 @@ from metis.core.events.payloads import (
     LLMCallStarted,
     MemoryEviction,
     MemoryUpdated,
+    PolicyEvaluation,
     SkillLoaded,
     TurnCancelled,
     TurnCompleted,
@@ -630,6 +631,11 @@ class TurnResult:
     llm_call_count: int
     tool_call_count: int
     wall_time_seconds: float
+    # Per-slot routing trace from the turn-start `route.decided` event.
+    # Empty list when routing failed before the chain was built. Consumers
+    # (e.g. the metis dev REPL) inspect this to render slot-level signals
+    # like the LLM_ROUTER meta-call summary; routing-engine.md §4.6.7.
+    route_chain: tuple[PolicyEvaluation, ...] = ()
 
 
 class UserExplicitModelRejectedError(Exception):
@@ -1710,6 +1716,7 @@ class SessionManager:
             llm_call_count=llm_calls,
             tool_call_count=tool_calls,
             wall_time_seconds=wall_time,
+            route_chain=tuple(decision.chain),
         )
 
     # ---- Helpers ------------------------------------------------------

@@ -1,14 +1,91 @@
 # Routing Engine Specification
 
 **Status:** v3.4 — proposed; LLM_ROUTER slot added (Wave 19, opt-in)
-**Last updated:** 2026-06-03
+**Last updated:** 2026-06-04
 **Owner:** _your name_
 
+> **v3.4 update (2026-06-04 — default router model + REPL visibility):**
+> First field test against the originally-shipped `openrouter:qwen/qwen-plus`
+> default returned `no_tool_call` — qwen-plus generated prose instead of
+> calling `choose_model`. Default switched to `anthropic:claude-haiku-4-5`
+> (reliable forced tool-use; ~$0.001 per meta-call vs qwen-plus's measured
+> $0.004 at 150-token max output). The §11.10 open question ("genuinely
+> best cost-effective router model") stays open — haiku is the safe-bet
+> default, not the optimal one. `TurnResult` gains an additive
+> `route_chain` field (defaulted empty tuple) so the `metis dev` result
+> tag can echo the LLM_ROUTER slot's per-turn verdict + meta-cost
+> without callers having to query the trace store. The echo is quiet when
+> the slot was a no-op (disabled / worker re-entry / not pre-computed).
+>
+> **v3.4 update (2026-06-05 — router prompt hardening + failure renames):**
+> Live testing showed `haiku-4-5` as router answering trivial information-
+> seeking prompts (e.g. "what's today's date") directly to the user
+> instead of calling `choose_model` — role-confusion despite the explicit
+> system-prompt instruction. Two changes: (1) the router system prompt is
+> rewritten to repeatedly assert "you are NOT the assistant, the planner
+> answers the user, your reply is the tool call"; the user message is
+> wrapped in `--- TASK FOR PLANNER ---` / `--- END TASK ---` markers so
+> the LLM treats it as routable data, not as a question to itself.
+> (2) The `no_tool_call` failure-reason constant is renamed to
+> `no_model_chosen` for clarity in trace queries; the REPL renders it as
+> "didn't pick a model (router replied with text instead of a tool
+> call)". A new `_humanize_router_reason` mapping in `cli/chat.py`
+> translates other internal reasons (`budget_exhausted`, `timeout`,
+> `invalid_model_id: …`, etc.) into human-readable forms for the
+> result-tag echo; the raw constants stay in the trace store so
+> analytics queries are unaffected.
+>
+> **v3.4 update (2026-06-04 — timeout classification + default raise):**
+> Live testing surfaced `network_error: CancelledError` as a recurring
+> "failure" mode that was actually a misclassified timeout. The OpenRouter
+> and OpenAI adapters wrap `asyncio.CancelledError` as their own typed
+> `AdapterCancelledError` (provider-adapter-contract §6.1) — when our
+> `asyncio.wait_for` fires its timeout, the cancellation propagates INTO
+> the adapter and re-emerges as the wrapped error, so `wait_for` doesn't
+> recognize it and skips its TimeoutError conversion. Router now catches
+> `AdapterCancelledError` explicitly and classifies it as
+> `failure_reason="timeout"`. Default `timeout_seconds` raised `8.0 → 20.0`
+> — OpenRouter routinely dispatched Qwen meta-calls to upstream providers
+> with 10–18s first-token latency, blowing the 8s cap repeatedly.
+>
+> **v3.4 update (2026-06-04 — router-call events + response inspection):**
+> §4.6.7 spec drift closed. The v3.4 first cut declared that router
+> meta-calls would land as `llm.call_completed` events stamped
+> `Actor.ROUTER` but the implementation never emitted them — only the
+> per-slot `meta_cost_usd` field on `PolicyEvaluation` was wired. A
+> live `no_tool_call` failure on 2026-06-04 made the gap concrete:
+> the response content was discarded, so operators had no way to see
+> what the router actually wrote. `LLMRouter` now takes an optional
+> `bus: EventBus` and emits paired `llm.call_started` +
+> `llm.call_completed` for every meta-call attempt that reaches the
+> adapter. `LLMCallCompleted` gains an additive optional
+> `response_text_preview: str | None` field (truncated to 500 chars;
+> populated by the router on no-tool-call failures so the prose is
+> persisted; `None` for planner-loop emitters and tool-only router
+> responses). Dashboard / query example added to §4.6.7.
+>
+> **v3.4 update (2026-06-04 — router-prompt quality fix):** Same-day field
+> test showed the router picking `claude-sonnet-4-6` for a one-word `test`
+> prompt at $0.045 per turn, when `haiku-4-5` was the obvious right answer.
+> Two prompt bugs identified per §5.6.2 history note: (1) the candidate
+> catalog carried capability tags + `fast`/`balanced`/`deep` task-profile
+> labels but no concrete per-MTok prices, so the LLM had nothing to
+> anchor "cheapest" against; (2) the guidance closed with "when in doubt,
+> pick a balanced mid-tier candidate" — the wrong default for short or
+> ambiguous prompts, which are exactly the case where "doubt" applies.
+> Fix: catalog lines now carry `in $X/MTok, out $Y/MTok` from the active
+> `PriceTable`; the guidance flips to "default to the cheapest candidate
+> for short, ambiguous, conversational, or low-stakes prompts" with
+> narrow escalation criteria. §5.6.2 is rewritten with the new prompt
+> shape + the dated history note explaining the failure.
+>
 > **v3.4 changes (2026-06-03 — Wave 19, LLM router):** New chain slot
 > `LLM_ROUTER` inserted at position 5, between `PATTERN_RECOMMENDATION` and
 > the renumbered `DELEGATE_REQUEST` (now position 6). When enabled, the slot
 > asks a small auxiliary LLM ("router model"; default
-> `openrouter:qwen/qwen-plus`, configurable) to pick the model for the turn
+> `anthropic:claude-haiku-4-5` as of 2026-06-04; was
+> `openrouter:qwen/qwen-plus` on the v3.4 first cut — see header update
+> above) to pick the model for the turn
 > from the registered, capability-valid, available candidates. The router
 > returns its pick via a single `choose_model(model_id, reason)` tool call;
 > the pick passes through the standard §4.4 validation gate. Off by default
@@ -348,7 +425,7 @@ All failure modes degrade to `not_applicable` with a documented `reason`, so the
 | LLM call timed out (default 8s)                  | `timeout`                                          |
 | LLM call raised a network / 5xx error            | `network_error: <error_class>`                     |
 | LLM returned a model id not in the candidate set | `invalid_model_id: <name>`                         |
-| LLM returned no tool call                        | `no_tool_call`                                     |
+| LLM returned no `choose_model` call              | `no_model_chosen`                                  |
 | Provider rejected the request (e.g. AUTH)        | `provider_error: <error_class>`                    |
 | Budget exhausted (per-session or per-day)        | `budget_exhausted`                                 |
 | No candidate models passed §4.4 validation       | `no_candidates`                                    |
@@ -357,11 +434,26 @@ All failure modes degrade to `not_applicable` with a documented `reason`, so the
 
 The slot **never** raises an exception that escapes the engine. The chain is allowed to fall through; routing's no-model-available hard failure (§4.8) still requires every slot to come up empty.
 
-#### 4.6.7 Cost trace
+#### 4.6.7 Cost trace + response inspection
 
-The meta-call lands in the trace store as a normal `llm.call_completed` event stamped with a new `Actor.ROUTER` (`canonical/actors.py`), so dashboards can attribute meta-spend separately from the planner's spend. The cost is also surfaced on the `LLM_ROUTER` slot's `PolicyEvaluation` via three new fields (`meta_cost_usd`, `meta_tokens_input`, `meta_tokens_output`), `None` for every other slot. The slot's meta-cost does **not** count against the session's `turn.completed.usage.cost_usd` (which measures only planner-side LLM tokens, consistent with the worker convention in `delegation.md §8`).
+The meta-call lands in the trace store as paired `llm.call_started` + `llm.call_completed` events stamped with the `Actor.ROUTER` actor (`events/envelope.py`), so dashboards can attribute meta-spend separately from the planner's spend. The cost is also surfaced on the `LLM_ROUTER` slot's `PolicyEvaluation` via three additive fields (`meta_cost_usd`, `meta_tokens_input`, `meta_tokens_output`), `None` for every other slot. The slot's meta-cost does **not** count against the session's `turn.completed.usage.cost_usd` (which measures only planner-side LLM tokens, consistent with the worker convention in `delegation.md §8`).
 
-The meta-call's `route.decided` invariant still holds: routing produces exactly one `route.decided` event per turn. The router's `llm.call_completed` is a separate event, ordered before `route.decided` because the router's response is read first.
+For debuggability the `llm.call_completed` payload includes an additive `response_text_preview: str | None` field — the first ~500 characters of any `TextBlock` content the router emitted, or `None` when the response was tool-only. The motivating case: a `no_model_chosen` failure (the router writes prose instead of calling `choose_model`) previously discarded the response, leaving operators blind to why the router failed. With the preview persisted, a SQLite query like
+
+```sql
+SELECT
+  json_extract(payload_json, '$.model')                  AS router_model,
+  json_extract(payload_json, '$.response_text_preview')  AS prose
+FROM events
+WHERE type = 'llm.call_completed'
+  AND actor = 'router'
+  AND json_extract(payload_json, '$.produced_tool_calls') = 0
+ORDER BY id DESC LIMIT 10;
+```
+
+…surfaces every recent router-side `no_model_chosen` failure with the model's actual text. Truncation cap (~500 chars upstream) keeps event rows from bloating; redaction-time treatment for the field follows `redaction.md` USER_CONTROLLED text-strip rules.
+
+The meta-call's `route.decided` invariant still holds: routing produces exactly one `route.decided` event per turn. The router's `llm.call_started` / `llm.call_completed` are separate events, ordered before `route.decided` because the router's response is read first.
 
 #### 4.6.8 Caching
 
@@ -449,10 +541,10 @@ pattern:
 # candidate set. Falls through on any failure mode.
 llm_router:
   enabled: false                           # default false; chain shape unchanged when disabled
-  model: openrouter:qwen/qwen-plus         # cheap default; cost-effective model TBD per §5.6 research note
+  model: anthropic:claude-haiku-4-5        # safe-bet default (reliable forced tool-use); cheaper models TBD per §5.6 research note
   per_session_budget_usd: 0.10             # shared BudgetTracker primitive with evaluator (independent caps)
   per_day_budget_usd: 1.00
-  timeout_seconds: 8                       # meta-call wall-clock cap
+  timeout_seconds: 20                      # meta-call wall-clock cap (raised from 8s on 2026-06-04)
   # tool_choice: required                  # always forced; not user-tunable in v1
 
 rules:
@@ -633,23 +725,25 @@ Workspace-scoped (top-level `llm_router:` applies globally; `workspaces.<path>.l
 ```yaml
 llm_router:
   enabled: true
-  model: openrouter:qwen/qwen-plus
+  model: anthropic:claude-haiku-4-5
   per_session_budget_usd: 0.10
   per_day_budget_usd: 1.00
-  timeout_seconds: 8
+  timeout_seconds: 20
 ```
 
 | Field                    | Type    | Default                          | Notes                                                                                              |
 | ------------------------ | ------- | -------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `enabled`                | bool    | `false`                          | Master switch. False → slot 5 returns `not_applicable, reason="llm_router disabled"`.              |
-| `model`                  | str     | `openrouter:qwen/qwen-plus`      | Router model id (registered in `ModelRegistry`, capability-validated like any other model).        |
+| `model`                  | str     | `anthropic:claude-haiku-4-5`     | Router model id (registered in `ModelRegistry`, capability-validated like any other model).        |
 | `per_session_budget_usd` | float   | `0.10`                           | Per-session cap; shares `BudgetTracker` primitive with evaluator (independent caps).               |
 | `per_day_budget_usd`     | float   | `1.00`                           | Per-day cap; ditto.                                                                                |
-| `timeout_seconds`        | float   | `8.0`                            | Wall-clock cap on the meta-call. Timeout → `not_applicable, reason="timeout"`.                     |
+| `timeout_seconds`        | float   | `20.0`                           | Wall-clock cap on the meta-call. Timeout (including adapter-wrapped `CancelledError`) → `not_applicable, reason="timeout"`. Raised from `8.0` on 2026-06-04 — OpenRouter routing of Qwen models to various upstream providers regularly took 10–18s. |
 
 #### 5.6.1 Default router model
 
-`openrouter:qwen/qwen-plus` is the v1 default — chosen for cost (≪ `haiku-4-5`) over latency. **This default is not load-bearing** — the cost-effective router model question is genuinely open and should be benchmarked against the standard suite once we have signal on router-pick quality across `qwen-plus`, `haiku-4-5`, `gpt-4o-mini`, and other sub-$0.50/MTok candidates. The router model selection benchmark is a deferred follow-on (§11.x).
+`anthropic:claude-haiku-4-5` is the v1 default — chosen for reliable forced tool-use (the slot requires the router to call `choose_model` exactly once, and haiku honors that consistently). **This default is not load-bearing** — the cost-effective router model question is genuinely open and should be benchmarked against the standard suite once we have signal on router-pick quality across `haiku-4-5`, `gpt-4o-mini`, `qwen3-coder`, and other sub-$1/MTok candidates. The router model selection benchmark is a deferred follow-on (§11.10).
+
+**2026-06-04 history.** First field test (one turn against the v3.4-first-cut `openrouter:qwen/qwen-plus` default) returned `no_tool_call`: qwen-plus emitted 150 output tokens of prose explaining its pick instead of calling the tool, the slot reported `not_applicable, reason="no_tool_call"` and the chain fell through to the workspace default ($0.0042 wasted per turn on the meta-call). The default switched to haiku-4-5 the same day. Cheaper candidates (qwen3 family, gpt-4o-mini) remain viable if tool-use is verified per-model first.
 
 Workspaces with no `openrouter` API key configured should set `model:` explicitly to an `anthropic:` or `openai:` candidate that resolves under their existing credentials. The `metis auth doctor` output lists which providers have credentials.
 
@@ -674,7 +768,25 @@ The router is called with one tool:
 
 The `model_id` enum is constructed from the candidate set at call time (post §4.4 validation). The router cannot return a model not on the enum; if a provider's tool-use implementation doesn't enforce enums strictly, an off-enum response triggers `invalid_model_id` per §4.6.6.
 
-The system prompt is built from a stable template + the candidate catalog (model_id, capability summary, price tier per MTok). The system prompt is constant across consecutive turns in a workspace, so provider-side prompt caching applies (Anthropic `cache_control`, OpenAI implicit, OpenRouter where the upstream supports it per `provider-adapter-contract.md §4.5`).
+The system prompt is built from a stable template + the candidate catalog and is constant across consecutive turns in a workspace, so provider-side prompt caching applies (Anthropic `cache_control`, OpenAI implicit, OpenRouter where the upstream supports it per `provider-adapter-contract.md §4.5`).
+
+Each catalog line carries: `model_id`, capability summary (`tools` / `vision` / `thinking`), context-window size, and **per-MTok input + output rates** from the active `PriceTable`. The price is concrete dollar amounts, not a relative tier label — without absolute numbers the router LLM can't anchor "cheapest" against the alternatives. A candidate whose model is not in the `PriceTable` is rendered with a `price unknown` marker rather than being dropped.
+
+```
+- anthropic:claude-haiku-4-5    [fast; tools; 200k ctx; in $0.8/MTok, out $4/MTok]
+- anthropic:claude-sonnet-4-6   [balanced; tools; vision; thinking; 200k ctx; in $3/MTok, out $15/MTok]
+- anthropic:claude-opus-4-7     [deep; tools; vision; thinking; 200k ctx; in $15/MTok, out $75/MTok]
+```
+
+The guidance block at the bottom of the system prompt explicitly biases the router toward the cheapest viable candidate and enumerates the (narrow) escalation criteria. The phrasing is **load-bearing**: an earlier draft ended with "when in doubt, pick a balanced mid-tier candidate" which qwen-plus interpreted as license to pick `claude-sonnet-4-6` for a one-word prompt (`test`) on 2026-06-04, paying a ~$0.045 turn cost when haiku would have produced the same response for under $0.005. The shipped guidance instead reads:
+
+> Bias hard toward the cheapest viable model.
+> - **Default to the cheapest candidate** for short, ambiguous, conversational, or low-stakes prompts.
+> - Escalate to a mid-tier model **only when** the task explicitly calls for multi-step reasoning, code synthesis across multiple files, careful refactoring, or non-trivial debugging.
+> - Escalate to the deep tier **only for** architecture design, security review, multi-document synthesis, or tasks that explicitly request extended reasoning. "test" / "hi" / "continue" / single-sentence questions are NOT in this category.
+> - A 4× more expensive model that gives a 5% better answer on a trivial task is the wrong pick.
+
+The catalog-line price + biased-cheap guidance combination is the v3.4 fix for the 2026-06-04 sonnet-for-`test` failure; the §11.10 "genuinely best router model" open question is independent of this fix.
 
 #### 5.6.3 Validation
 
@@ -1092,7 +1204,7 @@ Chain:
 session.active_model = None
 rules: []
 pattern store: empty (cold start)
-llm_router: enabled=true, model=openrouter:qwen/qwen-plus
+llm_router: enabled=true, model=anthropic:claude-haiku-4-5
 
 User: "Refactor the get_user helper to accept a Session argument; preserve the call sites."
 
@@ -1116,7 +1228,7 @@ Chain:
 session.active_model = None
 rules: []
 pattern store: empty
-llm_router: enabled=true, model=openrouter:qwen/qwen-plus, timeout_seconds=8
+llm_router: enabled=true, model=anthropic:claude-haiku-4-5, timeout_seconds=20
 workspace_default: anthropic:claude-haiku-4-5
 (router meta-call times out at 8.0s)
 
@@ -1422,7 +1534,7 @@ Tracked here, deferred to later revisions:
 7. **Provider availability state machine.** v1 is binary (Healthy / Unavailable). The Degraded state is sketched but unused; refinement deferred.
 8. **`/rules check` shadow detection.** v1 prints rules; v2 may detect when one rule strictly shadows another and warn.
 9. **Tier config source.** The `routing.yaml` `tiers:` block (§5.1, §5.2) is parsed and validated but **not consumed** — delegation resolves tiers via the model registry's `delegation_tier` field (§6.10). v2 should either wire `SessionManager.spawn_worker` to consult the workspace-scoped `TierMap`, or drop the `routing.yaml` block in favor of registry config. Until then, per-workspace tier overrides written in `routing.yaml` have no effect.
-10. **Cost-effective router model.** §5.6 defaults to `openrouter:qwen/qwen-plus`; the genuinely best model for the LLM_ROUTER meta-call is open. Benchmark `qwen-plus`, `haiku-4-5`, `gpt-4o-mini`, and other sub-$0.50/MTok candidates against the standard suite (cost per router decision, pick quality vs. workspace-default baseline). Default may change once data is in.
+10. **Cost-effective router model.** §5.6 defaults to `anthropic:claude-haiku-4-5` (safe-bet for reliable forced tool-use as of 2026-06-04); the genuinely best model for the LLM_ROUTER meta-call is open. Cheaper candidates (`qwen3-coder`, `gpt-4o-mini`, `deepseek-v3`, and others sub-$1/MTok) need tool-use reliability verified before they can replace haiku as default. Benchmark against the standard suite (cost per router decision, pick quality vs. workspace-default baseline, tool-call hit rate).
 11. **Router decision cache.** v1 makes the meta-call on every turn when enabled; provider-side prompt caching helps the system prompt but the user message changes per turn. A per-workspace decision cache keyed by normalized prompt hash could skip the meta-call for repeated tasks. Deferred until v1 produces traffic and we can measure repeat-prompt rate.
 12. **LLM_ROUTER for delegation.** v1 does not let the router invoke `delegate()` — it picks a single concrete model. Allowing the router to return `delegate(tier=…)` would let it split tasks across tiers but breaks the §4.6.4 "router does not second-guess explicit delegate calls" invariant on worker re-entry. Deferred.
 

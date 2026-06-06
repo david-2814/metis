@@ -346,6 +346,7 @@ async def setup_runtime(
         availability=routing.availability,
         price_table=pricing_table,
         budget_tracker=llm_router_budget,
+        bus=bus,
     )
 
     manager = SessionManager(

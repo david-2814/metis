@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from metis.core.adapters.errors import CancelledError as AdapterCancelledError
 from metis.core.adapters.protocol import CanonicalRequest
 from metis.core.canonical.capabilities import AdapterCapabilities
 from metis.core.canonical.content import TextBlock, ToolUseBlock
@@ -26,6 +27,9 @@ from metis.core.canonical.ids import new_message_id, next_monotonic_ulid
 from metis.core.canonical.messages import Message, MessageMetadata, Role
 from metis.core.canonical.tools import SideEffects, ToolDefinition
 from metis.core.eval.budget import BudgetTracker
+from metis.core.events.bus import EventBus
+from metis.core.events.envelope import Actor
+from metis.core.events.payloads import LLMCallCompleted, LLMCallStarted, make_event
 from metis.core.pricing.table import PriceTable, UnknownPricingModelError
 from metis.core.routing.availability import AvailabilityState, ProviderAvailability
 from metis.core.routing.policy import LLMRouterConfig
@@ -40,6 +44,13 @@ _CHOOSE_MODEL_TOOL = "choose_model"
 # single tool call carrying a model id + a short reason. ~150 tokens is
 # generous; it caps cost while leaving room for thinking-prefix providers.
 _MAX_OUTPUT_TOKENS = 150
+
+# How much assistant-message text to persist on the
+# `llm.call_completed.response_text_preview` field. Truncated upstream
+# so a router that emitted prose instead of a tool call is debuggable
+# from the trace store without dragging the full output blob into
+# every event (routing-engine.md §4.6.7).
+_RESPONSE_PREVIEW_MAX_CHARS = 500
 
 
 @dataclass(frozen=True)
@@ -89,12 +100,18 @@ class LLMRouter:
         availability: ProviderAvailability,
         price_table: PriceTable,
         budget_tracker: BudgetTracker,
+        bus: EventBus | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
         self._availability = availability
         self._price_table = price_table
         self._budget = budget_tracker
+        # Optional event bus for `llm.call_started` / `llm.call_completed`
+        # emission stamped `Actor.ROUTER` (routing-engine.md §4.6.7).
+        # `None` keeps the in-test substrate working with no event-store
+        # plumbing; production runtime always passes the shared bus.
+        self._bus = bus
 
     @property
     def config(self) -> LLMRouterConfig:
@@ -171,16 +188,24 @@ class LLMRouter:
                 failure_reason="router_model_unavailable",
             )
 
-        system_prompt = _build_system_prompt(self._registry, candidates)
+        system_prompt = _build_system_prompt(self._registry, candidates, self._price_table)
         tool = _build_choose_model_tool(candidates)
+        request_id = str(next_monotonic_ulid())
+        # Frame the user prompt as data the planner will receive, not as a
+        # prompt directed at the router. Without this wrapper haiku-as-router
+        # answered "what's today's date" directly on 2026-06-05 instead of
+        # calling choose_model. The system prompt's "TASK FOR PLANNER"
+        # marker bookends this so the LLM treats the text as routable
+        # subject matter, not as a question to itself.
+        framed_prompt = f"--- TASK FOR PLANNER ---\n{user_prompt or ''}\n--- END TASK ---"
         request = CanonicalRequest(
-            request_id=str(next_monotonic_ulid()),
+            request_id=request_id,
             messages=[
                 Message(
                     id=new_message_id(),
                     session_id=session_id,
                     role=Role.USER,
-                    content=[TextBlock(text=user_prompt or "")],
+                    content=[TextBlock(text=framed_prompt)],
                     created_at=datetime.now(UTC),
                     metadata=MessageMetadata(),
                 )
@@ -192,12 +217,38 @@ class LLMRouter:
             temperature=0.0,  # deterministic per-prompt picks
         )
 
+        # Emit `llm.call_started` stamped Actor.ROUTER so analytics can
+        # attribute meta-call spend separately from planner / worker
+        # traffic (routing-engine.md §4.6.7).
+        provider = self._registry.provider_of(router_canonical)
+        started_at_ms = _monotonic_ms()
+        self._emit_llm_call_started(
+            session_id=session_id,
+            request_id=request_id,
+            model=router_canonical,
+            provider=provider,
+            estimated_input_tokens=router_entry.adapter.estimate_input_tokens(
+                request.messages, request.tools, request.system_prompt
+            ),
+        )
+
         try:
             response = await asyncio.wait_for(
                 router_entry.adapter.complete(request),
                 timeout=self._config.timeout_seconds,
             )
         except TimeoutError:
+            return LLMRouterResult(chosen_model=None, failure_reason="timeout")
+        except AdapterCancelledError:
+            # Adapters wrap `asyncio.CancelledError` as their own typed
+            # error (provider-adapter-contract §6.1). When *our* wait_for
+            # fires its timeout, that cancellation propagates INTO the
+            # adapter and re-emerges as `AdapterCancelledError` — the
+            # adapter ate the cancellation signal, so wait_for never
+            # converts it back to TimeoutError. Classify it as timeout
+            # here for accurate per-failure-mode telemetry instead of the
+            # misleading "network_error: CancelledError" surfaced in v3.4
+            # first-cut field testing (2026-06-04).
             return LLMRouterResult(chosen_model=None, failure_reason="timeout")
         except asyncio.CancelledError:
             raise
@@ -226,10 +277,28 @@ class LLMRouter:
         # `choose_model` call; anything else collapses to a documented
         # failure mode.
         tool_call = _find_choose_model_call(response.content)
+        text_preview = _extract_text_preview(response.content)
+
+        # Emit `llm.call_completed` with the truncated response preview
+        # so a `no_model_chosen` failure is debuggable post-hoc from the
+        # trace store (the previous implementation discarded the
+        # response content entirely).
+        self._emit_llm_call_completed(
+            session_id=session_id,
+            model=router_canonical,
+            provider=provider,
+            response_usage=response.usage,
+            cost_usd=meta_cost,
+            stop_reason=str(response.stop_reason),
+            latency_ms=_monotonic_ms() - started_at_ms,
+            produced_tool_calls=1 if tool_call is not None else 0,
+            response_text_preview=text_preview,
+        )
+
         if tool_call is None:
             return LLMRouterResult(
                 chosen_model=None,
-                failure_reason="no_tool_call",
+                failure_reason="no_model_chosen",
                 meta_cost_usd=meta_cost,
                 meta_tokens_input=tokens_in,
                 meta_tokens_output=tokens_out,
@@ -240,7 +309,7 @@ class LLMRouter:
         if not isinstance(raw_model_id, str) or not raw_model_id:
             return LLMRouterResult(
                 chosen_model=None,
-                failure_reason="no_tool_call",
+                failure_reason="no_model_chosen",
                 meta_cost_usd=meta_cost,
                 meta_tokens_input=tokens_in,
                 meta_tokens_output=tokens_out,
@@ -262,6 +331,82 @@ class LLMRouter:
             meta_tokens_output=tokens_out,
             reason_text=reason_text if isinstance(reason_text, str) else None,
         )
+
+    # ------------------------------------------------------------------
+    # Event emission helpers (routing-engine.md §4.6.7)
+    # ------------------------------------------------------------------
+
+    def _emit_llm_call_started(
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        model: str,
+        provider: str,
+        estimated_input_tokens: int,
+    ) -> None:
+        if self._bus is None:
+            return
+        try:
+            self._bus.emit(
+                make_event(
+                    type="llm.call_started",
+                    payload=LLMCallStarted(
+                        model=model,
+                        provider=provider,
+                        estimated_input_tokens=estimated_input_tokens,
+                        request_id=request_id,
+                        is_worker=False,
+                    ),
+                    session_id=session_id,
+                    actor=Actor.ROUTER,
+                    timestamp=datetime.now(UTC),
+                )
+            )
+        except Exception:
+            logger.exception("LLM_ROUTER failed to emit llm.call_started")
+
+    def _emit_llm_call_completed(
+        self,
+        *,
+        session_id: str,
+        model: str,
+        provider: str,
+        response_usage,
+        cost_usd: Decimal,
+        stop_reason: str,
+        latency_ms: int,
+        produced_tool_calls: int,
+        response_text_preview: str | None,
+    ) -> None:
+        if self._bus is None:
+            return
+        try:
+            self._bus.emit(
+                make_event(
+                    type="llm.call_completed",
+                    payload=LLMCallCompleted(
+                        model=model,
+                        provider=provider,
+                        input_tokens=response_usage.input_tokens,
+                        output_tokens=response_usage.output_tokens,
+                        cached_input_tokens=response_usage.cached_input_tokens,
+                        cache_creation_input_tokens=response_usage.cache_creation_input_tokens,
+                        cost_usd=float(cost_usd),
+                        pricing_version=self._price_table.version,
+                        latency_ms=latency_ms,
+                        stop_reason=_normalize_stop_reason(stop_reason),
+                        produced_tool_calls=produced_tool_calls,
+                        produced_thinking_blocks=0,
+                        response_text_preview=response_text_preview,
+                    ),
+                    session_id=session_id,
+                    actor=Actor.ROUTER,
+                    timestamp=datetime.now(UTC),
+                )
+            )
+        except Exception:
+            logger.exception("LLM_ROUTER failed to emit llm.call_completed")
 
     # ------------------------------------------------------------------
     # Internals
@@ -357,18 +502,37 @@ def _capabilities_satisfy(caps: AdapterCapabilities, req: _CtxRequirements) -> b
     return True
 
 
-def _build_system_prompt(registry: ModelRegistry, candidates: list[str]) -> str:
+def _build_system_prompt(
+    registry: ModelRegistry,
+    candidates: list[str],
+    price_table: PriceTable,
+) -> str:
     """Stable across turns for a given candidate set → provider prompt
-    caching applies (§4.6.8)."""
+    caching applies (§4.6.8).
+
+    The catalog line includes per-MTok input + output rates so the router
+    has concrete numbers to anchor "cheapest" against. Without prices the
+    router can only compare on task-profile tags like `fast` / `balanced`,
+    which led qwen-plus to pick `claude-sonnet-4-6` for a one-word "test"
+    prompt on 2026-06-04 (routing-engine.md §5.6.2 history note).
+    """
     lines = [
-        "You are Metis's model router. Your job is to choose the best model "
-        "from the candidate list below for a single coding / dev task the "
-        "user is about to send.",
+        "You are Metis's model router. Your ONLY job is to choose which model "
+        "should handle a task. You are NOT the assistant responding to the "
+        "user — a separate planner model will handle the actual task once "
+        "you have picked it.",
         "",
-        "You MUST call the `choose_model` tool exactly once with your pick. "
-        "Do not write any other text.",
+        "Your response MUST be exactly one call to the `choose_model` tool. "
+        "Do not write text. Do not greet the user. Do not answer their "
+        "question. Even if the user asks for the date, the weather, or "
+        "your opinion, your reply is the tool call — the planner model "
+        "you pick will answer them afterwards.",
         "",
-        "Candidates:",
+        "The message after `--- TASK FOR PLANNER ---` below is the task the "
+        "planner will receive. Read it to judge complexity, then call "
+        "`choose_model`. Do NOT reply to it directly.",
+        "",
+        "Candidates (price = per-million-token rate; lower = cheaper):",
     ]
     for model_id in candidates:
         try:
@@ -386,20 +550,42 @@ def _build_system_prompt(registry: ModelRegistry, candidates: list[str]) -> str:
         if caps.supports_thinking:
             bits.append("thinking")
         bits.append(f"{caps.max_context_tokens // 1000}k ctx")
+        try:
+            pricing = price_table.pricing_for(model_id)
+            bits.append(
+                f"in ${_format_price(pricing.input_per_mtok)}/MTok, "
+                f"out ${_format_price(pricing.output_per_mtok)}/MTok"
+            )
+        except UnknownPricingModelError:
+            bits.append("price unknown")
         lines.append(f"- {model_id}  [{'; '.join(bits)}]")
     lines.extend(
         [
             "",
-            "Guidance:",
-            "- Prefer the cheapest candidate that meets the task's complexity.",
-            "- Reserve the deepest / most expensive candidate for architecture, "
-            "design review, multi-document synthesis, or extended reasoning.",
-            "- Use the fastest candidate for trivial edits, commit messages, "
-            "and single-line fixes.",
-            "- When in doubt, pick a balanced mid-tier candidate.",
+            "Guidance — bias hard toward the cheapest viable model:",
+            "- **Default to the cheapest candidate** for short, ambiguous, "
+            "conversational, or low-stakes prompts. A one-line user "
+            "message is almost never worth a deep model.",
+            "- Escalate to a mid-tier model ONLY when the task explicitly "
+            "calls for multi-step reasoning, code synthesis across "
+            "multiple files, careful refactoring, or non-trivial debugging.",
+            "- Escalate to the most expensive (deep) tier ONLY for "
+            "architecture design, security review, multi-document "
+            "synthesis, or tasks that explicitly request extended "
+            'reasoning. "Test", "hi", "continue", or any '
+            "single-sentence question is NOT in this category.",
+            "- Cost matters. A 4x more expensive model that gives a 5% "
+            "better answer on a trivial task is the wrong pick.",
         ]
     )
     return "\n".join(lines)
+
+
+def _format_price(rate: Decimal) -> str:
+    """Render a per-MTok price compactly. Drops trailing zeros."""
+    # Strip trailing zeros without losing precision: "0.80" -> "0.8".
+    text = f"{rate:.4f}".rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def _build_choose_model_tool(candidates: list[str]) -> ToolDefinition:
@@ -436,3 +622,40 @@ def _find_choose_model_call(content: list) -> ToolUseBlock | None:
         if isinstance(block, ToolUseBlock) and block.name == _CHOOSE_MODEL_TOOL:
             return block
     return None
+
+
+def _extract_text_preview(content: list) -> str | None:
+    """First TextBlock content, truncated for the trace event.
+
+    Returns None when the response has no TextBlock at all (e.g. the
+    router only emitted a ToolUseBlock — the happy path). Returns the
+    truncated text otherwise, including for the no_model_chosen failure
+    mode where the router wrote prose instead of calling the tool.
+    """
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, TextBlock) and block.text:
+            parts.append(block.text)
+    if not parts:
+        return None
+    joined = "\n".join(parts)
+    if len(joined) > _RESPONSE_PREVIEW_MAX_CHARS:
+        return joined[: _RESPONSE_PREVIEW_MAX_CHARS - 1] + "…"
+    return joined
+
+
+def _normalize_stop_reason(raw: str) -> str:
+    """Map adapter `StopReason` to the LLMCallCompleted literal set."""
+    if "tool_use" in raw:
+        return "tool_use"
+    if "max_tokens" in raw:
+        return "max_tokens"
+    if "stop_sequence" in raw:
+        return "stop_sequence"
+    return "end_turn"
+
+
+def _monotonic_ms() -> int:
+    import time
+
+    return int(time.monotonic() * 1000)

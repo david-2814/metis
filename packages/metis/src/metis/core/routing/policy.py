@@ -98,24 +98,35 @@ class LLMRouterConfig:
     `not_applicable, reason="llm_router disabled"` and the chain proceeds
     to slot 6 without any side effects.
 
-    `model` is the router model id. The default is intentionally cheap;
-    the cost-effective choice is genuinely open (§11.10). The id is NOT
-    validated against the registry at parse time — the registry can
-    change at runtime. Per-turn resolution happens in `llm_router.py`.
+    `model` is the router model id. Default `anthropic:claude-haiku-4-5`
+    chosen for reliable forced tool-use; earlier v3.4 drafts defaulted to
+    `openrouter:qwen/qwen-plus` but field-tested with `no_tool_call` on
+    the first user turn (qwen-plus generated prose instead of calling
+    `choose_model`). The cost-effective choice remains genuinely open
+    (§11.10). The id is NOT validated against the registry at parse
+    time — the registry can change at runtime. Per-turn resolution
+    happens in `llm_router.py`.
 
     `per_session_budget_usd` and `per_day_budget_usd` cap meta-call spend
     via the evaluator's `BudgetTracker` primitive (independent caps).
     Over-budget → slot reports `not_applicable, reason="budget_exhausted"`.
 
-    `timeout_seconds` is a wall-clock cap on the meta-call. Values < 1.0
-    are clamped to 1.0 at construction time with no error (matches §5.6.3).
+    `timeout_seconds` is a wall-clock cap on the meta-call. Default
+    `20.0` - bumped from `8.0` on 2026-06-04 after live testing on
+    OpenRouter showed Qwen models routinely taking 10-18s to first
+    response (different upstream providers per OpenRouter's routing
+    decision). 8s caused repeated timeouts that surfaced as the
+    misleading `network_error: CancelledError` (the adapter wraps
+    `asyncio.CancelledError` so wait_for's TimeoutError never fires).
+    Values < 1.0 are clamped to 1.0 at construction time with no
+    error (matches §5.6.3).
     """
 
     enabled: bool = False
-    model: str = "openrouter:qwen/qwen-plus"
+    model: str = "anthropic:claude-haiku-4-5"
     per_session_budget_usd: float = 0.10
     per_day_budget_usd: float = 1.00
-    timeout_seconds: float = 8.0
+    timeout_seconds: float = 20.0
 
     def __post_init__(self) -> None:
         if self.per_session_budget_usd < 0:
